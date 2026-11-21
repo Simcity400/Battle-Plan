@@ -24,7 +24,12 @@ interface Props {
   live?: LiveValue;
 }
 
-export interface LiveValue { read: () => number | null; subscribe: (changed: () => void) => () => void }
+export interface LiveValue {
+  read: () => number | null;
+  subscribe: (changed: () => void) => () => void;
+  face?: (host: HTMLElement, date: Element, hour: Element) => (() => void) | null;
+  settled?: (changed: () => void) => () => void;
+}
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const dateText = (date: ReturnType<typeof gameDate>, value: number | null) =>
@@ -66,9 +71,13 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
   const following = open && !!live && !!held?.following;
   const liveDate = useRef<HTMLSpanElement>(null);
   const liveTime = useRef<HTMLSpanElement>(null);
+  const valueText = useRef<HTMLSpanElement>(null);
 
   useLayoutEffect(() => {
     if (!live) return;
+    const host = valueText.current;
+    const stopFace = host && liveDate.current && liveTime.current ? live.face?.(host, liveDate.current, liveTime.current) ?? null : null;
+    host?.toggleAttribute('data-face', !!stopFace);
     let shown: number | null | undefined;
     const paint = () => {
       const current = live.read();
@@ -79,7 +88,8 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
       showText(liveTime.current, date ? formatTime(date.hour) : '—');
     };
     paint();
-    return live.subscribe(paint);
+    const stop = (stopFace && live.settled ? live.settled : live.subscribe)(paint);
+    return () => { stop(); stopFace?.(); host?.removeAttribute('data-face'); };
   }, [live]);
 
   const paintHead = useRef<(() => void) | null>(null);
@@ -195,7 +205,7 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
       data-tooltip={!available && value != null ? 'This part of the recording has no calendar date.' : undefined}
       popoverTarget={`${id}-popup`}>
       <Icon name="calendar" />
-      <span id={`${id}-value`} className="date-time-value">
+      <span id={`${id}-value`} ref={valueText} className="date-time-value">
         {live ? <><span key="live-date" ref={liveDate} /><span key="live-time" ref={liveTime} className="date-time-hour" /></>
           : <><span key="date">{dateText(selected, value)}</span><span key="time" className="date-time-hour">{selected ? formatTime(selected.hour) : '—'}</span></>}
       </span>

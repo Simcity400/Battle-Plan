@@ -10,7 +10,7 @@ use std::collections::HashMap;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarContributionCountry {
@@ -30,7 +30,7 @@ pub struct WarContributionCountry {
     pub score: String,
     pub participation: String,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarContributionGroup {

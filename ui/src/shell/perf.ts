@@ -92,8 +92,10 @@ interface RowChange { widget: string; source: string; previous: StructureRead; c
 type AuditedPicture = Omit<PictureSample, 'hour' | 'rows'> & { hour: number; rows: NonNullable<PictureSample['rows']> };
 type PictureAuditResult = { widget: string; surface: string; placement: number; hour: number; error: string | null };
 
+const READERS_HELD = 1024;
+
 export class PerfRecorder {
-  private readers = new Map<number, { owner: number; exact: ExactPicture }>();
+  private readers = new Map<string, ExactPicture>();
   private auditReaders?: Map<string, ExactPicture>;
   private commitSequence = 0;
   private commitAudit?: { at: number; serial: number; widgets: string[]; causes: object; changes: RowChange[]; input?: string }[];
@@ -106,10 +108,22 @@ export class PerfRecorder {
   }
 
   reader(id: number, owner: number, exact: ExactPicture) {
-    this.readers.set(id, { owner, exact });
-    this.auditReaders?.set(id + '/' + owner, exact);
+    const key = id + '/' + owner;
+    this.readers.delete(key);
+    this.readers.set(key, exact);
+    if (this.readers.size > READERS_HELD) this.readers.delete(this.readers.keys().next().value!);
+    this.auditReaders?.set(key, exact);
   }
-  releaseReader(id: number) { this.readers.delete(id); }
+  private exactReads = new Map<string, Promise<unknown>>();
+  exactOnce<T>(key: string, read: () => Promise<T>): Promise<T> {
+    let held = this.exactReads.get(key) as Promise<T> | undefined;
+    if (!held) {
+      held = read();
+      this.exactReads.set(key, held);
+      held.catch(() => this.exactReads.delete(key));
+    }
+    return held;
+  }
   ink(id: number, visible: boolean) {
     if (this.auditReaders) this.push({ t: 'ink', at: epoch(performance.now()), placement: id, visible });
   }
@@ -117,8 +131,7 @@ export class PerfRecorder {
   async beginAudit() {
     this.rowChanges = [];
     this.commitAudit = [];
-    this.auditReaders = new Map();
-    for (const [id, { owner, exact }] of this.readers) this.auditReaders.set(id + '/' + owner, exact);
+    this.auditReaders = new Map(this.readers);
     await (await import('../dashboard/pulled.ts')).capturePictures(true);
   }
 
@@ -182,11 +195,13 @@ export class PerfRecorder {
             error = key + ': displayed ' + row.value + ', expected ' + exact.values.get(key); break;
           }
         }
+        if (!error && exact && surface === 'table' && new Set(rows.map(row => row.key)).size !== exact.values.size)
+          error = 'Displayed ' + rows.length + ' rows of the ' + exact.values.size + ' the exact read holds';
       } catch (cause) { error = String(cause); }
       return { widget, surface, placement, hour, error };
     });
     const done = work.done && work.pictures.length === 0;
-    if (done) this.pictureAudit = undefined;
+    if (done) { this.pictureAudit = undefined; this.exactReads.clear(); }
     return { done, results };
   }
   async auditPictures(): Promise<PictureAuditResult[]> {
@@ -316,6 +331,8 @@ export class PerfRecorder {
     this.lines.push(line);
     tally(this.buffered, 1, line.length + 1, record.at, record.at);
   }
+
+  get hour(): number | null { return this.position === null ? null : Math.floor(this.position); }
 
   clock(position: number, playing: boolean, hoursPerSecond: number, sequence: number, seekSequence: number, composedAt?: number): void {
     this.playing = playing;
@@ -489,5 +506,5 @@ export async function startPerf(): Promise<void> {
   });
   Object.assign(window, { __perf: { start: () => recorder.start(), stop: () => recorder.stop(), flush: () => recorder.flush(),
     beginAudit: () => recorder.beginAudit(), auditPictures: () => recorder.auditPictures(), auditPicturesBatch: (limit: number) => recorder.auditPicturesBatch(limit),
-    pressureMerges: () => invoke('playback_pressure_merges') } });
+    pressureMerges: () => invoke('playback_pressure_merges'), hour: () => recorder.hour } });
 }

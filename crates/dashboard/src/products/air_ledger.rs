@@ -55,7 +55,7 @@ pub enum MilitaryAirMetric {
     Total,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MilitaryAirTop {
@@ -63,7 +63,7 @@ pub struct MilitaryAirTop {
     pub metric: MilitaryAirMetric,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MilitaryAirParams {
@@ -123,7 +123,7 @@ pub struct MilitaryAirPart {
     pub points: Vec<(i32, i32, String)>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MilitaryAirName {
@@ -140,7 +140,7 @@ pub struct MilitaryAirNote {
     pub events: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MilitaryAirReply {

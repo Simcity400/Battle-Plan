@@ -153,7 +153,7 @@ fn prepare(runs: &mut Vec<RaidPreparationRun>, first: i32, last: i32, value: i32
     runs.push(RaidPreparationRun(first, last, value, 0));
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RaidTypeInfo {
@@ -162,7 +162,7 @@ pub struct RaidTypeInfo {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RaidArtwork {
@@ -601,7 +601,7 @@ fn validate(branch_id: &str, countries: &[Country]) -> Result<(), &'static str> 
 
 pub struct RaidLog;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RaidLogParams {
@@ -619,7 +619,7 @@ pub struct RaidLogParams {
     pub catalogue: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RaidLogReply {

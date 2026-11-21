@@ -17,16 +17,18 @@ use dashboard::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
 use native::{HostStatus, NativeHost};
 use std::sync::Arc;
+use tauri::http::HeaderValue;
 use tauri::{Manager, State, WebviewWindow};
 
 #[global_allocator]
 static ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
-fn serve_artwork(request: tauri::http::Request<Vec<u8>>, responder: tauri::UriSchemeResponder) {
-    use tauri::http::{HeaderValue, Response, StatusCode, header};
+fn serve_artwork(request: tauri::http::Request<Vec<u8>>, responder: tauri::UriSchemeResponder, page_origin: HeaderValue) {
+    use tauri::http::{Response, StatusCode, header};
     let name = request.uri().path().strip_prefix('/').unwrap_or_default().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
         let mut response = Response::new(Vec::new());
+        response.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, page_origin);
         match dashboard::artwork::bytes(&name) {
             Some(png) => {
                 *response.body_mut() = png.to_vec();
@@ -235,6 +237,13 @@ fn main() {
     }
     let page_origin = context.config().build.dev_url.as_ref().filter(|_| tauri::is_dev())
         .map_or_else(|| "http://tauri.localhost".to_owned(), |url| url.origin().ascii_serialization());
+    let artwork_origin = match HeaderValue::from_str(&page_origin) {
+        Ok(origin) => origin,
+        Err(error) => {
+            eprintln!("The dashboard origin {page_origin} is not a header value: {error}");
+            std::process::exit(2);
+        }
+    };
     let app = tauri::Builder::default()
         .register_asynchronous_uri_scheme_protocol("push", move |context, request, responder| {
             use tauri::http::{StatusCode, header};
@@ -246,8 +255,8 @@ fn main() {
             }
             context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder);
         })
-        .register_asynchronous_uri_scheme_protocol("artwork", |_, request, responder| {
-            serve_artwork(request, responder)
+        .register_asynchronous_uri_scheme_protocol("artwork", move |_, request, responder| {
+            serve_artwork(request, responder, artwork_origin.clone())
         })
         .manage(video::VideoState::default())
         .setup(|app| {

@@ -2689,6 +2689,7 @@ dependencies = [
  "engine-resources",
  "engine-stability",
  "game-model",
+ "indexmap 2.14.2",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-division-names",
@@ -2705,7 +2706,6 @@ dependencies = [
  "installed-content-states",
  "installed-content-wargoals",
  "installed-content-weather",
- "indexmap 2.14.2",
  "job-priority",
  "log",
  "map-snow",
@@ -2765,6 +2765,7 @@ dependencies = [
  "engine-production",
  "engine-projects",
  "engine-research",
+ "indexmap 2.14.2",
  "installed-content-abilities",
  "installed-content-core",
  "installed-content-country-names",
@@ -2777,7 +2778,6 @@ dependencies = [
  "installed-content-regions",
  "installed-content-settings",
  "installed-content-states",
- "indexmap 2.14.2",
  "job-priority",
  "log",
  "num-traits",
@@ -2908,10 +2908,10 @@ dependencies = [
  "engine-intelligence",
  "engine-native",
  "game-model",
+ "indexmap 2.14.2",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-localisation",
- "indexmap 2.14.2",
  "log",
  "num-traits",
  "once_cell",
@@ -3022,6 +3022,7 @@ dependencies = [
  "engine-projects",
  "engine-research",
  "game-model",
+ "indexmap 2.14.2",
  "installed-content-abilities",
  "installed-content-core",
  "installed-content-country-names",
@@ -3041,7 +3042,6 @@ dependencies = [
  "installed-content-state-categories",
  "installed-content-states",
  "installed-content-wargoals",
- "indexmap 2.14.2",
  "job-priority",
  "log",
  "num-traits",
@@ -4182,475 +4182,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "installed-content"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-abilities",
- "installed-content-core",
- "installed-content-country-names",
- "installed-content-division-names",
- "installed-content-equipment-graphics",
- "installed-content-events",
- "installed-content-focus",
- "installed-content-gfx",
- "installed-content-localisation",
- "installed-content-naval-combat-defines",
- "installed-content-naval-path",
- "installed-content-province-area",
- "installed-content-raids",
- "installed-content-regions",
- "installed-content-scripted-localisation",
- "installed-content-settings",
- "installed-content-state-categories",
- "installed-content-states",
- "installed-content-unit-path",
- "installed-content-wargoals",
- "installed-content-weather",
- "num-traits",
- "replay-frame",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-abilities"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-abilities",
- "installed-content-core",
- "num-traits",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-core"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "engine-heap",
- "installed-content-core",
- "installed-content-image",
- "job-priority",
- "miniz_oxide 0.8.9",
- "mlua",
- "num-traits",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "sha2",
- "smallvec",
- "test-unify",
- "windows-sys 0.61.2",
- "zstd",
-]
-
-[[package]]
-name = "installed-content-country-names"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "installed-content-core",
- "installed-content-country-names",
- "installed-content-localisation",
- "num-traits",
- "replay-data",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-division-names"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-core",
- "installed-content-division-names",
- "num-traits",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-equipment-graphics"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-core",
- "installed-content-equipment-graphics",
- "installed-content-states",
- "num-traits",
- "replay-data",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-events"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-core",
- "installed-content-events",
- "num-traits",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-focus"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-core",
- "installed-content-focus",
- "job-priority",
- "num-traits",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-gfx"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-core",
- "installed-content-gfx",
- "num-traits",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-image"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "image",
- "installed-content-image",
- "num-traits",
- "png 0.18.1",
- "sha2",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-localisation"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "blake3",
- "bytemuck",
- "either",
- "engine-allocation",
- "installed-content-core",
- "installed-content-localisation",
- "num-traits",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-naval-combat-defines"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "installed-content-core",
- "installed-content-naval-combat-defines",
- "num-traits",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-naval-path"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "installed-content-core",
- "installed-content-naval-path",
- "num-traits",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-province-area"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-core",
- "installed-content-province-area",
- "num-traits",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-raids"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-core",
- "installed-content-country-names",
- "installed-content-division-names",
- "installed-content-localisation",
- "installed-content-raids",
- "num-traits",
- "replay-data",
- "replay-frame",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-regions"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "installed-content-core",
- "installed-content-regions",
- "num-traits",
- "replay-identity",
- "smallvec",
- "test-unify",
- "weather-period",
-]
-
-[[package]]
-name = "installed-content-save"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-core",
- "installed-content-states",
- "num-traits",
- "replay-data",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-scripted-localisation"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-core",
- "installed-content-scripted-localisation",
- "num-traits",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-settings"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-core",
- "installed-content-settings",
- "num-traits",
- "replay-identity",
- "serde",
- "serde_json",
- "smallvec",
- "test-unify",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "installed-content-sound"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-core",
- "log",
- "num-traits",
- "replay-identity",
- "smallvec",
- "symphonia",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-state-categories"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-core",
- "installed-content-state-categories",
- "num-traits",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-states"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-core",
- "installed-content-states",
- "num-traits",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-unit-path"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "installed-content-core",
- "installed-content-unit-path",
- "num-traits",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-wargoals"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-core",
- "installed-content-wargoals",
- "num-traits",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
-name = "installed-content-weather"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
- "either",
- "engine-allocation",
- "engine-executable",
- "installed-content-core",
- "installed-content-regions",
- "installed-content-weather",
- "num-traits",
- "replay-data",
- "replay-identity",
- "smallvec",
- "test-unify",
-]
-
-[[package]]
 name = "gdk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5466,6 +4997,475 @@ dependencies = [
 ]
 
 [[package]]
+name = "installed-content"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-abilities",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-division-names",
+ "installed-content-equipment-graphics",
+ "installed-content-events",
+ "installed-content-focus",
+ "installed-content-gfx",
+ "installed-content-localisation",
+ "installed-content-naval-combat-defines",
+ "installed-content-naval-path",
+ "installed-content-province-area",
+ "installed-content-raids",
+ "installed-content-regions",
+ "installed-content-scripted-localisation",
+ "installed-content-settings",
+ "installed-content-state-categories",
+ "installed-content-states",
+ "installed-content-unit-path",
+ "installed-content-wargoals",
+ "installed-content-weather",
+ "num-traits",
+ "replay-frame",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-abilities"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-abilities",
+ "installed-content-core",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-core"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "engine-heap",
+ "installed-content-core",
+ "installed-content-image",
+ "job-priority",
+ "miniz_oxide 0.8.9",
+ "mlua",
+ "num-traits",
+ "replay-identity",
+ "replay-spool",
+ "serde",
+ "serde_json",
+ "sha2",
+ "smallvec",
+ "test-unify",
+ "windows-sys 0.61.2",
+ "zstd",
+]
+
+[[package]]
+name = "installed-content-country-names"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "num-traits",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
+ "replay-spool",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-division-names"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-division-names",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-equipment-graphics"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-equipment-graphics",
+ "installed-content-states",
+ "num-traits",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
+ "replay-spool",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-events"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-events",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-focus"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-focus",
+ "job-priority",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-gfx"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-gfx",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-image"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "image",
+ "installed-content-image",
+ "num-traits",
+ "png 0.18.1",
+ "sha2",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-localisation"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "blake3",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "installed-content-core",
+ "installed-content-localisation",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-naval-combat-defines"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "installed-content-core",
+ "installed-content-naval-combat-defines",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-naval-path"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "installed-content-core",
+ "installed-content-naval-path",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-province-area"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-province-area",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-raids"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-division-names",
+ "installed-content-localisation",
+ "installed-content-raids",
+ "num-traits",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-regions"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "installed-content-core",
+ "installed-content-regions",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+ "weather-period",
+]
+
+[[package]]
+name = "installed-content-save"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-states",
+ "num-traits",
+ "replay-data",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-scripted-localisation"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-scripted-localisation",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-settings"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-settings",
+ "num-traits",
+ "replay-identity",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "test-unify",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "installed-content-sound"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-core",
+ "log",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "symphonia",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-state-categories"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-state-categories",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-states"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-states",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-unit-path"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "installed-content-core",
+ "installed-content-unit-path",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-wargoals"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-wargoals",
+ "num-traits",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
+name = "installed-content-weather"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "either",
+ "engine-allocation",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-regions",
+ "installed-content-weather",
+ "num-traits",
+ "replay-data",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5935,6 +5935,7 @@ dependencies = [
  "dpi",
  "engine-heap",
  "engine-native",
+ "indexmap 2.14.2",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-equipment-graphics",
@@ -5944,7 +5945,6 @@ dependencies = [
  "installed-content-regions",
  "installed-content-sound",
  "installed-content-states",
- "indexmap 2.14.2",
  "map-content",
  "once_cell",
  "product-codec",
@@ -5986,6 +5986,7 @@ dependencies = [
  "dpi",
  "engine-executable",
  "engine-native",
+ "indexmap 2.14.2",
  "installed-content-core",
  "installed-content-equipment-graphics",
  "installed-content-image",
@@ -5995,7 +5996,6 @@ dependencies = [
  "installed-content-sound",
  "installed-content-states",
  "installed-content-weather",
- "indexmap 2.14.2",
  "map-content",
  "map-display-data",
  "map-snow",
@@ -10056,8 +10056,8 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-heap",
- "installed-content-core",
  "indexmap 2.14.2",
+ "installed-content-core",
  "job-priority",
  "log",
  "naga",
@@ -11486,6 +11486,7 @@ dependencies = [
  "engine-heap",
  "engine-native",
  "foldhash 0.2.0",
+ "indexmap 2.14.2",
  "installed-content-abilities",
  "installed-content-core",
  "installed-content-country-names",
@@ -11504,7 +11505,6 @@ dependencies = [
  "installed-content-state-categories",
  "installed-content-states",
  "installed-content-weather",
- "indexmap 2.14.2",
  "job-priority",
  "map-content",
  "map-display-data",
@@ -11579,6 +11579,7 @@ dependencies = [
  "engine-heap",
  "engine-native",
  "game-model",
+ "indexmap 2.14.2",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-division-names",
@@ -11589,7 +11590,6 @@ dependencies = [
  "installed-content-naval-combat-defines",
  "installed-content-regions",
  "installed-content-weather",
- "indexmap 2.14.2",
  "job-priority",
  "map-content",
  "once_cell",
@@ -11629,6 +11629,7 @@ dependencies = [
  "engine-occupation",
  "engine-railways",
  "game-model",
+ "indexmap 2.14.2",
  "installed-content-abilities",
  "installed-content-core",
  "installed-content-country-names",
@@ -11639,7 +11640,6 @@ dependencies = [
  "installed-content-states",
  "installed-content-unit-path",
  "installed-content-weather",
- "indexmap 2.14.2",
  "job-priority",
  "num-traits",
  "once_cell",
@@ -11674,6 +11674,7 @@ dependencies = [
  "engine-heap",
  "engine-native",
  "game-model",
+ "indexmap 2.14.2",
  "installed-content-abilities",
  "installed-content-core",
  "installed-content-country-names",
@@ -11685,7 +11686,6 @@ dependencies = [
  "installed-content-regions",
  "installed-content-settings",
  "installed-content-states",
- "indexmap 2.14.2",
  "job-priority",
  "map-content",
  "once_cell",
@@ -11721,6 +11721,7 @@ dependencies = [
  "engine-executable",
  "engine-heap",
  "engine-native",
+ "indexmap 2.14.2",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-gfx",
@@ -11733,7 +11734,6 @@ dependencies = [
  "installed-content-settings",
  "installed-content-states",
  "installed-content-unit-path",
- "indexmap 2.14.2",
  "job-priority",
  "map-display-data",
  "map-snow",
@@ -11776,6 +11776,7 @@ dependencies = [
  "engine-heap",
  "engine-native",
  "foldhash 0.2.0",
+ "indexmap 2.14.2",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-gfx",
@@ -11789,7 +11790,6 @@ dependencies = [
  "installed-content-state-categories",
  "installed-content-states",
  "installed-content-weather",
- "indexmap 2.14.2",
  "job-priority",
  "map-content",
  "map-display-data",
@@ -11839,6 +11839,7 @@ dependencies = [
  "engine-native",
  "engine-research",
  "game-model",
+ "indexmap 2.14.2",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-equipment-graphics",
@@ -11848,7 +11849,6 @@ dependencies = [
  "installed-content-regions",
  "installed-content-states",
  "installed-content-unit-path",
- "indexmap 2.14.2",
  "job-priority",
  "map-content",
  "once_cell",
@@ -11887,6 +11887,7 @@ dependencies = [
  "engine-native",
  "engine-research",
  "game-model",
+ "indexmap 2.14.2",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-equipment-graphics",
@@ -11898,7 +11899,6 @@ dependencies = [
  "installed-content-state-categories",
  "installed-content-states",
  "installed-content-weather",
- "indexmap 2.14.2",
  "job-priority",
  "map-display-data",
  "map-snow",

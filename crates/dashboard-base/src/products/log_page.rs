@@ -13,7 +13,7 @@ fn declared(name: &str) -> io::Result<&'static dashboard_declare::Log> {
     dashboard_declare::log(name).ok_or_else(|| invalid(format!("No declared log {name}")))
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LogPageParams {
@@ -42,7 +42,7 @@ pub enum LogCell {
     NotRecorded,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LogPageRow {
@@ -63,7 +63,7 @@ pub struct LogPageRow {
     pub cells: Vec<LogCell>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LogPageReply {

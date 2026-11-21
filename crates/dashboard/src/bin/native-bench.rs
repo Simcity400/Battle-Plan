@@ -17,6 +17,21 @@ const SPEED: f64 = 1440.0;
 const QUANTUM: i32 = 24;
 const LEAD: i32 = 720;
 
+fn widen<'a>(declared: &mut std::collections::BTreeMap<usize, playhead::Declared>, lanes: impl IntoIterator<Item = &'a playhead::Declared>) -> bool {
+    let mut widened = false;
+    for lane in lanes {
+        let held = declared.entry(lane.table).or_insert_with(|| { widened = true; lane.clone() });
+        let before = (held.columns.len(), held.keyed, held.passing);
+        held.columns.extend(&lane.columns);
+        held.columns.sort_unstable();
+        held.columns.dedup();
+        held.keyed |= lane.keyed;
+        held.passing |= lane.passing;
+        widened |= before != (held.columns.len(), held.keyed, held.passing);
+    }
+    widened
+}
+
 #[cfg(windows)]
 fn cpu() -> u64 {
     use windows_sys::Win32::{Foundation::FILETIME, System::Threading::{GetCurrentProcess, GetProcessTimes}};
@@ -156,14 +171,7 @@ fn main() -> io::Result<()> {
     let mut products = source.in_scope(|| widgets::page(&source, &load, &identity, tag))?;
     let names: Vec<_> = products.iter().map(|w| w.name).collect();
     let mut declared = std::collections::BTreeMap::<usize, playhead::Declared>::new();
-    for lane in products.iter().flat_map(|w| &w.declared) {
-        let d = declared.entry(lane.table).or_insert_with(|| lane.clone());
-        d.columns.extend(&lane.columns);
-        d.columns.sort_unstable();
-        d.columns.dedup();
-        d.keyed |= lane.keyed;
-        d.passing |= lane.passing;
-    }
+    widen(&mut declared, products.iter().flat_map(|w| &w.declared));
     let timeline = Timeline::new(&*pages, vec![Piece { run: 0, first, last }])?;
     eprintln!("{countries} countries; {tag}, branch {}, {first}..{last}, measuring {} products", branch.id, products.len());
     let origin = Instant::now();
@@ -183,7 +191,8 @@ fn main() -> io::Result<()> {
     });
     let ph = Playhead::new(pages, timeline, Settings { step_threads: 2, rate: if hourly { SPEED } else { 60.0 }, ..Settings::default() }, Some(hook))?;
     ph.lead(lead::LEAD);
-    let mut seat = ph.consumer(ph.declare(declared.into_values().collect(), None)?);
+    let reader = ph.declare(declared.values().cloned().collect(), None)?;
+    let mut seat = ph.consumer(reader);
     ph.seek(first);
     let mut start = None;
     let mut trace = Vec::new();
@@ -221,7 +230,9 @@ fn main() -> io::Result<()> {
                 let clock = if capacity { head.min(hour) } else { start.map_or(first, |s: Instant| first + ((ms(ready) - ms(s)).max(0.0) * SPEED / 1000.0) as i32) };
                 let mut rows = Vec::new();
                 let mut packets = Vec::new();
-                for (i, (wall_ns, cycles, cpu_ns, Packet { bytes, through: confirmed, data, refused, rows: read, cold_rows, mismatch })) in values.into_iter().enumerate() {
+                let mut widened = false;
+                for (i, (wall_ns, cycles, cpu_ns, Packet { bytes, through: confirmed, data, refused, rows: read, cold_rows, mismatch, lanes })) in values.into_iter().enumerate() {
+                    widened |= widen(&mut declared, &lanes);
                     if let Some(why) = &mismatch { mismatches += 1; eprintln!("{} at {hour}: {why}", names[i]); }
                     through[i] = confirmed;
                     if data {
@@ -250,6 +261,7 @@ fn main() -> io::Result<()> {
                     rows.push(json!([wall_ns, cpu_ns, bytes.len(), data, refused, confirmed, bodies[i], cycles, read, cold_rows, mismatch]));
                     packets.push(bytes);
                 }
+                if widened { ph.redeclare(reader, declared.values().cloned().collect())?; }
                 let merges = window.offer(hour, packets, ring.bytes)?;
                 finished = hour;
                 if audit && trace.len() % 30 == 0 { eprintln!("step {} at {hour}, {:.1}s elapsed", trace.len(), ms(ready) / 1000.0); }

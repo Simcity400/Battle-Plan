@@ -12,7 +12,7 @@ use replay_columnar::{envelope::UNIT_ORDINALS, manifest::Status, summary::Source
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     io,
     sync::{Arc, Mutex, PoisonError},
 };
@@ -583,6 +583,10 @@ impl<'q, 'a> Line<'q, 'a> {
         let holders = self.by_key();
         let tag_of = |key: u128| holders.get(&key)?.iter().find(|run| run.0 <= hour && hour <= run.1).map(|run| run.2);
         let mut values: Vec<(i64, &str)> = view.rows().filter_map(|slot| Some((self.source.value(&view, slot)?, tag_of(view.key(slot)?)?))).collect();
+        if self.series.absent_none {
+            let held: HashSet<u128> = view.rows().filter_map(|slot| view.key(slot)).collect();
+            values.extend(holders.iter().filter(|(key, _)| !held.contains(key)).filter_map(|(&key, _)| Some((0, tag_of(key)?))));
+        }
         let order = |a: &(i64, &str), b: &(i64, &str)| {
             let (a0, b0) = if least { (b.0, a.0) } else { (a.0, b.0) };
             b0.cmp(&a0).then_with(|| a.1.cmp(b.1))

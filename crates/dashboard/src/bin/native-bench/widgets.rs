@@ -12,6 +12,7 @@ pub struct Packet {
     pub rows: u64,
     pub cold_rows: Option<u64>,
     pub mismatch: Option<String>,
+    pub lanes: Vec<Declared>,
 }
 
 pub struct Widget {
@@ -32,7 +33,7 @@ impl Widget {
                 let token = AtomicBool::new(false);
                 let run = || read(step.last(), step.reset(), &token, Some(ProductStep { step, lanes }));
                 let (reading, extra) = if audit.is_some() { at_hour::counted(run) } else { (run(), 0) };
-                let (answer, rows, body) = (reading.value, reading.rows, reading.encoded);
+                let (answer, rows, body, read_lanes) = (reading.value, reading.rows, reading.encoded, reading.lanes);
                 let record = delivery.packet((0, 1, step.epoch() as u32), id, step.last(), step.reset(), &answer, body);
                 let mut cold_rows = None;
                 let mut mismatch = None;
@@ -46,7 +47,7 @@ impl Widget {
                         });
                     }
                 }
-                Packet { bytes: record.bytes, through: step.last(), data: record.changed, refused: record.refused, rows: rows + extra, cold_rows, mismatch }
+                Packet { bytes: record.bytes, through: step.last(), data: record.changed, refused: record.refused, rows: rows + extra, cold_rows, mismatch, lanes: read_lanes }
             }
             Reader::Ranking { hook, result, query, previous } => {
                 hook(step, lanes);
@@ -63,7 +64,7 @@ impl Widget {
                     if decoded.hour != step.last() || blake3::hash(previous) != blake3::hash(&expected) { mismatch = Some("ranking body or confirmation differs".into()); }
                     lane.cells().rows().count() as u64
                 });
-                Packet { through: decoded.hour, data: msg.answers != 0, refused, bytes: msg.bytes, rows, cold_rows, mismatch }
+                Packet { through: decoded.hour, data: msg.answers != 0, refused, bytes: msg.bytes, rows, cold_rows, mismatch, lanes: Vec::new() }
             }
         }
     }
@@ -91,7 +92,7 @@ fn panel(name: &'static str, panel: Result<Box<dyn Panel>, String>) -> io::Resul
     let panel = panel.map_err(io::Error::other)?;
     let exact = panel.exact().expect("complete at-hour reader");
     let (read, cold) = (exact.advance.clone(), exact.cold.clone());
-    Ok(Widget { name, declared: exact.declared.clone(), reader: Reader::Panel { read, cold, delivery: Delivery::default() } })
+    Ok(Widget { name, declared: Vec::new(), reader: Reader::Panel { read, cold, delivery: Delivery::default() } })
 }
 
 fn rank(identity: &Identity, name: &'static str, product: &str, mut params: Value) -> io::Result<Widget> {
@@ -113,9 +114,10 @@ pub fn page(source: &Source, load: &LoadContext, identity: &Identity, tag: &str)
         panel(name, at_hour::dated_panel_of(source, load, &params).expect("registered dated product"))
     };
     let branch = identity.timeline.id.to_string();
-    let owner = json!({ "branchId": branch, "tag": tag });
+    let owner = json!({ "branchId": branch, "country": tag });
     let world = json!({ "branchId": branch });
     Ok(vec![
+        product("occupied-states", world.clone())?,
         product("special-project-details", owner.clone())?,
         product("special-projects", owner.clone())?,
         product("doctrine-mastery", owner.clone())?,

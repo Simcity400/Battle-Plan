@@ -75,7 +75,6 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
   });
   refresh();
   return { refresh, close() {
-    perfLog?.releaseReader(id);
     closed = true; cancelGeometry(measure); release(); off(); stopAnchor(); stopClockAnchor(); stopClock(); resize.disconnect();
     content.removeEventListener('pointermove', point); content.removeEventListener('pointerleave', leave); content.removeEventListener('toggle', refresh, true);
     drawPost({ type: 'detach', id }); canvas.remove(); content.removeAttribute('data-ink-content');

@@ -35,7 +35,7 @@ const TABLES: [TableId; 9] = [
 pub struct DivisionCareers;
 pub struct DivisionRecord;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DivisionCareersParams {
@@ -44,7 +44,7 @@ pub struct DivisionCareersParams {
     pub countries: Option<Vec<Country>>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CareerMedal {
@@ -52,7 +52,7 @@ pub struct CareerMedal {
     pub name: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CareerTemplate {
@@ -61,7 +61,7 @@ pub struct CareerTemplate {
     pub icon: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CareerAward {
@@ -70,7 +70,7 @@ pub struct CareerAward {
     pub count: u32,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CareerFacts {
@@ -87,7 +87,7 @@ pub struct CareerFacts {
     pub kills: Option<i32>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CareerRow {
@@ -99,7 +99,7 @@ pub struct CareerRow {
     pub facts: CareerFacts,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionCareersReply {
@@ -113,7 +113,7 @@ pub struct DivisionCareersReply {
 
 dashboard_base::reply_warnings!(DivisionCareersReply);
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DivisionRecordParams {
@@ -122,7 +122,7 @@ pub struct DivisionRecordParams {
     pub division: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RecordEntry {
@@ -137,7 +137,7 @@ pub struct RecordEntry {
     pub medal: Option<usize>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionRecordReply {

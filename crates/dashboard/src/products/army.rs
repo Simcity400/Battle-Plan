@@ -52,7 +52,7 @@ pub enum ArmyAttribution {
     Host,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ArmySizeParams {
@@ -67,7 +67,7 @@ pub struct ArmySizeParams {
     pub window: Option<usize>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmyType {
@@ -89,7 +89,7 @@ impl Serialize for ArmyRun {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmyMixRun {
@@ -102,7 +102,7 @@ pub struct ArmyMixRun {
     pub raw_values: Option<Vec<Option<String>>>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmyIdentityRun {
@@ -120,7 +120,7 @@ pub struct ArmySpan {
     pub last_hour: i32,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmySeries {
@@ -137,7 +137,7 @@ pub struct ArmySeries {
     pub mix: Option<Vec<ArmyMixRun>>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmySizeReply {
@@ -723,7 +723,7 @@ struct SeriesParams {
     last_hour: Option<f64>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmyChartLine {
@@ -734,7 +734,7 @@ pub struct ArmyChartLine {
     pub missing: Vec<dashboard_query::series::MissingSpan>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmyChartReply {

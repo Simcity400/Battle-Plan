@@ -9,6 +9,7 @@ import { validateResearchSlots } from '../../widgets/research/researchData.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { detailTexts, detailsStructure, effectsStructure, effectTexts, validateProjectEffects, validateProjectDetails } from '../../widgets/special-projects/projectDetailsData.ts';
 import { projectStructure, currentKey, currentProjects, runningValues, validateSpecialProjectsReply } from '../../widgets/special-projects/specialProjectsData.ts';
+import { occupiedStructure, validateOccupiedStates } from '../../widgets/occupied-states/occupiedStatesData.ts';
 import { masteryStructure, trackKey, trackNumbers, trackTexts, trackRatio, validateDoctrineMastery } from '../../widgets/doctrine-mastery/doctrineMasteryData.ts';
 
 function recordView<T extends object>(validate: (raw: unknown) => T, shapeOf: (record: T) => string,
@@ -38,8 +39,12 @@ function recordView<T extends object>(validate: (raw: unknown) => T, shapeOf: (r
   };
 }
 
+const tableStructures: Readonly<Record<string, (raw: unknown) => string>> = {
+  'occupied-states': raw => occupiedStructure(validateOccupiedStates(raw)),
+};
+
 export function panelStructure(product: string, raw: unknown, hour: number): string {
-  return panelViews[product]?.structure?.(raw, hour) ?? 'present';
+  return panelViews[product]?.structure?.(raw, hour) ?? tableStructures[product]?.(raw) ?? 'present';
 }
 
 export function panelValues(product: string, raw: unknown, live: LiveValues<number> | null, hour: number, structure: string) {

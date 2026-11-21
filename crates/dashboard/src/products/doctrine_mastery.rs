@@ -24,7 +24,7 @@ mod tests;
 
 pub struct DoctrineMastery;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DoctrineMasteryParams {
@@ -78,7 +78,7 @@ pub struct MasteryFolder {
     pub tracks: Vec<MasteryTrack>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineMasteryReply {
@@ -306,7 +306,6 @@ impl AtHour for DoctrineMastery {
         Some(&params.country)
     }
 
-    fn uses_sample(_table: TableId) -> bool { false }
 
     const CLOCK_DEPENDENT: bool = false;
 

@@ -17,7 +17,7 @@ use std::{
 use ts_rs::TS;
 
 pub struct FocusArtwork;
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FocusArtworkParams {
@@ -37,14 +37,14 @@ pub struct FocusArtworkParams {
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub icons_only: Option<bool>,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DatedFocusArtwork {
     pub artwork: Artwork,
     pub reason: Option<String>,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusArtworkReply {

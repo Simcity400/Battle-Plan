@@ -33,7 +33,7 @@ fn branch(text: &str) -> io::Result<u64> {
 const NOT_RECORDED: &str = "Not in this recording";
 const ROSTER_UNREAD: &str = "Combat census not read";
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LandBattlesParams {
@@ -96,7 +96,7 @@ pub struct LandBattleLossRead {
     pub sides: LandLossTotals,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct LandBattleResultRead {
     pub hour: i32,
@@ -107,7 +107,7 @@ pub struct LandBattleResultRead {
     pub countries_unknown: [bool; 2],
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattleHistory {
@@ -130,7 +130,7 @@ pub struct LandBattleHistory {
     pub settled_hour: Option<i32>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattlesManifestReply {
@@ -141,7 +141,7 @@ pub struct LandBattlesManifestReply {
     pub content_warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattlesReply {
@@ -157,7 +157,7 @@ pub struct LandBattlesReply {
     pub content_warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Default, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct BattleCountryFilter {
@@ -184,7 +184,7 @@ impl BattleCountryFilter {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LandBattlesRankingParams {
@@ -196,7 +196,7 @@ pub struct LandBattlesRankingParams {
     pub countries: BattleCountryFilter,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattlesRankingReply {
@@ -209,7 +209,7 @@ pub struct LandBattlesRankingReply {
     pub content_warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LandBattleCourseParams {
@@ -250,7 +250,7 @@ pub struct LandBattleCourseRead {
     pub sides: LandLossSides,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattleCourse {
@@ -265,7 +265,7 @@ pub struct LandBattleCourse {
     pub result: Option<LandBattleResultRead>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattleCourseReply {

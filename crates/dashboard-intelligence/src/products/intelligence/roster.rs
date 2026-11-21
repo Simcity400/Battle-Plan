@@ -228,7 +228,7 @@ fn agency_feature(frame: &DecodedFrame) -> Option<bool> {
 
 pub struct OperativesRoster;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OperativesRosterParams {
@@ -237,7 +237,7 @@ pub struct OperativesRosterParams {
     pub countries: Vec<dashboard_base::products::Country>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OperativesRosterReply {
@@ -413,7 +413,7 @@ impl AtHour for OperativesRoster {
 
 pub struct OperativesDeparted;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OperativesDepartedParams {
@@ -422,7 +422,7 @@ pub struct OperativesDepartedParams {
     pub hour: i32,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DepartedOperative {
@@ -436,7 +436,7 @@ pub struct DepartedOperative {
     pub departed_reason: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OperativesDepartedReply {
@@ -593,7 +593,7 @@ fn departed_operative(row: &OperativeMembershipRow, roster: &str, last: i32, con
 
 pub struct OperativeTenures;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Tenure {
@@ -605,7 +605,7 @@ pub struct Tenure {
     pub last_hour: i32,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OperativeTenuresReply {

@@ -142,6 +142,7 @@ impl SharedView {
         if undeclared::is(&self.0) {
             undeclared::read(&self.0);
         }
+        view_reads::note_sample(self);
         self.1
     }
 
@@ -408,6 +409,7 @@ pub mod view_reads {
     thread_local! {
         pub(super) static RECORDING: Cell<bool> = const { Cell::new(false) };
         static READS: RefCell<Vec<ViewIdentity>> = const { RefCell::new(Vec::new()) };
+        static SAMPLES: RefCell<Option<Vec<ViewIdentity>>> = const { RefCell::new(None) };
         static WALKED: RefCell<Vec<TableId>> = const { RefCell::new(Vec::new()) };
     }
 
@@ -418,6 +420,38 @@ pub mod view_reads {
                 reads.push(view.identity());
             }
         });
+    }
+
+    pub(super) fn note_sample(view: &SharedView) {
+        SAMPLES.with(|samples| {
+            if let Some(samples) = samples.borrow_mut().as_mut()
+                && !samples.iter().any(|read| read.is(view)) {
+                samples.push(view.identity());
+            }
+        });
+    }
+
+    pub fn samples<T>(compute: impl FnOnce() -> T) -> (T, Vec<ViewIdentity>) {
+        let outer = SAMPLES.with(|samples| samples.borrow_mut().replace(Vec::new()));
+        struct Restore(Option<Option<Vec<ViewIdentity>>>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if let Some(outer) = self.0.take() {
+                    SAMPLES.with(|samples| *samples.borrow_mut() = outer);
+                }
+            }
+        }
+        let mut restore = Restore(Some(outer));
+        let value = compute();
+        let inner = SAMPLES.with(|samples| samples.borrow_mut().take()).unwrap_or_default();
+        let mut outer = restore.0.take().flatten();
+        if let Some(outer) = outer.as_mut() {
+            for view in &inner {
+                if !outer.iter().any(|read| read.same(view)) { outer.push(view.clone()); }
+            }
+        }
+        SAMPLES.with(|samples| *samples.borrow_mut() = outer);
+        (value, inner)
     }
 
     pub(crate) fn note_walked(table: TableId) {

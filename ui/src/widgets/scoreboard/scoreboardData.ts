@@ -1,16 +1,18 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { Sort } from '../../charts/table/logic';
-import { noValues } from '../../charts/live.ts';
+import { liveKey, valuesOf } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import type { TooltipContent } from '../../charts/tooltip';
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import { CELL, cellState, cellValue, rowName, rowReason } from '../../dashboard/follow/message.ts';
+import { CELL, cellState, cellValue, rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import type { OptionValue } from '../../dashboard/options';
 import { int, object } from '../../dashboard/validation.ts';
 import { DEFAULT_SORT } from './definition.ts';
+import { namedValues } from '../../draw/tables/sources.ts';
+import type { TableCellModel, TableReading } from '../../draw/tables/surface';
 import type { ScoreboardColumn, ScoreboardColumnKey, ScoreboardColumnsReply, ScoreboardParams, ScoreboardReply } from '../../generated/dashboard';
 
 const family = (value: unknown) => value === null || (object(value) && typeof value.kind === 'string' && typeof value.measure === 'string');
@@ -24,7 +26,7 @@ export function validateColumnsReply(value: unknown): ScoreboardColumnsReply {
       || typeof column.unit !== 'string' || !int(column.decimals) || column.decimals < 0 || column.decimals > 18
       || typeof column.available !== 'boolean' || !(column.reason === null || typeof column.reason === 'string')
       || !(column.note === undefined || typeof column.note === 'string') || !family(column.family) || !family(column.partial)
-      || column.available !== (column.family !== null)) throw new Error('Invalid Scoreboard column.');
+      || column.available !== (column.family !== null) || typeof column.noneAtZero !== 'boolean') throw new Error('Invalid Scoreboard column.');
     keys.add(column.key);
   }
   if (!Array.isArray(value.defaultColumns) || !value.defaultColumns.every(key => typeof key === 'string' && keys.has(key))
@@ -92,25 +94,30 @@ export function replyRows(reply: ScoreboardReply, asked: readonly ScoreboardColu
 
 export const followedRow = (tag: string, hour: number): BoardRow => ({ key: tag, tag, hour, cells: NO_CELLS });
 
-export function followedValues(answer: FollowedAnswer | undefined): LiveValues<bigint> {
-  if (!answer) return noValues('Not read yet');
-  if (answer.kind === 'notRecorded') return noValues(answer.reason);
-  const rows = new Map<string, number>();
-  for (let row = 0; row < answer.rows; row++) {
-    const tag = rowName(answer, row);
-    if (tag !== null && !rows.has(tag)) rows.set(tag, row);
+export const followedValues = (answer: FollowedAnswer | undefined): LiveValues<bigint> => namedValues(answer, cellValue);
+
+export const partialSource = (key: ScoreboardColumnKey) => `${key}:partial`;
+
+export function measureCell(column: ScoreboardColumn, tag: string): TableCellModel {
+  return { valueKey: liveKey(tag, column.key), format: { decimals: column.decimals, percent: column.unit === 'percent', zero: column.noneAtZero ? 'None' : undefined },
+    prefix: { key: liveKey(tag, partialSource(column.key)), text: '\u2020 ' }, ...(!column.family && { missing: column.reason ?? 'Unavailable' }) };
+}
+
+export function drawnCell(drawn: Pick<TableReading, 'values' | 'missing'>, tag: string, key: ScoreboardColumnKey): Cell {
+  const amount = drawn.values[liveKey(tag, key)], mark = drawn.values[liveKey(tag, partialSource(key))];
+  if (amount === undefined) return { amount: null, missing: drawn.missing[liveKey(tag, key)] ?? null, partial: false };
+  return { amount: BigInt(amount), missing: null, partial: mark !== undefined && isPartial(BigInt(mark)) };
+}
+
+export function replyValues(rows: readonly BoardRow[], columns: readonly ScoreboardColumn[]): LiveValues<bigint> {
+  const values = new Map<string, bigint>(), reasons = new Map<string, string>();
+  for (const row of rows) for (const column of columns) {
+    const cell = row.cells.get(column.key), key = liveKey(row.tag, column.key);
+    if (cell?.amount == null) { reasons.set(key, cell?.missing ?? column.reason ?? 'Not available at this time'); continue; }
+    values.set(key, cell.amount);
+    values.set(liveKey(row.tag, partialSource(column.key)), cell.partial ? 1n : 0n);
   }
-  return {
-    get: tag => {
-      const row = rows.get(tag);
-      return row !== undefined && cellState(answer, row * answer.columns) === CELL.value ? cellValue(answer, row * answer.columns) : undefined;
-    },
-    missing: tag => {
-      const row = rows.get(tag);
-      if (row === undefined) return 'Not in the answer';
-      return rowReason(answer, row) ?? (cellState(answer, row * answer.columns) === CELL.missing ? 'No value' : 'Not recorded at this hour');
-    },
-  };
+  return valuesOf(values, key => reasons.get(key) ?? 'Not in the reply');
 }
 
 export function rankedTags(answer: FollowedAnswer | undefined): string[] {
@@ -125,8 +132,9 @@ export function rankedTags(answer: FollowedAnswer | undefined): string[] {
 
 export const isPartial = (mark: bigint | undefined) => mark !== undefined && mark !== 0n;
 
-export function formatCell(column: Pick<ScoreboardColumn, 'unit' | 'decimals'>, amount: bigint | null, partial = false): string {
+export function formatCell(column: Pick<ScoreboardColumn, 'unit' | 'decimals'> & { noneAtZero?: boolean }, amount: bigint | null, partial = false): string {
   if (amount === null) return '—';
+  if (amount === 0n && column.noneAtZero) return `${partial ? '† ' : ''}None`;
   const percent = column.unit === 'percent';
   return `${partial ? '† ' : ''}${formatAmount(percent ? amount * 100n : amount, column.decimals, column.decimals)}${percent ? '%' : ''}`;
 }
@@ -139,13 +147,11 @@ export function scoreboardColumnNote(column: ScoreboardColumn): string | undefin
 export function scoreboardTooltip(cell: (key: ScoreboardColumnKey) => Cell, columns: readonly ScoreboardColumn[], name: string, hour: number): TooltipContent {
   return {
     title: name, subtitle: formatDateTime(hour),
-    rows: columns.flatMap(column => {
+    rows: columns.map(column => {
       const value = cell(column.key);
-      const note = !column.available ? 'Unavailable' : value.amount === null ? value.missing ?? 'Not available at this time' : undefined;
-      const description = scoreboardColumnNote(column);
-      return [{ label: column.label, value: formatCell(column, value.amount, value.partial) }, ...(note ? [{ label: note, tone: 'muted' as const }] : []),
-        ...(value.amount !== null && value.partial ? [{ label: '† Partial total; some losses or corrections may be missing.', tone: 'muted' as const }] : []),
-        ...(description && description !== note ? [{ label: description, tone: 'muted' as const }] : [])];
+      if (value.amount !== null) return { label: column.label, value: formatCell(column, value.amount, value.partial) };
+      return { label: column.label, value: !column.available ? column.reason ?? 'Unavailable' : value.missing ?? 'Not recorded', tone: 'muted' as const };
     }),
+    ...(columns.some(column => { const value = cell(column.key); return value.amount !== null && value.partial; }) && { note: '† Partial total' }),
   };
 }

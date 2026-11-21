@@ -47,7 +47,7 @@ const DRILL: [TableId; 8] = [
 
 pub struct DivisionEquipment;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DivisionEquipmentParams {
@@ -60,7 +60,7 @@ pub struct DivisionEquipmentParams {
     pub division: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentVariant {
@@ -69,7 +69,7 @@ pub struct EquipmentVariant {
     pub held_raw: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentType {
@@ -91,7 +91,7 @@ pub struct EquipmentType {
     pub variants: Vec<EquipmentVariant>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentTemplate {
@@ -113,7 +113,7 @@ pub struct EquipmentTemplate {
     pub unknown_divisions: Option<u32>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentDivision {
@@ -133,7 +133,7 @@ pub struct EquipmentDivision {
     pub converting_from: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionPoolType {
@@ -146,7 +146,7 @@ pub struct DivisionPoolType {
     pub variants: Vec<EquipmentVariant>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionPool {
@@ -163,7 +163,7 @@ pub struct DivisionPool {
     pub pool_known: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionEquipmentReply {

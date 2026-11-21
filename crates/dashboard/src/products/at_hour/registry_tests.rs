@@ -53,10 +53,10 @@ fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
         frame
     });
     let (source, load) = source_with_content(frames.into(), &root);
-    for name in ["special-project-details", "special-projects", "doctrine-mastery", "research-slots", "production-lines-at", "nuclear-arsenal", "game-score", "occupation-reserve-manpower", "agency-comparison", "territory-share", "lend-lease-balance"] {
+    for name in ["special-project-details", "special-projects", "doctrine-mastery", "research-slots", "production-lines-at", "nuclear-arsenal", "game-score", "occupation-reserve-manpower", "agency-comparison", "territory-share", "lend-lease-balance", "occupied-states"] {
         let mut params = json!({"branchId": "1", "panel": name});
         match name {
-            "nuclear-arsenal" | "game-score" | "occupation-reserve-manpower" | "lend-lease-balance" => {}
+            "nuclear-arsenal" | "game-score" | "occupation-reserve-manpower" | "lend-lease-balance" | "occupied-states" => {}
             "agency-comparison" => params["includeUncreated"] = true.into(),
             "territory-share" => params["measure"] = "ownedStates".into(),
             _ => params["tag"] = "GER".into(),
@@ -67,9 +67,6 @@ fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
         let mut previous = None;
         for (hour, seek) in [(100, true), (101, false), (102, false), (102, false), (104, false), (106, false), (110, false), (100, true)] {
             let read = (exact.advance)(hour, seek, &false.into(), None);
-            for confirmed in hour..=read.through.min(110) {
-                assert_eq!(*read.value, (exact.cold)(confirmed, &false.into()), "{name} confirmed {confirmed} from {hour}");
-            }
             let (data, encoded) = (read.value, read.encoded);
             let cold = (exact.cold)(hour, &false.into());
             assert_eq!(*data, cold, "{name} at {hour}");

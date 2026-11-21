@@ -14,7 +14,7 @@ pub use crate::identity;
 
 pub const MAX_PRODUCT_REPLY_BYTES: usize = 24 * 1024 * 1024;
 
-#[derive(Serialize)]
+#[derive(Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Envelope<'a, T: Serialize> {
     pub source_id: &'a str,
@@ -120,7 +120,7 @@ pub fn country_in_frame<'a>(
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CountryParams {
     pub branch_id: String,
@@ -140,7 +140,7 @@ impl CountryParams {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BranchParams {
     pub branch_id: String,

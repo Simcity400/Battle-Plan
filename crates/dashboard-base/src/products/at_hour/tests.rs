@@ -15,7 +15,7 @@ use serde_json::json;
 
 struct Power;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, PartialEq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PowerParams {
@@ -23,7 +23,7 @@ struct PowerParams {
     country: Country,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, PartialEq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 struct PowerReply {
@@ -240,14 +240,14 @@ fn a_refused_reply_is_the_same_named_refusal_on_both_paths() {
 
 struct Scoped;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, PartialEq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ScopedParams {
     branch_id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, PartialEq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 struct ScopedReply {
@@ -306,17 +306,302 @@ fn dated_read_in_a_gap_refuses_the_hour_between_two_recorded_stretches() {
     let replay = Replay::from_records(CAMPAIGN.into(), &segments).unwrap().into_timelines(&Default::default()).unwrap();
     let token = AtomicBool::new(false);
     let source = Source::from_replay(crate::SourceKey { source_id: "gapped".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &token).unwrap();
-    let panel = exact_panel::<Power>(&source, &load(), &json!({"panel": "test-power", "branchId":"1","tag":"GER"})).unwrap();
+    let panel = exact_panel::<Power>(&source, &load(), &json!({"panel": "test-power", "branchId":"1","country":"GER"})).unwrap();
     let exact = panel.exact().unwrap();
     assert!((exact.read)(FIRST + 5, &token).is_ok());
     assert_eq!((exact.read)(FIRST + 8, &token), Err("Power hour is not recorded".into()));
     assert!((exact.read)(FIRST + 10, &token).is_ok());
 }
 
+struct Planned;
+
+#[derive(Deserialize, Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PlannedParams {
+    branch_id: String,
+}
+
+#[derive(Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+struct PlannedReply {
+    tags: Vec<String>,
+    power: Option<Vec<Option<i64>>>,
+    hour: Option<i32>,
+    warnings: Vec<String>,
+}
+
+crate::reply_warnings!(PlannedReply);
+
+fn linked(plan: &[(Vec<Read>, i32)]) -> bool {
+    plan.get(1).is_some_and(|(reads, _)| !reads.is_empty())
+}
+
+impl AtHour for Planned {
+    const KEY: &'static str = "test-planned";
+    const TITLE: &'static str = "Planned";
+    const CONTENT_DEPENDENT: bool = false;
+    type Params = PlannedParams;
+    type Reply = PlannedReply;
+    type Context = ();
+
+    fn tables(_params: &Self::Params) -> Vec<TableId> {
+        vec![TableId::Countries, TableId::CountryLinks]
+    }
+
+    fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
+        match step {
+            0 => vec![Read::all(TableId::Countries)],
+            1 if held.complete::<tables::Countries>().is_ok_and(|rows| rows.iter().any(|row| row.tag == b"ITA")) => vec![Read::all(TableId::CountryLinks)],
+            _ => Vec::new(),
+        }
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+        (table == TableId::Countries && !linked(plan)).then(|| field_columns(table, &["canonical_slot", "tag"]))
+    }
+
+    fn clock_dependent(plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> bool {
+        linked(plan)
+    }
+
+    fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
+        Ok(())
+    }
+
+    fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        let countries = frame.complete::<tables::Countries>()?;
+        let linked = frame.complete::<tables::CountryLinks>().is_ok();
+        let power = column(TableId::Countries, "political_power_raw");
+        for row in countries {
+            at.live.value(&String::from_utf8_lossy(&row.tag), "power", Cell { table: TableId::Countries, column: power, key: row.id.into() }, 1.0);
+        }
+        Ok(PlannedReply {
+            tags: countries.iter().map(|row| String::from_utf8_lossy(&row.tag).into_owned()).collect(),
+            power: linked.then(|| countries.iter().map(|row| row.political_power_raw).collect()),
+            hour: linked.then_some(at.hour),
+            warnings: Vec::new(),
+        })
+    }
+}
+
+#[test]
+fn a_followed_reply_reads_each_table_under_the_projection_its_final_plan_asks() {
+    let (source, _) = recording();
+    let panel = exact_panel::<Planned>(&source, &load(), &json!({"branchId": "1"})).unwrap();
+    let reader = panel.exact().unwrap();
+    let token = false.into();
+    for hour in (FIRST..=LAST).chain([FIRST, ITA_LEAVES - 1, LAST]) {
+        let read = (reader.advance)(hour, hour == FIRST, &token, None);
+        assert_eq!(*read.value, (reader.cold)(hour, &token), "hour {hour}");
+        let value = read.value.as_ref().as_ref().unwrap();
+        if hour < ITA_LEAVES {
+            assert_eq!(value["hour"], hour, "a widened projection's power and hour, never the narrow one's defaults");
+        } else {
+            assert_eq!(value["power"], Value::Null);
+        }
+    }
+}
+
+struct Clocked;
+
+const CLOCKED_FROM: i32 = 105;
+
+#[derive(Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+struct ClockedReply {
+    tags: Vec<String>,
+    linked: bool,
+    hour: i32,
+    warnings: Vec<String>,
+}
+
+crate::reply_warnings!(ClockedReply);
+
+impl AtHour for Clocked {
+    const KEY: &'static str = "test-clocked";
+    const TITLE: &'static str = "Clocked";
+    const CONTENT_DEPENDENT: bool = false;
+    type Params = PlannedParams;
+    type Reply = ClockedReply;
+    type Context = ();
+
+    fn tables(_params: &Self::Params) -> Vec<TableId> {
+        vec![TableId::Countries, TableId::CountryLinks]
+    }
+
+    fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
+        match step {
+            0 => vec![Read::all(TableId::Countries)],
+            1 if held.hour >= CLOCKED_FROM => vec![Read::all(TableId::CountryLinks)],
+            _ => Vec::new(),
+        }
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+        (table == TableId::Countries).then(|| field_columns(table, &["canonical_slot", "tag"]))
+    }
+
+    fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
+        Ok(())
+    }
+
+    fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        Ok(ClockedReply {
+            tags: frame.complete::<tables::Countries>()?.iter().map(|row| String::from_utf8_lossy(&row.tag).into_owned()).collect(),
+            linked: frame.complete::<tables::CountryLinks>().is_ok(),
+            hour: at.hour,
+            warnings: Vec::new(),
+        })
+    }
+}
+
+#[test]
+fn a_reply_that_reads_the_hour_plans_its_stages_again_at_each_hour() {
+    let (source, _) = recording();
+    let panel = exact_panel::<Clocked>(&source, &load(), &json!({"branchId": "1"})).unwrap();
+    let reader = panel.exact().unwrap();
+    let token = false.into();
+    for hour in FIRST..ITA_LEAVES {
+        let read = (reader.advance)(hour, hour == FIRST, &token, None);
+        assert_eq!(*read.value, (reader.cold)(hour, &token), "hour {hour}: the links from hour {CLOCKED_FROM}, no table having changed");
+    }
+}
+
+struct Dropping;
+
+#[derive(Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+struct DroppingReply {
+    tags: Vec<String>,
+    coal: bool,
+    warnings: Vec<String>,
+}
+
+crate::reply_warnings!(DroppingReply);
+
+impl AtHour for Dropping {
+    const KEY: &'static str = "test-dropping";
+    const TITLE: &'static str = "Dropping";
+    const CONTENT_DEPENDENT: bool = false;
+    const CLOCK_DEPENDENT: bool = false;
+    type Params = PlannedParams;
+    type Reply = DroppingReply;
+    type Context = AtomicBool;
+
+    fn tables(_params: &Self::Params) -> Vec<TableId> {
+        vec![TableId::Countries, TableId::CountryResources]
+    }
+
+    fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
+        match step {
+            0 => vec![Read::all(TableId::Countries)],
+            1 if held.complete::<tables::Countries>().is_ok_and(|rows| rows.iter().all(|row| row.political_power_raw.is_none())) => vec![Read::all(TableId::CountryResources)],
+            _ => Vec::new(),
+        }
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, plan: &[(Vec<Read>, i32)], widened: &Self::Context) -> Option<Vec<usize>> {
+        let coal = linked(plan);
+        if coal { widened.store(true, std::sync::atomic::Ordering::Relaxed); }
+        match table {
+            TableId::Countries if !widened.load(std::sync::atomic::Ordering::Relaxed) => Some(field_columns(table, &["canonical_slot", "tag"])),
+            TableId::CountryResources if coal => Some(field_columns(table, &["special_total"])),
+            _ => None,
+        }
+    }
+
+    fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
+        Ok(AtomicBool::new(false))
+    }
+
+    fn reply(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        Ok(DroppingReply {
+            tags: frame.complete::<tables::Countries>()?.iter().map(|row| String::from_utf8_lossy(&row.tag).into_owned()).collect(),
+            coal: frame.complete::<tables::CountryResources>().is_ok(),
+            warnings: Vec::new(),
+        })
+    }
+}
+
+#[test]
+fn a_table_the_final_plan_drops_is_released_never_read_again_and_again() {
+    let (source, _) = recording();
+    let panel = exact_panel::<Dropping>(&source, &load(), &json!({"branchId": "1"})).unwrap();
+    let reader = panel.exact().unwrap();
+    let token = false.into();
+    for hour in FIRST..=FIRST + 2 {
+        let read = (reader.advance)(hour, hour == FIRST, &token, None);
+        assert_eq!(*read.value, (reader.cold)(hour, &token), "hour {hour}");
+        assert_eq!(read.value.as_ref().as_ref().unwrap()["coal"], false, "hour {hour}: coal left the final plan");
+    }
+}
+
+struct Steady;
+
+#[derive(Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+struct SteadyReply {
+    tags: Vec<String>,
+    warnings: Vec<String>,
+}
+
+crate::reply_warnings!(SteadyReply);
+
+impl AtHour for Steady {
+    const KEY: &'static str = "test-steady";
+    const TITLE: &'static str = "Steady";
+    const CONTENT_DEPENDENT: bool = false;
+    const CLOCK_DEPENDENT: bool = false;
+    type Params = PlannedParams;
+    type Reply = SteadyReply;
+    type Context = ();
+
+    fn tables(_params: &Self::Params) -> Vec<TableId> {
+        vec![TableId::Countries]
+    }
+
+    fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
+        Ok(())
+    }
+
+    fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        let countries = frame.complete::<tables::Countries>()?;
+        let power = column(TableId::Countries, "political_power_raw");
+        for row in countries {
+            at.live.value(&String::from_utf8_lossy(&row.tag), "power", Cell { table: TableId::Countries, column: power, key: row.id.into() }, 1.0);
+        }
+        Ok(SteadyReply { tags: countries.iter().map(|row| String::from_utf8_lossy(&row.tag).into_owned()).collect(), warnings: Vec::new() })
+    }
+}
+
+#[test]
+fn a_reply_made_again_the_same_keeps_the_data_it_made() {
+    let (source, _) = recording();
+    let panel = exact_panel::<Steady>(&source, &load(), &json!({"branchId": "1"})).unwrap();
+    let reader = panel.exact().unwrap();
+    let token = false.into();
+    let first = (reader.advance)(FIRST, true, &token, None);
+    assert_eq!(*first.value, (reader.cold)(FIRST, &token));
+    for hour in FIRST + 1..ITA_LEAVES {
+        let read = (reader.advance)(hour, false, &token, None);
+        assert_eq!(*read.value, (reader.cold)(hour, &token), "hour {hour}: the same tags, their power current");
+    }
+    let left = (reader.advance)(ITA_LEAVES, false, &token, None);
+    assert!(!Arc::ptr_eq(&left.value, &first.value));
+    assert_eq!(*left.value, (reader.cold)(ITA_LEAVES, &token), "another reply: its data made again, current");
+    let sought = (reader.advance)(FIRST + 3, true, &token, None);
+    assert_eq!(*sought.value, (reader.cold)(FIRST + 3, &token), "a seed is made whole");
+}
+
 #[test]
 fn incremental_reads_include_cells_outside_the_staged_joins() {
     let (source, _) = recording();
-    let params = json!({"branchId": "1", "tag": "GER"});
+    let params = json!({"branchId": "1", "country": "GER"});
     let panel = exact_panel::<Power>(&source, &load(), &params).unwrap();
     let other = exact_panel::<Power>(&source, &load(), &params).unwrap();
     let reader = panel.exact().unwrap();
@@ -328,5 +613,165 @@ fn incremental_reads_include_cells_outside_the_staged_joins() {
         let again = (other.exact().unwrap().advance)(hour, hour == FIRST, &token, None);
         assert!(Arc::ptr_eq(&again.value, &value));
         assert_eq!(again.rows, 0);
+    }
+}
+
+struct Stepped {
+    hour: i32,
+    value: Arc<PanelData>,
+    lanes: Vec<Declared>,
+}
+
+fn stepped(pages: &Arc<dyn Pages>, exact: &dashboard_follow::panel::AtHour, every: i32, join: i32, skip: usize) -> Vec<Stepped> {
+    let (send, played) = std::sync::mpsc::channel();
+    let advance = exact.advance.clone();
+    let (mut due, mut first) = (0, true);
+    let hook: playhead::Hook = Box::new(move |step, lanes| {
+        let read = (step.last() >= join).then(|| due += 1).filter(|_| (due - 1) % skip == 0).map(|()| {
+            let read = advance(step.last(), first || step.reset(), &AtomicBool::new(false), Some(dashboard_follow::panel::ProductStep { step, lanes }));
+            first = false;
+            Stepped { hour: step.last(), value: read.value, lanes: read.lanes }
+        });
+        let _ = send.send((step.last(), read));
+    });
+    let settings = playhead::Settings { step_threads: 1, fetch_threads: 1, ahead: 100, ring: 3, speed: f64::from(every), rate: 1.0, ..playhead::Settings::default() };
+    let playhead = playhead::Playhead::new(Arc::clone(pages), playhead::Timeline::whole(&**pages).unwrap(), settings, Some(hook)).unwrap();
+    let mut declared = BTreeMap::<usize, Declared>::new();
+    let reader = playhead.declare(declared.values().cloned().collect(), None).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    playhead.seek(FIRST);
+    let (mut head, mut out) = (FIRST, Vec::new());
+    loop {
+        playhead.advance(head);
+        let (last, read) = played.recv_timeout(std::time::Duration::from_secs(120)).unwrap_or_else(|_| panic!("no step at head {head}: {:?}", playhead.error()));
+        consumer.take(head, &mut Vec::new());
+        if let Some(read) = read {
+            let before = declared.clone();
+            for lane in &read.lanes {
+                let held = declared.entry(lane.table).or_insert_with(|| lane.clone());
+                held.columns.extend(&lane.columns);
+                held.columns.sort_unstable();
+                held.columns.dedup();
+            }
+            if declared != before { playhead.redeclare(reader, declared.values().cloned().collect()).unwrap(); }
+            out.push(read);
+        }
+        if last >= LAST { break; }
+        if last >= head { head = (head + every).min(LAST); }
+    }
+    drop(consumer);
+    playhead.finish();
+    out
+}
+
+#[test]
+fn a_followed_product_reads_its_tables_at_each_step_from_the_playheads_lanes() {
+    let (source, pages) = recording();
+    let token = AtomicBool::new(false);
+    let cases = [(1, FIRST, 1), (3, FIRST, 1), (2, FIRST + 7, 1), (1, FIRST, 3), (4, ITA_LEAVES, 2)];
+    for (every, join, skip) in cases {
+        let panel = exact_panel::<Power>(&source, &load(), &json!({ "panel": "test-power", "branchId": "1", "country": "GER" })).unwrap();
+        let exact = panel.exact().unwrap();
+        let reads = stepped(&pages, exact, every, join, skip);
+        assert!(reads.len() > 2, "steps of {every} hours from {join}, every {skip}");
+        let first: Vec<usize> = reads[0].lanes.iter().map(|lane| lane.table).collect();
+        assert!([TableId::Countries, TableId::CountryLinks].iter().all(|table| first.contains(&table.index())), "a product's lanes are the tables its reads take: {first:?}");
+        assert!(reads[0].lanes.iter().all(|lane| lane.keyed));
+        for read in &reads {
+            assert_eq!(*read.value, (exact.cold)(read.hour, &token), "steps of {every} hours from {join}, every {skip}: hour {}", read.hour);
+        }
+        assert!(reads.iter().all(|read| read.lanes.iter().any(|lane| lane.table == TableId::CountryResources.index())), "a live cell no stage reads is read from a lane of its table");
+    }
+    for (every, join, skip) in cases {
+        let panel = exact_panel::<Planned>(&source, &load(), &json!({ "branchId": "1" })).unwrap();
+        let exact = panel.exact().unwrap();
+        for read in stepped(&pages, exact, every, join, skip) {
+            assert_eq!(*read.value, (exact.cold)(read.hour, &token), "planned, steps of {every} hours from {join}, every {skip}: hour {}", read.hour);
+        }
+    }
+}
+
+struct Partial;
+
+#[derive(Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+struct PartialReply {
+    keys: Vec<String>,
+    missing: Option<u64>,
+    warnings: Vec<String>,
+}
+
+crate::reply_warnings!(PartialReply);
+
+fn partly_held(view: &TableView) -> (Vec<String>, Option<u64>) {
+    let keys = |rows: &[CountryResourceRow]| rows.iter().map(|row| format!("{}:{}", row.country, row.resource)).collect();
+    match view {
+        TableView::Complete(TableRows::CountryResources(rows)) => (keys(rows), None),
+        TableView::Truncated { rows: TableRows::CountryResources(rows), missing } => (keys(rows), Some(u64::from(*missing))),
+        TableView::Unavailable { reason } => (vec![reason.clone()], None),
+        _ => (vec!["neither rows nor a reason".into()], None),
+    }
+}
+
+impl AtHour for Partial {
+    const KEY: &'static str = "test-partial";
+    const TITLE: &'static str = "Partial";
+    const CONTENT_DEPENDENT: bool = false;
+    type Params = PlannedParams;
+    type Reply = PartialReply;
+    type Context = ();
+
+    fn tables(_params: &Self::Params) -> Vec<TableId> {
+        vec![TableId::CountryResources]
+    }
+
+    fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
+        Ok(())
+    }
+
+    fn reply(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        let (keys, missing) = partly_held(frame.tables[TableId::CountryResources.index()].held());
+        Ok(PartialReply { keys, missing, warnings: Vec::new() })
+    }
+}
+
+#[test]
+fn a_table_read_in_part_is_the_rows_its_hour_read_on_every_path() {
+    let partly = 110..=113;
+    let frames = (FIRST..=LAST)
+        .map(|hour| {
+            let mut frame = frame(hour);
+            if partly.contains(&hour) {
+                let coal = CountryResourceRow { country: 9001, resource: 1, special_total: i64::from(hour), ..CountryResourceRow::default() };
+                let oil = CountryResourceRow { country: 9001, resource: 2, special_total: 5, ..CountryResourceRow::default() };
+                let rows = if hour % 2 == 0 { vec![coal, oil] } else { vec![oil] };
+                *frame.tables[TableId::CountryResources.index()] = TableView::Truncated { rows: TableRows::CountryResources(rows), missing: 3 };
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let source = Source::from_replay(crate::SourceKey { source_id: "at-hour-partly".into(), revision: "1".into() }, "partly.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let recorded = |hour: i32| {
+        let frame = replay::at::frame(source.replay_ref().recording(), 0, hour, &[replay::at::Read::all(TableId::CountryResources)]).unwrap();
+        let (keys, missing) = partly_held(frame.tables[TableId::CountryResources.index()].held());
+        (json!(keys), json!(missing))
+    };
+    let said = |value: &Value| (value["keys"].clone(), value["missing"].clone());
+    assert!(partly.clone().all(|hour| recorded(hour).1 == 3), "the recording reads those hours in part");
+    let panel = exact_panel::<Partial>(&source, &load(), &json!({ "branchId": "1" })).unwrap();
+    let exact = panel.exact().unwrap();
+    let token = AtomicBool::new(false);
+    for hour in FIRST..=LAST {
+        let text = (entry::<Partial>().registered.load)(&source, "lease", json!({ "branchId": "1", "hour": hour }), &load(), &token).unwrap();
+        assert_eq!(said(&serde_json::from_str::<Value>(&text).unwrap()["data"]), recorded(hour), "a request at hour {hour}");
+        assert_eq!(said(&(exact.cold)(hour, &token).unwrap()), recorded(hour), "an exact read at hour {hour}");
+    }
+    for every in [1, 3] {
+        for read in stepped(&pages, exact, every, FIRST, 1) {
+            assert_eq!(said(read.value.as_ref().as_ref().unwrap()), recorded(read.hour), "steps of {every} hours: hour {}", read.hour);
+        }
     }
 }

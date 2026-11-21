@@ -49,7 +49,7 @@ const SCIENTIST_COLUMNS: [usize; 1] = [3];
 
 pub struct SpecialProjects;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpecialProjectsParams {
@@ -133,7 +133,7 @@ pub struct ProjectEpisode {
     pub runs: Vec<SpecialProjectRun>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectsReply {
@@ -820,7 +820,7 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
         let reply = engine_executable::executable_tables::scope(executable, || reply_through(query, &params, &content, hour, cancelled)).map_err(|e| e.to_string())?;
         serde_json::to_value(reply).map_err(|e| e.to_string())
     });
-    Ok(at_hour::product_panel(advance, read, Vec::new()))
+    Ok(at_hour::product_panel(advance, read))
 }
 
 impl Product for SpecialProjects {

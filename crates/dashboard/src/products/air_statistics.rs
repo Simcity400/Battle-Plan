@@ -31,7 +31,7 @@ const DETAIL_CHANNELS: [u8; PAIRS] = [1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 8, 12];
 
 pub struct AirStatisticsAt;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirStatisticsParams {
@@ -61,7 +61,7 @@ pub struct AirStatisticsRegion {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirStatisticsReply {
@@ -259,7 +259,7 @@ impl AtHour for AirStatisticsAt {
 
 pub struct AirStatisticsRegions;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirStatisticsRegionsParams {
@@ -267,7 +267,7 @@ pub struct AirStatisticsRegionsParams {
     pub country: Country,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirStatisticsRegionsReply {

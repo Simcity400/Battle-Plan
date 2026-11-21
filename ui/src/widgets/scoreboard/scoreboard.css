@@ -1,1 +1,1 @@
-.scoreboard { height: 100%; min-height: 0; }
+.scoreboard { display: flex; flex-direction: column; height: 100%; min-height: 0; }

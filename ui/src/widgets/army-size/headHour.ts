@@ -12,18 +12,18 @@ export function heldAt(previous: Held | null, key: string, hour: number): Held {
   return previous?.key === key && previous.hour <= hour ? previous : { key, hour };
 }
 
-export function useHeadHour(clock: HeadClock, enabled: boolean, key: (hour: number) => string, woken?: Set<() => void>): number {
+export function useHeadHour(clock: HeadClock, enabled: boolean, key: (hour: number) => string, woken?: Set<() => void>, frames = true): number {
   const keyed = useRef(key); keyed.current = key;
   const held = useRef<{ key: string; hour: number } | null>(null);
   const subscribe = useCallback((changed: () => void) => {
     if (!enabled) return () => {};
-    const stops = [clock.subscribeFrame(changed), clock.subscribe(changed)];
+    const stops = [...frames ? [clock.subscribeFrame(changed)] : [], clock.subscribe(changed)];
     woken?.add(changed);
     return () => {
       for (const stop of stops) stop();
       woken?.delete(changed);
     };
-  }, [clock, enabled, woken]);
+  }, [clock, enabled, woken, frames]);
   const read = () => {
     if (!enabled) return null;
     const hour = clock.getHour(), next = keyed.current(hour);

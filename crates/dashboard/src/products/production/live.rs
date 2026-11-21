@@ -33,7 +33,7 @@ pub enum LineOrder {
     Output,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionLinesAtParams {
@@ -79,7 +79,7 @@ pub struct LineNow {
     pub output: Option<OutputNow>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionLinesAtReply {
@@ -165,11 +165,10 @@ impl AtHour for ProductionLinesAt {
         Some(&params.country)
     }
 
-    fn uses_sample(_table: TableId) -> bool { false }
 
     const CLOCK_DEPENDENT: bool = false;
 
-    fn projection(_params: &Self::Params, table: TableId) -> Option<Vec<usize>> {
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         let fields: &[&str] = match table {
             TableId::Countries => &["canonical_slot", "tag"],
             TableId::CountryAppearance => &["cosmetic_tag", "name_tag", "graphical_culture", "graphical_culture_2d"],

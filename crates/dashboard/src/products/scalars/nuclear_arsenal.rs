@@ -18,7 +18,7 @@ use ts_rs::TS;
 
 pub struct NuclearArsenal;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NuclearArsenalParams {
@@ -58,7 +58,7 @@ pub struct NukeCountry {
     pub counts: Vec<NukeCount>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NuclearArsenalReply {
@@ -132,7 +132,6 @@ impl AtHour for NuclearArsenal {
         vec![NuclearArsenalParams::decl(), NukeType::decl(), NukeCount::decl(), NukeCountry::decl(), NuclearArsenalReply::decl()]
     }
 
-    fn uses_sample(_table: TableId) -> bool { false }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         super::branch(&params.branch_id)

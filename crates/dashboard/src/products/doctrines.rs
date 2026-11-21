@@ -69,7 +69,7 @@ fn reward_benefits(
     benefits
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DoctrineParams {
@@ -77,14 +77,14 @@ pub struct DoctrineParams {
     pub country: Country,
     pub hour: i32,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineFact {
     pub name: String,
     pub value: String,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineReward {
@@ -93,7 +93,7 @@ pub struct DoctrineReward {
     pub unlocked: Option<bool>,
     pub description: String,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineTrack {
@@ -111,7 +111,7 @@ pub struct DoctrineTrack {
     pub reward_benefits: Vec<DoctrineReward>,
     pub commanders: Vec<DoctrineFact>,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineFolder {
@@ -124,7 +124,7 @@ pub struct DoctrineFolder {
     pub completed: Vec<String>,
     pub tracks: Vec<DoctrineTrack>,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineInventory {
@@ -132,7 +132,7 @@ pub struct DoctrineInventory {
     pub ordinal: u32,
     pub fields: Vec<DoctrineFact>,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineReply {

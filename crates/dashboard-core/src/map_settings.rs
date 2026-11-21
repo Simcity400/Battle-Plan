@@ -248,7 +248,7 @@ pub struct RecordedMod {
     pub name: String,
 }
 
-#[derive(Serialize, TS)]
+#[derive(Serialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "MapSettingsReply")]
 pub struct Reply {

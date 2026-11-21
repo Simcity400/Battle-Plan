@@ -13,7 +13,7 @@ use ts_rs::TS;
 
 pub struct FactoryGroups;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactoryGroupsParams {
@@ -42,7 +42,7 @@ pub struct FactoryGroupNames {
     pub buildings: Vec<FactoryGroupBuilding>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactoryGroupsReply {

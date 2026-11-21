@@ -32,13 +32,13 @@ pub struct SpriteFrame {
     pub recorded: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpriteArtworkParams {
     pub sprites: Vec<SpriteFrame>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SpriteImage {
     pub key: String,
@@ -51,7 +51,7 @@ pub struct SpriteImage {
     pub icon: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SpriteArtworkReply {
     pub items: Vec<SpriteImage>,

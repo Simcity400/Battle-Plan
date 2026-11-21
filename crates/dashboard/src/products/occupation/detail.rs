@@ -28,7 +28,7 @@ const COLLABORATION: [TableId; 4] = [TableId::StateResistance, TableId::States, 
 
 pub struct OccupationDetail;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OccupationDetailParams {
@@ -58,7 +58,7 @@ pub struct OccupationDetailRow {
     pub collaboration: Vec<OccupationCollaboration>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OccupationDetailReply {

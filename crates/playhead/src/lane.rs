@@ -7,7 +7,7 @@ use crate::{
 use replay_columnar::{
     manifest::Status,
     state::Kind,
-    store::{TableState, Value},
+    store::{Strings, TableState, TableView, Value},
     unit::{
         BLOCK,
         reader::{self, Advanced, Cursor, Lives, LogCursor, Part, Prefix, Spent},
@@ -15,7 +15,7 @@ use replay_columnar::{
 };
 use replay_data::Hour;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     io,
     sync::Arc,
     time::Instant,
@@ -28,29 +28,27 @@ pub(crate) mod tests;
 const TRACK_BYTES: usize = 34;
 
 #[derive(Default)]
-pub(crate) struct Known(HashMap<u32, Box<[u8]>>);
+pub(crate) struct Known(Strings);
 
 impl Known {
     pub(crate) fn note(&mut self, id: u32, text: &[u8]) {
-        if self.0.get(&id).is_none_or(|held| **held != *text) {
-            self.0.insert(id, text.into());
-        }
+        self.0.hold(id, text);
     }
 
     pub(crate) fn clear(&mut self) {
-        self.0.clear();
+        self.0 = Strings::default();
     }
 
     fn texts(&self) -> Texts {
         let mut texts = Texts::default();
-        for (&id, text) in &self.0 {
+        for (id, text) in self.0.iter() {
             texts.push(id, text);
         }
         texts
     }
 
     fn bytes(&self) -> usize {
-        self.0.iter().map(|(_, text)| text.len() + 24).sum()
+        self.0.bytes()
     }
 }
 
@@ -334,6 +332,7 @@ pub struct Lane {
     pieces: u32,
     marks: Vec<u64>,
     marks_at: Vec<usize>,
+    read: Vec<u32>,
     passage: Option<Box<Passage>>,
     log: Option<Box<log::Logs>>,
     #[cfg(test)]
@@ -383,6 +382,7 @@ impl Lane {
             pieces: 0,
             marks: Vec::new(),
             marks_at: Vec::new(),
+            read: Vec::new(),
             passage: None,
             log,
             #[cfg(test)]
@@ -430,16 +430,33 @@ impl Lane {
         &self.cells
     }
 
+    pub fn view(&self) -> TableView<'_> {
+        TableView::new(&self.cells, &self.kinds, &self.known.0)
+    }
+
+    fn pack(&mut self) -> io::Result<()> {
+        let live: Vec<u32> = if self.read.is_empty() { Vec::new() } else { self.cells.rows().collect() };
+        self.cells.pack()?;
+        if !self.read.is_empty() {
+            self.read = self.read.iter().filter_map(|slot| live.binary_search(slot).ok().map(|at| at as u32)).collect();
+        }
+        if self.keyed {
+            self.cells.index_keys();
+        }
+        Ok(())
+    }
+
     pub fn status(&self) -> (Status, Option<Hour>) {
         self.status
     }
 
     pub fn reason(&self) -> Option<&[u8]> {
         let Status::Unavailable { reason } = self.status.0 else { return None };
-        self.under
-            .as_ref()
-            .and_then(|under| under.cursor.text(reason))
-            .or_else(|| self.texts.iter().find(|&(id, _)| id == reason).map(|(_, text)| text))
+        self.under.as_ref().and_then(|under| under.cursor.text(reason)).or_else(|| self.known.0.get(reason))
+    }
+
+    pub fn read_rows(&self) -> Option<&[u32]> {
+        matches!(self.status.0, Status::Truncated { .. }).then_some(self.read.as_slice())
     }
 
     pub fn head(&self) -> Option<Hour> {
@@ -535,7 +552,8 @@ impl Lane {
         let hours = run.hours();
         let target = (i64::from(hour) - i64::from(run.first_hour)).clamp(0, i64::from(hours) - 1) as u32;
         let block = (target / BLOCK) as usize;
-        let ends_block = target + 1 == block as u32 * BLOCK + u32::from(run.pages[block].hours);
+        let truncated = matches!(reader::status(&run.pages[block].tables[self.table], (target % BLOCK) as u16, self.game(block as u32 * BLOCK))?.0, Status::Truncated { .. });
+        let ends_block = !truncated && target + 1 == block as u32 * BLOCK + u32::from(run.pages[block].hours);
         let at = if ends_block { Some(block) } else { block.checked_sub(1) };
         let refused = || invalid(format!("No restore of table {} is written", self.table));
         let (restored, entry) = match at {
@@ -555,6 +573,9 @@ impl Lane {
         }
         let before = self.spent;
         self.cells = cells;
+        if self.keyed {
+            self.cells.index_keys();
+        }
         self.ahead.clear();
         self.retired.clear();
         self.texts.clear();
@@ -566,6 +587,7 @@ impl Lane {
         self.written.iter_mut().for_each(Vec::clear);
         self.deletes.clear();
         self.inserts.clear();
+        self.read.clear();
         if let Some(passage) = &mut self.passage {
             passage.live = None;
         }
@@ -648,7 +670,7 @@ impl Lane {
         self.finish(out)?;
         if stop == Stop::Packed {
             out.set_renumber(self.cells.rows());
-            self.cells.pack()?;
+            self.pack()?;
             if let Some(passage) = &mut self.passage {
                 passage.live = None;
             }
@@ -716,6 +738,7 @@ impl Lane {
                 if reached != Advanced::Reached {
                     return Err(invalid(format!("Table {}'s cursor misses hours its part holds", self.table)));
                 }
+                self.note_read(block, last)?;
                 next = to + 1;
                 {
                     let Self { under, texts, known, .. } = self;
@@ -740,6 +763,7 @@ impl Lane {
                 self.lives.deleted.clear();
                 self.lives.inserted.clear();
             } else {
+                self.read.clear();
                 next = end + 1;
             }
             if next == start + u32::from(page.hours) && entry.packed {
@@ -747,11 +771,29 @@ impl Lane {
                 if collect {
                     return Ok(Stop::Packed);
                 }
-                self.cells.pack()?;
+                self.pack()?;
             }
         }
         self.next = Some(next);
         Ok(Stop::Reached)
+    }
+
+    fn note_read(&mut self, block: usize, hour: u16) -> io::Result<()> {
+        self.read.clear();
+        let pages = Arc::clone(&self.pages);
+        let entry = &pages.runs()[self.run].pages[block].tables[self.table];
+        if !matches!(reader::status(entry, hour, self.game(block as u32 * BLOCK))?.0, Status::Truncated { .. }) {
+            return Ok(());
+        }
+        let Some(under) = &self.under else { return Ok(()) };
+        let (mut touched, mut read) = (Vec::new(), Vec::new());
+        under.cursor.marks(hour, hour, &mut touched, &mut read)?;
+        let live = self.cells.live();
+        let begun = self.lives.inserted.iter().filter(|&&(at, ..)| at == hour).map(|&(_, slot, _)| slot);
+        self.read.extend(read.iter().map(|&(_, slot)| slot).chain(begun).filter(|&slot| live.get(slot)));
+        self.read.sort_unstable();
+        self.read.dedup();
+        Ok(())
     }
 
     fn enter(&mut self, given: Given, hour: u16) {

@@ -117,7 +117,7 @@ const client = {
     const data = request.product === 'follow' ? follow(request.params as never) : request.product === 'follow-clock' || request.product === 'unfollow' ? stamp : answer(request.product);
     return { sourceId: request.sourceId, revision: request.revision, product: request.product, data };
   },
-  openFollow: async (port: MessagePort) => { panels.port = port; },
+  openFollow: async (ports: readonly MessagePort[]) => { panels.port = ports[0]; },
   setMapViews: async () => {}, onMapStates: async () => () => {}, releaseSource: async () => {}, openSource: async () => { throw new Error('none'); },
 };
 

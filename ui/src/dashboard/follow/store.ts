@@ -158,10 +158,9 @@ export class FollowStore {
   }
 
   seek(branch: string, retainThrough?: number) {
+    if (retainThrough !== undefined) return;
     for (const held of this.byId.values()) if (held.branch === branch) {
       const entry = held.entry;
-      const { start, through } = entry.coverage ?? { start: entry.hour, through: entry.through };
-      if (retainThrough !== undefined && start <= retainThrough && retainThrough <= through) continue;
       entry.coverage = undefined;
       entry.panel = undefined; entry.answer = undefined; entry.values = undefined;
       this.changed(held);

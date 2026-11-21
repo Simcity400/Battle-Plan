@@ -6,7 +6,13 @@ use replay_columnar::{
     unit::{BLOCK, BlockPage, reader::Extents},
 };
 use replay_data::{BranchId, Hour};
-use std::{io, path::Path, time::Instant};
+use replay_data::rows::TableId;
+use std::{
+    io,
+    path::Path,
+    sync::{Arc, Mutex, PoisonError, Weak},
+    time::Instant,
+};
 
 #[cfg(test)]
 mod tests;
@@ -74,6 +80,7 @@ pub struct Opened {
 pub struct WorldPages {
     recording: Recording,
     runs: Vec<Run>,
+    recorded: Vec<u32>,
     branches: Vec<BranchId>,
     pieces: Vec<Piece>,
     kinds: Vec<Vec<Kind>>,
@@ -107,6 +114,7 @@ impl WorldPages {
             }
         };
         let (mut runs, mut branches, mut pieces) = (Vec::new(), Vec::new(), Vec::new());
+        let recorded = wanted.clone();
         for index in wanted {
             let held = recording.run(index)?;
             let (first_hour, blocks) = (held.first_hour, held.pages() as u32);
@@ -131,7 +139,30 @@ impl WorldPages {
             }
         }
         opened.ns = started.elapsed().as_nanos() as u64;
-        Ok(Self { recording, runs, branches, pieces, kinds, opened })
+        Ok(Self { recording, runs, recorded, branches, pieces, kinds, opened })
+    }
+
+    pub fn shared(recording: &Recording) -> io::Result<Arc<Self>> {
+        static HELD: Mutex<Vec<(String, Weak<WorldPages>)>> = Mutex::new(Vec::new());
+        static BUILDING: Mutex<()> = Mutex::new(());
+        let name = name(recording);
+        let held = || HELD.lock().unwrap_or_else(PoisonError::into_inner).iter().find(|(held, _)| *held == name).and_then(|(_, pages)| pages.upgrade());
+        if let Some(pages) = held() {
+            return Ok(pages);
+        }
+        let _building = BUILDING.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(pages) = held() {
+            return Ok(pages);
+        }
+        let pages = Arc::new(Self::over(recording.selecting(&TableId::ALL)?, Span::Whole)?);
+        let mut opened = HELD.lock().unwrap_or_else(PoisonError::into_inner);
+        opened.retain(|(_, pages)| pages.strong_count() > 0);
+        opened.push((name, Arc::downgrade(&pages)));
+        Ok(pages)
+    }
+
+    pub fn run_of(&self, recorded: u32) -> Option<usize> {
+        self.recorded.iter().position(|&run| run == recorded)
     }
 
     pub fn pieces(&self) -> &[Piece] {
@@ -161,6 +192,12 @@ impl WorldPages {
     pub fn damage(&self) -> &[Damage] {
         self.recording.damage()
     }
+}
+
+pub fn name(recording: &Recording) -> String {
+    let revision = recording.revision();
+    let digest: String = revision.root.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("{digest}:{}", revision.length)
 }
 
 fn pages_for(recording: &Recording, run: u32, blocks: u32, (from, to): (u32, u32)) -> io::Result<(u32, Vec<BlockPage>)> {

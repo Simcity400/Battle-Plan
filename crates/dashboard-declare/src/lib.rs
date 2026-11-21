@@ -122,6 +122,7 @@ pub struct Series {
     pub parts: Option<Parts>,
     pub measures: &'static [Measure],
     pub drops: bool,
+    pub absent_none: bool,
 }
 
 impl Series {
@@ -207,6 +208,7 @@ pub static SERIES: &[Series] = &[
             fixed5("commandPower", "command_power_raw", aggregate::FALLS),
         ],
         drops: true,
+        absent_none: false,
     },
     Series {
         kind: "country-stability",
@@ -219,6 +221,7 @@ pub static SERIES: &[Series] = &[
             fixed5("maxCommandPower", "max_command_power", 0),
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "stability-parts",
@@ -227,6 +230,7 @@ pub static SERIES: &[Series] = &[
         parts: Some(Parts { bits: 40, id: None }),
         measures: &[fixed5("value", "value", aggregate::ABS)],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "army-totals",
@@ -244,6 +248,7 @@ pub static SERIES: &[Series] = &[
             count("hostManpower", "host_manpower").ranked(32),
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "country-resources",
@@ -261,6 +266,7 @@ pub static SERIES: &[Series] = &[
             fixed5("productionDemand", "production_demand", 0),
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "country-deployed-manpower",
@@ -275,6 +281,7 @@ pub static SERIES: &[Series] = &[
             count("exileAir", "exile_air"),
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "supply-health",
@@ -298,6 +305,7 @@ pub static SERIES: &[Series] = &[
             },
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "air-force-totals",
@@ -311,6 +319,7 @@ pub static SERIES: &[Series] = &[
             count("effectiveWings", "effective_wings").ranked(32),
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "navy-totals",
@@ -326,6 +335,7 @@ pub static SERIES: &[Series] = &[
             fixed5("logicalMaxStrength", "logical_max_strength_raw", 0),
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "country-experience-daily",
@@ -341,6 +351,7 @@ pub static SERIES: &[Series] = &[
             raw("airGain", "air_gain"),
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "country-game-scores",
@@ -356,6 +367,7 @@ pub static SERIES: &[Series] = &[
             fixed5("total", "total", 0).ranked(32),
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "fuel-days",
@@ -380,6 +392,7 @@ pub static SERIES: &[Series] = &[
             fuel_day("consumerNavy", 12, fuel_measure::<14>),
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "fuel-demand-totals",
@@ -398,6 +411,7 @@ pub static SERIES: &[Series] = &[
             fixed5("positiveNavy", "positive_navy", 0),
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "production-country-totals",
@@ -411,6 +425,7 @@ pub static SERIES: &[Series] = &[
             Measure { carry: Carry::Sum, ..fixed5("spentWithoutRefits", "spent_without_refits", 0) }.ranked(32),
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "production-type-totals",
@@ -424,6 +439,7 @@ pub static SERIES: &[Series] = &[
             Measure { carry: Carry::Sum, ..fixed5("spentWithoutRefits", "spent_without_refits", 0) },
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "casualty-totals",
@@ -445,6 +461,7 @@ pub static SERIES: &[Series] = &[
             },
         ],
         drops: false,
+        absent_none: true,
     },
     Series {
         kind: "occupier-totals",
@@ -475,6 +492,7 @@ pub static SERIES: &[Series] = &[
             },
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "territory",
@@ -504,6 +522,7 @@ pub static SERIES: &[Series] = &[
             },
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "country-factories",
@@ -512,6 +531,7 @@ pub static SERIES: &[Series] = &[
         parts: None,
         measures: &FACTORY_CHANNELS,
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "country-nukes",
@@ -530,6 +550,7 @@ pub static SERIES: &[Series] = &[
             count("ready", "ready"),
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "world-tension",
@@ -538,6 +559,7 @@ pub static SERIES: &[Series] = &[
         parts: None,
         measures: &[Measure { name: "tension", column: Column::Cell("total_raw"), decimals: 3, aggregates: 0, carry: Carry::None, rank: 0 }],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "threat-contributions",
@@ -546,6 +568,7 @@ pub static SERIES: &[Series] = &[
         parts: None,
         measures: &[fixed5("contribution", "total_raw", 0).ranked(32)],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "air-force-parts",
@@ -554,6 +577,7 @@ pub static SERIES: &[Series] = &[
         parts: Some(Parts { bits: 73, id: Some((0, 64)) }),
         measures: &[count("planes", "planes")],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "air-force-wing-kinds",
@@ -562,6 +586,7 @@ pub static SERIES: &[Series] = &[
         parts: Some(Parts { bits: 40, id: Some((0, 32)) }),
         measures: &[count("wings", "wings")],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "navy-classes",
@@ -570,6 +595,7 @@ pub static SERIES: &[Series] = &[
         parts: Some(Parts { bits: 40, id: Some((0, 32)) }),
         measures: &[count("ships", "ships"), fixed5("strength", "strength_raw", 0)],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "military-aid",
@@ -578,6 +604,7 @@ pub static SERIES: &[Series] = &[
         parts: Some(Parts { bits: 40, id: None }),
         measures: &[count("divisions", "divisions")],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "country-experience",
@@ -586,6 +613,7 @@ pub static SERIES: &[Series] = &[
         parts: None,
         measures: &[raw("army", "army_raw"), raw("navy", "navy_raw"), raw("air", "air_raw")],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "autonomy",
@@ -606,6 +634,7 @@ pub static SERIES: &[Series] = &[
             fixed5("upper", "upper_score", 0),
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "relation-opinions",
@@ -614,6 +643,7 @@ pub static SERIES: &[Series] = &[
         parts: Some(Parts { bits: 32, id: None }),
         measures: &[raw("opinion", "opinion")],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "country-nuke-totals",
@@ -622,6 +652,7 @@ pub static SERIES: &[Series] = &[
         parts: None,
         measures: &[count("total", "total").ranked(32), count("ready", "ready")],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "fuel-consumers",
@@ -642,6 +673,7 @@ pub static SERIES: &[Series] = &[
             },
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "resource-balance",
@@ -662,6 +694,7 @@ pub static SERIES: &[Series] = &[
             resource_value("barLength", 9, resource_bar_length),
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "naval-losses",
@@ -670,6 +703,7 @@ pub static SERIES: &[Series] = &[
         parts: Some(Parts { bits: 16, id: None }),
         measures: &[count("total", "total").carried(Carry::Sum)],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "country-fuel",
@@ -678,6 +712,7 @@ pub static SERIES: &[Series] = &[
         parts: None,
         measures: &[raw("fuel", "current_raw"), raw("capacity", "maximum_raw")],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "equipment-losses",
@@ -686,6 +721,7 @@ pub static SERIES: &[Series] = &[
         parts: Some(Parts { bits: 41, id: Some((0, 32)) }),
         measures: &[fixed5("total", "total", 0).carried(Carry::Sum)],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "party-popularity",
@@ -694,6 +730,7 @@ pub static SERIES: &[Series] = &[
         parts: Some(Parts { bits: 32, id: None }),
         measures: &[fixed5("popularity", "popularity", 0)],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "threat-sum",
@@ -702,6 +739,7 @@ pub static SERIES: &[Series] = &[
         parts: None,
         measures: &[fixed5("sum", "sum", 0)],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "faction-totals",
@@ -710,6 +748,7 @@ pub static SERIES: &[Series] = &[
         parts: None,
         measures: &FACTION_MEASURES,
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "intel-networks",
@@ -724,6 +763,7 @@ pub static SERIES: &[Series] = &[
             fixed5("maxStrength", "max_state_strength", 0),
         ],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "air-scores",
@@ -732,6 +772,7 @@ pub static SERIES: &[Series] = &[
         parts: Some(Parts { bits: 32, id: None }),
         measures: &[raw("friendly", "friendly"), raw("enemy", "enemy")],
         drops: false,
+        absent_none: false,
     },
     Series {
         kind: "produced-values",
@@ -745,6 +786,7 @@ pub static SERIES: &[Series] = &[
             Measure { carry: Carry::Sum, ..fixed5("icWithoutRefits", "ic_without_refits", 0) },
         ],
         drops: false,
+        absent_none: false,
     },
 ];
 

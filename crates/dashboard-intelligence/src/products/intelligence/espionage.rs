@@ -214,7 +214,7 @@ fn available(snapshot: &lanes::Snapshot) -> bool {
 
 pub struct EspionageOperations;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EspionageOperationsParams {
@@ -237,7 +237,7 @@ pub struct OperationUnderWay {
     pub state: OperationState,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageOperationsReply {
@@ -327,7 +327,7 @@ impl AtHour for EspionageOperations {
 
 pub struct EspionageOperation;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EspionageOperationParams {
@@ -338,7 +338,7 @@ pub struct EspionageOperationParams {
     pub hour: i32,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageOperationReply {
@@ -427,7 +427,7 @@ impl Product for EspionageOperation {
 
 pub struct EspionageEnded;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EspionageEndedParams {
@@ -457,7 +457,7 @@ pub struct EndedOperation {
     pub state: OperationState,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageEndedReply {
@@ -619,7 +619,7 @@ fn rows_at(recording: &replay::columnar_frames::Recording, run: u32, asks: &[(i3
 
 pub struct EspionageTypes;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EspionageTypesParams {
@@ -639,7 +639,7 @@ pub struct OperationType {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageTypesReply {
@@ -699,7 +699,7 @@ pub struct OperationTypeTokens {
     pub tokens: Vec<u32>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageTypeTokensReply {
@@ -759,7 +759,7 @@ impl Product for EspionageTypeTokens {
 
 pub struct EspionageLog;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageLogParams {

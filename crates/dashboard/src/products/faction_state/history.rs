@@ -26,7 +26,7 @@ use ts_rs::TS;
 
 pub struct FactionState;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(tag = "view", rename_all = "camelCase")]
 pub enum FactionStateParams {

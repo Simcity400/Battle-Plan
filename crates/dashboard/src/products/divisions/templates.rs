@@ -27,7 +27,7 @@ const TABLES: [TableId; 7] = [
 
 pub struct DivisionTemplates;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DivisionTemplatesParams {
@@ -36,7 +36,7 @@ pub struct DivisionTemplatesParams {
     pub count_for: ArmyAttribution,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateUnit {
@@ -59,7 +59,7 @@ pub enum DesignerKind {
     Headquarters,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateEntry {
@@ -94,7 +94,7 @@ pub struct TemplateEntry {
     pub settings_missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionTemplatesReply {

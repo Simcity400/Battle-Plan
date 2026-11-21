@@ -12,6 +12,7 @@ import type { OptionChoices } from '../definitions';
 import { contentTitleHint } from '../contentTitles';
 import { leaveNumber, numberText, receiveNumber, typeNumber } from './numberDraft';
 import type { NumberDraft, NumberStep } from './numberDraft';
+import { TableSettingsField } from './TableSettingsField.tsx';
 
 const SEGMENTED_MAX = 4;
 
@@ -71,6 +72,8 @@ function OptionRow({ field, value, choices, onChange }: {
     }
     case 'number':
       return <NumberRow field={field} value={typeof value === 'number' ? value : null} caption={caption} onChange={onChange} />;
+    case 'table':
+      return <TableSettingsField field={field} value={value} onChange={onChange} />;
   }
 }
 

@@ -2,13 +2,13 @@ import { readStream } from './pull.ts';
 import { FollowDecoder, type Release } from './follow/decode.ts';
 import type { FollowItem } from './follow/message';
 
-self.onmessage = ({ data }: MessageEvent<{ session: string; port: MessagePort }>) => {
-  const { port } = data;
+self.onmessage = ({ data }: MessageEvent<{ session: string; ports: MessagePort[] }>) => {
+  const { ports } = data;
   const decoder = new FollowDecoder();
-  port.onmessage = ({ data }: MessageEvent<Release>) => decoder.release(data);
+  for (const port of ports) port.onmessage = ({ data }: MessageEvent<Release>) => decoder.release(data);
   const failure = (reason: string): FollowItem => ({ kind: 'failure', reason });
   void readStream({ session: data.session,
-    ready: () => self.postMessage('ready'), fail: reason => { port.postMessage([failure(reason)]); self.postMessage({ reason }); },
+    ready: () => self.postMessage('ready'), fail: reason => { for (const port of ports) port.postMessage([failure(reason)]); self.postMessage({ reason }); },
     answer: async buffers => {
       const items = buffers.map(buffer => {
         try { return decoder.item(buffer); } catch (error) { return failure(String(error)); }
@@ -17,7 +17,7 @@ self.onmessage = ({ data }: MessageEvent<{ session: string; port: MessagePort }>
       for (const item of items) if (item.kind === 'followed') {
         for (const { answer } of item.message.answers) if (answer.kind !== 'notRecorded') transfer.add(answer.views.u8.buffer as ArrayBuffer);
       }
-      port.postMessage(items, [...transfer]);
+      ports.forEach((port, at) => port.postMessage(items, at === ports.length - 1 ? [...transfer] : []));
     },
   });
 };

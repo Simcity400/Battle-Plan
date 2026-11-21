@@ -129,6 +129,14 @@ export function identitySince(facts: CountryTimeline, hour: number, tags: readon
   return since;
 }
 
+export function lookStarts(timeline: CountryTimeline | undefined, tag: string, first: number, at: number): [number, boolean][] {
+  const runs = timeline?.runs.get(tag);
+  if (!timeline || !runs) return [[at, true], [at + 1, false]];
+  const known = timeline.reply.known, hours = new Set([first, ...runs.map(run => run[0]).filter(hour => hour > first)]);
+  for (const [from, to] of known) for (const edge of [from, to + 1]) if (edge > first) hours.add(edge);
+  return [...hours].sort((a, b) => a - b).map(hour => [hour, holds(known, hour)]);
+}
+
 function runAt(runs: readonly Run[], hour: number): Run | undefined {
   let low = 0, high = runs.length;
   while (low < high) { const middle = (low + high) >> 1; if (runs[middle][0] <= hour) low = middle + 1; else high = middle; }

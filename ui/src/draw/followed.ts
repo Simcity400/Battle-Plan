@@ -13,6 +13,8 @@ export interface PageReading {
   panel?: FollowedPanel | null; answer?: FollowedAnswer | null; values?: Map<string, number | string> | null;
 }
 
+export interface Answered { answer: FollowedAnswer; date: { since: number; through: number } }
+
 export class Followed {
   private readonly dirty = new Set<FollowEntry>();
   private readonly branches = new Map<number, string>();
@@ -70,7 +72,7 @@ export class Followed {
       if (lead && item.kind === 'panels') {
         const updates: PageReading[] = [];
         const { route, seek } = item.batch;
-        for (const { panel, stepped, id, hour, through } of item.batch.panels) {
+        for (const { panel, stepped, id, hour } of item.batch.panels) {
           const branch = this.branches.get(id);
           if (!stepped || !panel || branch === undefined || this.routes.get(branch) !== route || this.seeks.get(branch) !== seek) continue;
           const section = sectionOf(panel.data);
@@ -78,7 +80,7 @@ export class Followed {
           const shape = this.panelShape(id, panel, hour);
           this.staged.set(panel, shape);
           if ((this.upcoming.get(id) ?? this.sent.get(id)?.shape) !== shape)
-            updates.push({ id, seek, hour, through: hour, coverage: { start: hour, through: through ?? hour }, panel, values: this.values(id, panel) });
+            updates.push({ id, seek, hour, through: hour, coverage: { start: hour, through: hour }, panel, values: this.values(id, panel) });
           this.upcoming.set(id, shape);
         }
         if (updates.length) lead({ type: 'structureLead', updates });
@@ -148,6 +150,17 @@ export class Followed {
       if (at != null && (hour === undefined || at > hour)) hour = at;
     }
     return hour;
+  }
+  answered(id: number): Answered | undefined {
+    const entry = this.entries.get(id);
+    if (!entry?.answer) return;
+    const date = this.store.coverage(entry);
+    return date ? { answer: entry.answer, date: { since: date.start, through: date.through } } : undefined;
+  }
+  sectionLive(id: number) {
+    const entry = this.entries.get(id);
+    const section = entry?.panel && sectionOf(entry.panel.data);
+    return entry && section ? sectionValues(section, sectionGroups(section, key => this.store.group(entry, key))) : null;
   }
   read(id: number) {
     const entry = this.entries.get(id);

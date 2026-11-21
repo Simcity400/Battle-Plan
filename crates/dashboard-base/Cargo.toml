@@ -16,6 +16,7 @@ test-support = ["replay-frame/test-support", "dashboard-core/test-support", "das
 [dependencies]
 replay-columnar.workspace = true
 dashboard-follow = { path = "../dashboard-follow" }
+playhead = { path = "../playhead" }
 dashboard-declare.workspace = true
 dashboard-query.workspace = true
 product-codec.workspace = true
@@ -58,7 +59,6 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_
 zstd = "0.13"
 
 [dev-dependencies]
-playhead = { path = "../playhead" }
 engine-heap.workspace = true
 installed-content-abilities = { workspace = true, features = ["test-support"] }
 installed-content-core = { workspace = true, features = ["test-support"] }

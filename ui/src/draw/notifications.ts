@@ -5,9 +5,10 @@ export interface PictureSample {
   t: 'picture'; at: number; seek: number; widget: string; surface: string; placement: number; owner: number;
   renderer: 'worker'; head: number; hour: number | null; offset: number; fixedHour?: number; rows?: readonly AuditRow[]; detached?: boolean;
   since?: number; through?: number; eligibleHour: number | null; inputThrough?: number; receivedThrough?: number;
+  drawMs: number;
 }
 export interface FrameSample {
-  t: 'workerFrame'; at: number; head: number; seek: number; playing: boolean; workMs: number; changed: number; rate: number;
+  t: 'workerFrame'; at: number; head: number; seek: number; playing: boolean; workMs: number; changed: number; rate: number; lane: number;
   applyMs: number; paintMs: number;
 }
 export type DrawSample = PictureSample | FrameSample;

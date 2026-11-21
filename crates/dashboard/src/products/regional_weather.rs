@@ -62,7 +62,7 @@ pub enum Show {
     Temperature,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RegionalWeatherParams {
@@ -148,7 +148,7 @@ pub struct Columns {
     pub regions: Vec<ColumnRegion>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RegionalWeatherReply {
@@ -166,7 +166,7 @@ pub struct RegionalWeatherReply {
 
 dashboard_base::reply_warnings!(RegionalWeatherReply);
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RegionalWeatherProvincesParams {
@@ -188,7 +188,7 @@ pub struct RegionalWeatherProvince {
     pub temperature: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RegionalWeatherProvincesReply {

@@ -50,7 +50,7 @@ const NO_READ_YET: &str = "Combat Log equipment months of a country not read yet
 const AFTER_READ: &str = "Combat Log equipment months written after their country's latest read are unknown";
 const UNWITNESSED: &str = "Combat Log equipment months whose rows the recording did not keep are unknown";
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ArmyLossesParams {

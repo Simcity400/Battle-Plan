@@ -42,7 +42,7 @@ const PRIORITY_BUTTONS: [&str; 3] = ["low_prio", "medium_prio", "high_prio"];
 
 pub struct TrainingQueue;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TrainingQueueParams {
@@ -50,7 +50,7 @@ pub struct TrainingQueueParams {
     pub country: Country,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingManpower {
@@ -60,7 +60,7 @@ pub struct TrainingManpower {
     pub amount: i32,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingEquipment {
@@ -73,7 +73,7 @@ pub struct TrainingEquipment {
     pub amount_raw: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingNeed {
@@ -85,7 +85,7 @@ pub struct TrainingNeed {
     pub held_raw: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingDivision {
@@ -111,7 +111,7 @@ pub struct TrainingDivision {
     pub halted: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingOrder {
@@ -137,7 +137,7 @@ pub struct TrainingOrder {
     pub divisions: Vec<TrainingDivision>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingQueueReply {

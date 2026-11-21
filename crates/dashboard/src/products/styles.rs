@@ -32,7 +32,7 @@ pub fn country_name(names: &CountryNames<'_>, slot: u32) -> Result<String, Strin
         .and_then(|name| plain_text(&name).map_err(|reason| format!("its name holds {reason}")))
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CountryStyleParams {
@@ -52,7 +52,7 @@ pub struct CountryStyle {
     pub color: Option<[u8; 3]>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryStyleReply {

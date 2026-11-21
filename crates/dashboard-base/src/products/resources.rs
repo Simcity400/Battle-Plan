@@ -37,7 +37,7 @@ pub struct ResourceInfo {
     pub icon: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct Learned {
     ids: BTreeMap<u32, String>,
 }

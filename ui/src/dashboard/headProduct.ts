@@ -160,9 +160,10 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const askedLive = useMemo(() => repliedCells(askedData), [askedData]);
   const live = pushed && panelLive ? panelLive : askedLive;
   if (followed.status === 'unavailable' && followed.reason) headFallbacks.set(product, followed.reason);
-  const exactRead = perfLog && track && params ? async (at: number) => (await runtime.client.product({
-    sourceId: track.source.id, revision: track.source.revision, product, params: { ...params, branchId: track.branch.id, hour: at },
-  }, new AbortController().signal)).data : undefined;
+  const exactRead = perfLog && track && params ? (at: number) => {
+    const request = { sourceId: track.source.id, revision: track.source.revision, product, params: { ...params, branchId: track.branch.id, hour: at } };
+    return perfLog!.exactOnce(JSON.stringify(request), async () => (await runtime.client.product(request, new AbortController().signal)).data);
+  } : undefined;
   const committedHour = entry?.hour;
   useRecordedRows(product, exactRead && pushed && data !== undefined && committedHour !== undefined ? {
     hour: committedHour, rows: () => recordedPanelRows(product, data),

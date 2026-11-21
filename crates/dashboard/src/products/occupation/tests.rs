@@ -12,7 +12,7 @@ mod reply {
         fn none<T>() -> Result<T, String> {
             Err("no content in this test".to_owned())
         }
-        Content { catalogue: none(), laws: none(), equipment: none::<std::sync::Arc<installed_content_core::equipment::Database>>().into(), red: None, warnings: Vec::new(), names: Mutex::default() }
+        Content { catalogue: none(), laws: none(), equipment: none::<std::sync::Arc<installed_content_core::equipment::Database>>().into(), red: None, warnings: Vec::new(), names: Mutex::default(), world: Mutex::default(), eligible: Mutex::default() }
     }
 
     fn resistance(state: u32, country: u32, active: u8, level: i64) -> StateResistanceRow {
@@ -115,6 +115,45 @@ mod reply {
         let (why, named) = ten(&frame);
         assert!(why.as_deref().unwrap().contains("GARRISON_STR_POW_MANPOWER"), "{why:?}");
         assert!(!named);
+    }
+
+    #[test]
+    fn the_reply_reads_no_field_its_narrow_projection_leaves_out() {
+        use crate::products::at_hour::{AtHour, Read};
+        let params = states::OccupiedStatesParams { branch_id: "1".into() };
+        let world = [(vec![Read::all(TableId::States)], i32::MAX), (vec![Read::all(TableId::Provinces)], i32::MAX)];
+        let learning = content();
+        let projected = |table, plan: &[(Vec<Read>, i32)]| states::OccupiedStates::projection(&params, table, plan, &learning);
+        for table in states::TABLES {
+            assert_eq!(projected(table, &world), projected(table, &[]), "{table:?}: a world whose triggers read nothing of it");
+        }
+        assert!(!states::OccupiedStates::clock_dependent(&world, &learning), "triggers whose reads all declare their tables read no hour");
+        let level = dashboard_declare::field(TableId::StateResistance, "level").unwrap();
+        learning.world.lock().unwrap().fields.insert(TableId::StateResistance, 1 << level);
+        assert!(projected(TableId::StateResistance, &world).unwrap().contains(&level), "a field the triggers read");
+        assert!(!projected(TableId::StateResistance, &[]).unwrap().contains(&level), "and only while they are planned");
+        learning.world.lock().unwrap().ends = true;
+        assert!(states::OccupiedStates::clock_dependent(&world, &learning), "a relation read up to its end hour reads the hour");
+        learning.world.lock().unwrap().ends = false;
+        learning.world.lock().unwrap().undeclared = true;
+        assert_eq!(projected(TableId::States, &world), None, "a read declaring nothing reads every field");
+        assert!(states::OccupiedStates::clock_dependent(&world, &learning) && !states::OccupiedStates::clock_dependent(&[], &learning), "and the hour");
+        let mut moved = frame();
+        fn held(frame: &mut DecodedFrame, table: TableId) -> &mut TableRows {
+            match &mut *frame.tables[table.index()] { TableView::Complete(rows) => rows, _ => unreachable!() }
+        }
+        let TableRows::StateResistance(rows) = held(&mut moved, TableId::StateResistance) else { unreachable!() };
+        for row in rows { (row.level, row.speed, row.compliance, row.compliance_speed) = (row.level + 1, 1, 2, 3); }
+        let TableRows::StateGarrisons(rows) = held(&mut moved, TableId::StateGarrisons) else { unreachable!() };
+        for row in rows { (row.required_manpower, row.strength_ratio) = (row.required_manpower + 1, 7); }
+        let TableRows::StateAssignedManpower(rows) = held(&mut moved, TableId::StateAssignedManpower) else { unreachable!() };
+        for row in rows { row.source_country = 3; }
+        let TableRows::States(rows) = held(&mut moved, TableId::States) else { unreachable!() };
+        for row in rows { (row.manpower_available, row.population) = (5, Recorded::Value(6)); }
+        let TableRows::Countries(rows) = held(&mut moved, TableId::Countries) else { unreachable!() };
+        for row in rows { (row.political_power_raw, row.stability_raw) = (Some(9), 10); }
+        let reply = |frame: &DecodedFrame| serde_json::to_value(states::reply(frame, &content(), &Cells::default()).unwrap()).unwrap();
+        assert_eq!(reply(&moved), reply(&frame()));
     }
 
     #[test]

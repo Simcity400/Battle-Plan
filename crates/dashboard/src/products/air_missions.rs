@@ -59,7 +59,7 @@ const MISSION_KEYS: [&str; MISSIONS] = [
 pub struct AirMissionsAt;
 pub struct AirMissionWingsAt;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirMissionsParams {
@@ -67,7 +67,7 @@ pub struct AirMissionsParams {
     pub country: Country,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirMissionWingsParams {
@@ -106,7 +106,7 @@ pub struct AirMissionTheatre {
     pub regions: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirMissionsReply {
@@ -140,7 +140,7 @@ pub struct AirMissionWing {
     pub refusals: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirMissionWingsReply {

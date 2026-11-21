@@ -12,12 +12,39 @@ use crate::{
     products::LoadContext,
 };
 use installed_content_core::{defines::Defines, equipment::Database, occupation_laws::Laws};
-use replay_data::rows::{CountryLinkRow, StateResistanceRow};
-use std::{collections::HashMap, sync::{Arc, Mutex, OnceLock}};
+use replay_data::rows::{CountryLinkRow, StateResistanceRow, TableId};
+use std::{collections::{BTreeMap, HashMap}, sync::{Arc, Mutex, OnceLock}};
 
 pub use law::OccupationLawInfo;
 
 type Named = (Vec<u8>, Vec<u8>, Result<String, String>);
+
+type Eligibility = HashMap<(String, u32, u32), Result<bool, String>>;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct WorldReads {
+    fields: BTreeMap<TableId, u64>,
+    ends: bool,
+    undeclared: bool,
+}
+
+impl WorldReads {
+    fn note(&mut self, footprint: Option<&[dashboard_text::triggers::inputs::TableRead]>) {
+        match footprint {
+            Some(reads) => for read in reads {
+                *self.fields.entry(read.table).or_default() |= read.fields;
+                self.ends |= read.ends;
+            },
+            None => self.undeclared = true,
+        }
+    }
+
+    fn add(&mut self, other: &Self) {
+        for (&table, &fields) in &other.fields { *self.fields.entry(table).or_default() |= fields; }
+        self.ends |= other.ends;
+        self.undeclared |= other.undeclared;
+    }
+}
 
 pub struct Content {
     catalogue: Result<Arc<Catalogue>, String>,
@@ -26,6 +53,8 @@ pub struct Content {
     red: Option<i64>,
     warnings: Vec<String>,
     names: Mutex<HashMap<u32, Named>>,
+    world: Mutex<WorldReads>,
+    eligible: Mutex<Option<((replay_data::BranchId, replay_data::Hour), Eligibility)>>,
 }
 
 impl Content {
@@ -49,7 +78,7 @@ impl Content {
                 Err(why) => warnings.push(format!("Garrison defines unavailable: {why}")),
             }
         }
-        Self { catalogue, laws, equipment: OnceLock::new(), red, warnings, names: Mutex::default() }
+        Self { catalogue, laws, equipment: OnceLock::new(), red, warnings, names: Mutex::default(), world: Mutex::default(), eligible: Mutex::default() }
     }
 
     fn equipment(&self) -> Result<&Database, String> {

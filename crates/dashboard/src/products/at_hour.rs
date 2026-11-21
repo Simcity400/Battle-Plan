@@ -33,6 +33,7 @@ pub fn dated_panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Opt
         "territory-share" => exact_panel::<TerritoryShare>(source, load, asked),
         "occupation-reserve-manpower" => exact_panel::<OccupationReserve>(source, load, asked),
         "lend-lease-balance" => exact_panel::<LendLeaseBalance>(source, load, asked),
+        "occupied-states" => exact_panel::<super::occupation::states::OccupiedStates>(source, load, asked),
         _ => return None,
     })
 }

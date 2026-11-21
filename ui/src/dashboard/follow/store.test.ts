@@ -56,6 +56,21 @@ test('two widgets share one follow and the last unfollow sends unfollow', () => 
   assert.equal(again.entry.id, 2, 'a new follow after the last one ended');
 });
 
+test('a seek that keeps what covers its hour leaves the choice to the worker, whose coverage is current', () => {
+  const transport = fakeTransport();
+  const store = new FollowStore(transport, manualFrames().schedule);
+  const { entry } = store.acquire({ product: 'series-state', params: { branchId: '1' } });
+  const answer = parseFollowed(message(10, [{ id: entry.id, answer: one(1n, 7n) }], false, 9, 1)).answers[0]!.answer;
+  transport.reading({ id: entry.id, hour: 10, through: 10, coverage: { start: 10, through: 10 }, seek: 0, answer });
+  store.seek('1', 40);
+  assert.equal(entry.answer, answer, 'an answer last sent covering hour 10 can still stand at hour 40');
+  transport.reading({ id: entry.id, hour: 10, through: 10, seek: 1, answer: null });
+  assert.equal(entry.answer, undefined, 'the worker drops it');
+  transport.reading({ id: entry.id, hour: 41, through: 41, coverage: { start: 41, through: 41 }, seek: 1, answer });
+  store.seek('1');
+  assert.equal(entry.answer, undefined, 'a seek that keeps nothing clears at once');
+});
+
 test('a painter runs at most once a frame and only when its version moved', () => {
   const transport = fakeTransport();
   const frames = manualFrames();
@@ -258,7 +273,7 @@ const datedStep = (through: number, answers: Parameters<typeof message>[1], epoc
 
 test('a dated panel reads the native MessagePack bytes', () => {
   const bytes = datedPanel(1, 7, { rows: [7] });
-  assert.deepEqual([...bytes.slice(44, 52)], [0x81, 0xa4, 114, 111, 119, 115, 0x91, 7]);
+  assert.deepEqual([...bytes.slice(40, 48)], [0x81, 0xa4, 114, 111, 119, 115, 0x91, 7]);
   const { store, add, deliver } = dated(() => 7);
   const entry = add();
   store.bind('1', 9, 1);
@@ -286,9 +301,7 @@ test('one completed product step covers every joined product without waking idle
   }
   store.drain(10);
   dirty.length = 0;
-  const completed = datedPanel(0, 34);
-  completed[32] = 4;
-  land(completed);
+  land(completedStep(34));
   store.drain(33);
   assert.deepEqual(entries.map(e => store.coverage(e)?.through), [10, 10, 10]);
   store.drain(34);
@@ -322,26 +335,35 @@ test('a pending listed log limits only its own reading', () => {
   assert.deepEqual([log, country].map(e => store.coverage(e)?.through), [10, 40]);
 });
 
-test('a native record covers its proven unchanged interval before the next step arrives', () => {
+function completedStep(hour: number) {
+  const packet = datedPanel(0, hour);
+  packet[32] = 4;
+  return packet;
+}
+
+test('a stepped panel covers each completed step until its next reading arrives', () => {
   let hour = 12;
   const { store, add, deliver, frame } = dated(() => hour);
   const entry = add();
   store.bind('1', 9, 1);
   const packet = datedPanel(entry.id, 10, 'held');
-  packet[33] = 3;
-  new DataView(packet.buffer).setInt32(40, 22, true);
+  packet[33] = 1;
   deliver(packet);
+  deliver(completedStep(22));
   deliver(datedPanel(entry.id, 23, 'changed'));
+  hour = 22; frame();
   assert.deepEqual(store.coverage(entry), { start: 10, through: 22 });
   assert.equal(entry.panel?.data, 'held');
   hour = 23; frame();
   assert.deepEqual(store.coverage(entry), { start: 23, through: 23 });
   const followed = new Followed(() => {});
   followed.add(1, '1'); followed.bind('1', 9, 1);
-  followed.land([{ kind: 'panels', batch: { route: 9, clock: 100, seek: 1, completed: undefined,
-    panels: [{ id: 1, hour: 110, through: 122, stepped: true, panel: { data: 'held', refused: null } }] } }]);
+  followed.land([{ kind: 'panels', batch: { route: 9, clock: 100, seek: 1, completed: 122,
+    panels: [{ id: 1, hour: 110, stepped: true, panel: { data: 'held', refused: null } }] } }]);
   followed.drain(12);
-  assert.equal(followed.snapshot(1)?.through, 112, 'inspection stops at the presented hour on the panel clock');
+  assert.equal(followed.snapshot(1)?.through, 110, 'a completed step stands only once its hour is presented');
+  followed.drain(30);
+  assert.equal(followed.snapshot(1)?.through, 122, 'inspection stops at the completed step on the panel clock');
 });
 
 test('page seeks admit their own packets immediately and a native reset supersedes its queued future', () => {
@@ -374,14 +396,15 @@ test('page seeks admit their own packets immediately and a native reset supersed
   assert.equal((panel as FollowEntry).panel?.data, 'replacement');
 });
 
-test('a forward scrub keeps the confirmed interval containing the target', () => {
-  const { store, add, deliver } = dated(() => 12);
+test('a scrub keeps the confirmed interval containing the target', () => {
+  const { store, add, deliver, frame } = dated(() => 22);
   const entry = add();
   store.bind('1', 9, 1);
   const packet = datedPanel(entry.id, 10, 'still current');
-  packet[33] = 3;
-  new DataView(packet.buffer).setInt32(40, 22, true);
+  packet[33] = 1;
   deliver(packet);
+  deliver(completedStep(22));
+  frame();
   store.seek('1', 2, 17);
   assert.deepEqual(store.coverage(entry), { start: 10, through: 22 });
   assert.equal(entry.panel?.data, 'still current');
@@ -454,6 +477,121 @@ test('a dated panel and two independently confirmed cell readings meet at their 
   assert.deepEqual(store.coverage(entry), { start: 34, through: 35 });
 });
 
+test('a pause keeps a stepped panel whose followed cells cover the paused hour, at the paused hour', () => {
+  let hour = 10;
+  const { store, add, deliver, frame } = dated(() => hour);
+  const entry = add();
+  store.bind('1', 9, 1);
+  const group = { table: 0, keys: ['1'], columns: [0], follow: 0x80000001, seedHour: 10, values: [5] };
+  const panel = datedPanel(entry.id, 10, { live: { groups: [group], rows: [], kinds: [], cells: [] } });
+  panel[33] = 1;
+  deliver(panel);
+  deliver(datedStep(12, [{ id: group.follow, hour: 10, answer: one(1n, 5n) }], 1));
+  for (let at = 13; at <= 40; at++) {
+    deliver(datedStep(at, at === 15 ? [{ id: group.follow, answer: one(1n, 7n) }] : [], 1));
+    deliver(completedStep(at));
+  }
+  hour = 20; frame();
+  const playing = store.coverage(entry)!;
+  assert.ok(playing.start <= 20 && 20 <= playing.through, `playing covers the clock: ${JSON.stringify(playing)}`);
+  store.seek('1', 1, 20);
+  frame();
+  const paused = store.coverage(entry);
+  assert.ok(paused && paused.start <= 20 && 20 <= paused.through, `the pause keeps the hour it stops at: ${JSON.stringify(paused)}`);
+  const cells = store.group(entry, group.follow);
+  assert.equal(cells?.get(0, 0), 7, 'the values at the paused hour, never the seed');
+  assert.ok(cells?.landedHour != null && cells.landedHour <= 20, `landed from an answer at or before the pause: ${cells?.landedHour}`);
+  deliver(datedStep(20, [{ id: group.follow, answer: one(1n, 7n) }], 1, true));
+  frame();
+  const reset = store.coverage(entry);
+  assert.ok(reset && reset.start <= 20 && 20 <= reset.through, `native's reseek at the paused hour keeps it: ${JSON.stringify(reset)}`);
+  const again = datedPanel(entry.id, 20, { live: { groups: [{ ...group, seedHour: 20, values: [7] }], rows: [], kinds: [], cells: [] } });
+  again[33] = 1;
+  deliver(again);
+  frame();
+  const resent = store.coverage(entry);
+  assert.ok(resent && resent.start <= 20 && 20 <= resent.through, `the panel native sends again at the paused hour keeps it: ${JSON.stringify(resent)}`);
+});
+
+test('a pause just ahead of the drawn hour keeps what already arrived for it, and drops only what lies beyond', () => {
+  let hour = 10;
+  const { store, add, deliver, frame } = dated(() => hour);
+  const entry = add();
+  store.bind('1', 9, 1);
+  const group = { table: 0, keys: ['1'], columns: [0], follow: 0x80000001, seedHour: 10, values: [5] };
+  const panel = datedPanel(entry.id, 10, { live: { groups: [group], rows: [], kinds: [], cells: [] } });
+  panel[33] = 1;
+  deliver(panel);
+  deliver(datedStep(12, [{ id: group.follow, hour: 10, answer: one(1n, 5n) }], 1));
+  for (let at = 13; at <= 40; at++) {
+    deliver(datedStep(at, at === 19 ? [{ id: group.follow, answer: one(1n, 7n) }] : at === 30 ? [{ id: group.follow, answer: one(1n, 9n) }] : [], 1));
+    deliver(completedStep(at));
+  }
+  hour = 18; frame();
+  store.seek('1', 1, 20);
+  const paused = store.coverage(entry);
+  assert.ok(paused && paused.start <= 20 && 20 <= paused.through, `the pause keeps the hour it stops at: ${JSON.stringify(paused)}`);
+  assert.equal(store.group(entry, group.follow)?.get(0, 0), 7, 'the value that arrived for hour 19, never one from beyond the pause');
+});
+
+test('a pause on a track offset from the axis applies what arrived up to its hour on the track', () => {
+  let hour = 10;
+  const { store, add, deliver, frame } = dated(() => hour);
+  const entry = add();
+  store.bind('1', 9, 1);
+  const clocked = (bytes: Uint8Array, at: number) => { new DataView(bytes.buffer, bytes.byteOffset).setInt32(at, 100, true); return bytes; };
+  const group = { table: 0, keys: ['1'], columns: [0], follow: 0x80000001, seedHour: 110, values: [5] };
+  const panel = clocked(datedPanel(entry.id, 110, { live: { groups: [group], rows: [], kinds: [], cells: [] } }), 12);
+  panel[33] = 1;
+  deliver(panel);
+  deliver(clocked(datedStep(112, [{ id: group.follow, hour: 110, answer: one(1n, 5n) }], 1), 20));
+  for (let at = 113; at <= 140; at++) {
+    deliver(clocked(datedStep(at, at === 119 ? [{ id: group.follow, answer: one(1n, 7n) }] : at === 130 ? [{ id: group.follow, answer: one(1n, 9n) }] : [], 1), 20));
+    deliver(clocked(completedStep(at), 12));
+  }
+  hour = 18; frame();
+  store.seek('1', 1, 120);
+  const paused = store.coverage(entry);
+  assert.ok(paused && paused.start <= 120 && 120 <= paused.through, `the pause keeps the track hour it stops at: ${JSON.stringify(paused)}`);
+  assert.equal(store.group(entry, group.follow)?.get(0, 0), 7, 'the value that arrived for track hour 119, never the one for 130');
+});
+
+test('a pause keeps a stepped panel when native sends the panel again before its cells', () => {
+  let hour = 10;
+  const { store, add, deliver, frame } = dated(() => hour);
+  const entry = add();
+  store.bind('1', 9, 1);
+  const group = { table: 0, keys: ['1'], columns: [0], follow: 0x80000001, seedHour: 10, values: [5] };
+  const panel = datedPanel(entry.id, 10, { live: { groups: [group], rows: [], kinds: [], cells: [] } });
+  panel[33] = 1;
+  deliver(panel);
+  deliver(datedStep(12, [{ id: group.follow, hour: 10, answer: one(1n, 5n) }], 1));
+  for (let at = 13; at <= 40; at++) {
+    deliver(datedStep(at, at === 15 ? [{ id: group.follow, answer: one(1n, 7n) }] : [], 1));
+    deliver(completedStep(at));
+  }
+  hour = 20; frame();
+  const playing = store.coverage(entry)!;
+  assert.ok(playing.start <= 20 && 20 <= playing.through, `playing covers the clock: ${JSON.stringify(playing)}`);
+  store.seek('1', 1, 20);
+  frame();
+  const paused = store.coverage(entry);
+  assert.ok(paused && paused.start <= 20 && 20 <= paused.through, `the pause keeps the hour it stops at: ${JSON.stringify(paused)}`);
+  const cells = store.group(entry, group.follow);
+  assert.equal(cells?.get(0, 0), 7, 'the values at the paused hour, never the seed');
+  assert.ok(cells?.landedHour != null && cells.landedHour <= 20, `landed from an answer at or before the pause: ${cells?.landedHour}`);
+  const again = datedPanel(entry.id, 20, { live: { groups: [{ ...group, seedHour: 20, values: [7] }], rows: [], kinds: [], cells: [] } });
+  again[33] = 1;
+  deliver(again);
+  frame();
+  const early = store.coverage(entry);
+  assert.ok(early && early.start <= 20 && 20 <= early.through, `the panel sent again first keeps it: ${JSON.stringify(early)}`);
+  deliver(datedStep(20, [{ id: group.follow, answer: one(1n, 7n) }], 1, true));
+  frame();
+  const resent = store.coverage(entry);
+  assert.ok(resent && resent.start <= 20 && 20 <= resent.through, `the panel native sends again at the paused hour keeps it: ${JSON.stringify(resent)}`);
+});
+
 test('a changing value stays in the worker until interaction requests its dated snapshot', () => {
   const decoder = new FollowDecoder(), released: unknown[] = [];
   const followed = new Followed(what => { released.push(what); decoder.release(what); });
@@ -478,6 +616,53 @@ test('a changing value stays in the worker until interaction requests its dated 
   assert.equal(followed.snapshot(3)?.panel, null);
   followed.remove(3);
   assert.deepEqual(released, [3, { route: 9 }]);
+});
+
+test('a stepped panel whose cells are followed stands through each completed step that sends nothing of it', () => {
+  const decoder = new FollowDecoder();
+  const followed = new Followed(what => decoder.release(what));
+  followed.add(3, 'branch');
+  followed.bind('branch', 9, 1);
+  const group = 0x80000001;
+  const live = { groups: [{ table: 0, keys: ['1'], columns: [0], follow: group, seedHour: 10, values: [7] }],
+    rows: ['1'], kinds: [{ id: 'progress', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] };
+  const step = (completed: number, panels: { id: number; hour: number; stepped: boolean; panel: { data: unknown; refused: null } }[]) =>
+    followed.land([{ kind: 'panels', batch: { route: 9, clock: 0, seek: 1, completed, panels } }]);
+  step(10, [{ id: 3, hour: 10, stepped: true, panel: { data: { live }, refused: null } }]);
+  followed.drain(10);
+  assert.equal(followed.snapshot(3)?.through, 10);
+  followed.land([decoder.item(datedStep(11, [{ id: group, hour: 11, answer: one(1n, 8n) }], 1).slice().buffer)]);
+  step(11, []);
+  followed.drain(11);
+  assert.equal(followed.snapshot(3)?.through, 11, 'a completed step sends each due product that changed');
+  assert.equal(followed.snapshot(3)?.values?.get(liveKey('1', 'progress')), 8);
+});
+
+test('a shown panel stands only until the hour a new panel waiting on its first cell answers starts', () => {
+  const decoder = new FollowDecoder();
+  const followed = new Followed(what => decoder.release(what));
+  followed.add(3, 'branch');
+  followed.bind('branch', 9, 1);
+  const first = 0x80000001, second = 0x80000002;
+  const live = (follow: number, seed: boolean) => ({ groups: [{ table: 0, keys: ['1'], columns: [0], follow, ...seed ? { seedHour: 10, values: [7] } : {} }],
+    rows: ['1'], kinds: [{ id: 'progress', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] });
+  const step = (completed: number, panels: { id: number; hour: number; stepped: boolean; panel: { data: unknown; refused: null } }[]) =>
+    followed.land([{ kind: 'panels', batch: { route: 9, clock: 0, seek: 1, completed, panels } }]);
+  step(10, [{ id: 3, hour: 10, stepped: true, panel: { data: { live: live(first, true) }, refused: null } }]);
+  followed.drain(10);
+  followed.land([decoder.item(datedStep(11, [{ id: first, hour: 11, answer: one(1n, 8n) }], 1).slice().buffer)]);
+  step(11, []);
+  followed.drain(11);
+  step(12, [{ id: 3, hour: 12, stepped: true, panel: { data: { live: live(second, false) }, refused: null } }]);
+  followed.land([decoder.item(datedStep(14, [{ id: first, hour: 14, answer: one(1n, 9n) }], 1).slice().buffer)]);
+  step(14, []);
+  followed.drain(14);
+  assert.equal(followed.snapshot(3)?.through, 11, 'the old panel is not the page after the new one starts');
+  const third = 0x80000003;
+  step(20, [{ id: 3, hour: 20, stepped: true, panel: { data: { live: live(third, false) }, refused: null } }]);
+  followed.land([decoder.item(datedStep(20, [{ id: first, hour: 20, answer: one(1n, 10n) }], 1).slice().buffer)]);
+  followed.drain(20);
+  assert.equal(followed.snapshot(3)?.through, 11, 'a later waiting panel never moves the end of the shown one');
 });
 
 test('a staged product computes its structural result only once', () => {

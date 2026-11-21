@@ -38,7 +38,7 @@ const TABLES: &[TableId] = &[
 pub struct AirAcesAt;
 pub struct AirAcePortraits;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirAcesParams {
@@ -88,7 +88,7 @@ pub struct AirAce {
     pub death: Option<AirAceDeath>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirAcesReply {
@@ -102,7 +102,7 @@ pub struct AirAcesReply {
 
 dashboard_base::reply_warnings!(AirAcesReply);
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirAcePortraitParams {
@@ -110,7 +110,7 @@ pub struct AirAcePortraitParams {
     pub ids: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirAcePortrait {
@@ -119,7 +119,7 @@ pub struct AirAcePortrait {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct AirAcePortraitReply {
     pub portraits: Vec<AirAcePortrait>,

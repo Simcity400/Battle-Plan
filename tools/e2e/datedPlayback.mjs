@@ -1,6 +1,10 @@
 import { MAX_PLAYBACK_AGE_HOURS, playbackPace } from './verdicts.mjs';
 
 const p95 = values => values.length ? values.toSorted((a, b) => a - b)[Math.ceil(values.length * .95) - 1] : null;
+const drawCost = (reports, id) => {
+  const ms = reports.filter(r => r.placement === id && !r.detached && Number.isFinite(r.drawMs)).map(r => r.drawMs);
+  return ms.length ? { meanMs: ms.reduce((a, b) => a + b, 0) / ms.length, p95Ms: p95(ms), maxMs: Math.max(...ms) } : null;
+};
 const gaps = times => times.slice(1).map((at, i) => at - times[i]);
 const rate = times => times.length < 2 ? null : 1000 * (times.length - 1) / (times.at(-1) - times[0]);
 const mean = xs => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
@@ -10,7 +14,8 @@ export const CANONICAL_INPUTS = Object.freeze(['rewind', 'scrub', 'pin', 'speed'
 export function inputPictures(frames, visibility, records, pinWidget) {
   const events = records.filter(r => r.t === 'picture' || r.t === 'tick' || r.t === 'ink' || r.t === 'workerFrame').toSorted((a, b) => a.at - b.at);
   const states = new Map(), pictures = new Map(), hidden = new Set(), examples = [];
-  const hasWorkerFrames = events.some(r => r.t === 'workerFrame' && r.at >= frames[0] && r.at <= frames.at(-1));
+  const lanes = new Set(events.filter(r => r.t === 'workerFrame' && r.at >= frames[0] && r.at <= frames.at(-1)).map(r => r.lane ?? 0));
+  const hasWorkerFrames = lanes.size > 0, applied = new Set();
   const settledBeforeSeek = new Set(), judged = new Set();
   let i = 0, v = 0, anchor, shown = [], initial = null, workerApplied = !hasWorkerFrames,
     checked = 0, future = 0, pending = 0, wrongSeek = 0, stale = 0, lost = 0;
@@ -23,13 +28,14 @@ export function inputPictures(frames, visibility, records, pinWidget) {
         const newSeek = anchor && Number.isFinite(anchor.seek) && Number.isFinite(r.seek) && anchor.seek !== r.seek;
         if (hasWorkerFrames && pause) {
           if (newSeek) for (const [id, state] of states) if (state.settled) settledBeforeSeek.add(id);
-          workerApplied = false; states.clear();
+          workerApplied = false; applied.clear(); states.clear();
         }
         anchor = r;
       }
       else if (r.t === 'workerFrame') {
         if (anchor && r.seek === anchor.seek && r.playing === anchor.playing &&
-          (anchor.playing || Math.floor(r.head) === Math.floor(anchor.hour))) workerApplied = true;
+          (anchor.playing || Math.floor(r.head) === Math.floor(anchor.hour))) applied.add(r.lane ?? 0);
+        workerApplied ||= [...lanes].every(lane => applied.has(lane));
       }
       else if (r.t === 'ink') { if (r.visible) hidden.delete(r.placement); else hidden.add(r.placement); }
       else if (r.detached) { pictures.delete(r.placement); states.delete(r.placement); }
@@ -98,7 +104,8 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const seconds = (frames.at(-1) - frames[0]) / 1000;
     const page = sorted.filter(r => r.t === 'frame' && r.playing && timed(r));
     const worker = sorted.filter(r => r.t === 'workerFrame' && r.playing && timed(r));
-    const fps = rate(frames), pageFps = rate(page.map(r => r.at)), presents = rate(worker.map(r => r.at));
+    const lanes = [...Map.groupBy(worker, r => r.lane ?? 0).values()].map(frames => rate(frames.map(r => r.at)));
+    const fps = rate(frames), pageFps = rate(page.map(r => r.at)), presents = !lanes.length || lanes.includes(null) ? null : Math.min(...lanes);
     if (fps === null) reasons.push('nothing measured');
     const pace = playbackPace(first, last, 1440);
     if (!pace.pass) reasons.push('clock did not advance at 1,440 h/s');
@@ -267,7 +274,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
         && [...required].every(surface => samples.some(s => s.surface === surface))
         && [...observedPairs].every(pair => auditedPairs.has(pair)) && samples.every(s => s.error === null);
       const age = p95(ages), eligible = p95(eligibleAges);
-      const surfaces = [...byPlacement].map(([id, s]) => ({ id, surface: s.surface, p95: p95(s.drawn), eligibleP95: p95(s.eligible), frames: s.drawn.length }));
+      const surfaces = [...byPlacement].map(([id, s]) => ({ id, surface: s.surface, p95: p95(s.drawn), eligibleP95: p95(s.eligible), frames: s.drawn.length, draw: drawCost(reports, id) }));
       const pass = Number.isFinite(age) && age <= MAX_PLAYBACK_AGE_HOURS && Number.isFinite(eligible) && eligible <= MAX_PLAYBACK_AGE_HOURS &&
         surfaces.every(s => Number.isFinite(s.p95) && s.p95 <= MAX_PLAYBACK_AGE_HOURS && Number.isFinite(s.eligibleP95) && s.eligibleP95 <= MAX_PLAYBACK_AGE_HOURS) &&
         future === 0 && exact && boundaryErrors.length === 0;

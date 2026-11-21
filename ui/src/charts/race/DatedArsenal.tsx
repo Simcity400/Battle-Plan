@@ -126,7 +126,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     canvas.addEventListener('focus', focus); canvas.addEventListener('blur', leave); canvas.addEventListener('pointerleave', leave); canvas.addEventListener('keydown', key);
     scroller.addEventListener('scroll', send, { passive: true });
     clear(); send();
-    return () => { perfLog?.releaseReader(id); clear(); stop(); stopClock(); anchor(); stopClockAnchor(); resize.disconnect(); scroller.removeEventListener('scroll', send); canvas.remove();
+    return () => { clear(); stop(); stopClock(); anchor(); stopClockAnchor(); resize.disconnect(); scroller.removeEventListener('scroll', send); canvas.remove();
       drawPost({ type: 'closeRace', id }); update.current = undefined; };
   }, [owner, props.clock, props.active, props.model.follow, props.model.fixed, props.resetKey, widget]);
   useLayoutEffect(() => { update.current?.(); }, [props.model]);

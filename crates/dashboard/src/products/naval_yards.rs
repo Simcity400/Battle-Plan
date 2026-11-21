@@ -28,7 +28,7 @@ use ts_rs::TS;
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalYardsParams {
@@ -65,7 +65,7 @@ pub struct RepairPort {
     pub queue: Vec<YardShip>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalRepairsReply {
@@ -95,7 +95,7 @@ pub struct RefitLine {
     pub ships: Vec<YardShip>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalRefitsReply {

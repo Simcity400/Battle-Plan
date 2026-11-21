@@ -485,6 +485,17 @@ static POWER: Series = Series {
     parts: None,
     measures: &[Measure { name: "power", column: Column::Cell("political_power_raw"), decimals: 5, aggregates: 0, carry: Carry::None, rank: 0 }],
     drops: false,
+    absent_none: false,
+};
+
+static POWER_NONE: Series = Series {
+    kind: "test-power-none",
+    table: TableId::Countries,
+    key: Key::Country,
+    parts: None,
+    measures: &[Measure { name: "power", column: Column::Cell("political_power_raw"), decimals: 5, aggregates: 0, carry: Carry::None, rank: 0 }],
+    drops: false,
+    absent_none: true,
 };
 
 #[test]
@@ -546,12 +557,17 @@ fn a_top_breaks_a_tie_at_its_last_place_by_tag_as_the_race_does() {
     holders.tags.insert("MMM".into(), held(1, 101));
     holders.tags.insert("ZZZ".into(), held(2, 102));
     holders.tags.insert("AAA".into(), held(3, 103));
+    holders.tags.insert("NNN".into(), held(9, 999));
     let timeline = Stretches { id: 1, first: 0, last: HOURS as Hour - 1, stretches: vec![Stretch { run: 0, first: 0, last: HOURS as Hour - 1, join: Join::Start }], unheld: Vec::new() };
     let identity = Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) };
     let top = Query::series_top(&POWER, &POWER.measures[0], 2, identity.clone());
-    let least = Query::series_top(&POWER, &POWER.measures[0], 2, identity).least();
+    let least = Query::series_top(&POWER, &POWER.measures[0], 2, identity.clone()).least();
+    let none_top = Query::series_top(&POWER_NONE, &POWER_NONE.measures[0], 4, identity.clone());
+    let none_least = Query::series_top(&POWER_NONE, &POWER_NONE.measures[0], 2, identity).least();
     harness.follow.follow(7, top.clone()).unwrap();
     harness.follow.follow(8, least.clone()).unwrap();
+    harness.follow.follow(9, none_top.clone()).unwrap();
+    harness.follow.follow(10, none_least.clone()).unwrap();
     harness.seek(0);
     let played = harness.play(50);
     let last = |id: u32| played.iter().flat_map(Played::answers).filter(|(at, _, _)| *at == id).last().expect("an answer");
@@ -563,6 +579,14 @@ fn a_top_breaks_a_tie_at_its_last_place_by_tag_as_the_race_does() {
     assert_eq!(answer, harness.fresh(&least, hour));
     let names: Vec<&str> = (0..answer.keys.len()).filter_map(|row| answer.name(row)).collect();
     assert_eq!(names, ["AAA", "ZZZ"], "the least first, a tie by tag in byte order");
+    for (id, query, wanted) in [(9, &none_top, &["MMM", "AAA", "NNN", "ZZZ"][..]), (10, &none_least, &["AAA", "NNN"][..])] {
+        let (_, hour, answer) = last(id);
+        assert_eq!(answer, harness.fresh(query, hour));
+        let names: Vec<&str> = (0..answer.keys.len()).filter_map(|row| answer.name(row)).collect();
+        assert_eq!(names, wanted, "a holder with no row ranks at zero");
+        let nnn = names.iter().position(|name| *name == "NNN").unwrap();
+        assert_eq!((answer.keys[nnn], answer.values[nnn], answer.states[nnn]), (999, 0, State::Value));
+    }
 }
 
 static PARTS: Series = Series {
@@ -572,6 +596,7 @@ static PARTS: Series = Series {
     parts: Some(Parts { bits: 2, id: None }),
     measures: &[Measure { name: "slot", column: Column::Cell("canonical_slot"), decimals: 0, aggregates: 0, carry: Carry::None, rank: 0 }],
     drops: false,
+    absent_none: false,
 };
 
 #[test]
@@ -1345,7 +1370,7 @@ fn dated_panel_merge_keeps_the_reading_and_its_confirmation_separate() {
 fn completed_product_step_has_constant_size_when_every_product_stands() {
     use crate::panel::dated;
     let mut batch = dated::ProductBatch::new((0, 3, 9));
-    batch.changed(7, 10, 18, dated::DATA, b"first");
+    batch.changed(7, 10, dated::DATA, b"first");
     let first = batch.finish(Some(10));
     let next = dated::ProductBatch::new((0, 3, 9)).finish(Some(34));
     assert_eq!(dated::records(&next).unwrap().len(), 1);

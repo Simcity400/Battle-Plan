@@ -41,7 +41,7 @@ use walk::{Seen, Viewed, Walk};
 pub struct Wars;
 pub struct WarLosses;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WarsParams {
@@ -108,7 +108,7 @@ pub struct WarObservation {
     pub name: WarName,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarTimeline {
@@ -150,7 +150,7 @@ impl WarRelationKey {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct WarRelationMembership {
     pub key: WarRelationKey,
     pub oriented: bool,
@@ -158,7 +158,7 @@ pub(crate) struct WarRelationMembership {
     pub last_hour: i32,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarsReply {
@@ -176,7 +176,7 @@ pub struct WarsReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WarLossesParams {
@@ -189,7 +189,7 @@ pub struct WarLossesParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct WarCasualtyRun(pub i32, pub i32, pub String, pub String, pub String, pub String);
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarCasualties {
@@ -199,7 +199,7 @@ pub struct WarCasualties {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarLossesReply {

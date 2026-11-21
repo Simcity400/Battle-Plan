@@ -19,7 +19,7 @@ const TABLES: [TableId; 2] = [TableId::CountryExperience, TableId::CountryExperi
 
 pub struct CountryExperience;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExperienceParams {
@@ -36,7 +36,7 @@ pub struct ExperienceValues {
     pub air_raw: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ExperienceReply {

@@ -36,7 +36,7 @@ const fn entry_key(holder: u32, ordinal: u32) -> u128 {
 
 pub struct OccupationReserve;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OccupationReserveParams {
@@ -62,7 +62,7 @@ pub struct ReserveHolder {
     pub entries: Vec<ReserveEntry>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OccupationReserveReply {
@@ -124,11 +124,10 @@ impl AtHour for OccupationReserve {
         branch(&params.branch_id)
     }
 
-    fn uses_sample(table: TableId) -> bool { table == TableId::CountryOccupationReserveManpower }
 
     const CLOCK_DEPENDENT: bool = false;
 
-    fn projection(_params: &Self::Params, table: TableId) -> Option<Vec<usize>> {
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<crate::products::at_hour::Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         match table {
             TableId::OccupationSettings => Some(Vec::new()),
             TableId::CountryCounterInputs => Some(dashboard_base::products::at_hour::field_columns(table, &["owned_state_count"])),
@@ -171,7 +170,7 @@ impl AtHour for OccupationReserve {
 
 pub struct ReserveHistory;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReserveHistoryParams {
@@ -218,7 +217,7 @@ pub struct ReserveSource {
     pub tags: Vec<SourceTag>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ReserveHistoryReply {
