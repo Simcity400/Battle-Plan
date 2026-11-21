@@ -111,7 +111,7 @@ jobs:
         run: npm ci
 
       - name: Build the installer
-        shell: pwsh
+        shell: powershell
         env:
           FEED: ${{ (inputs.channel || 'nightly') != 'preview' && format('https://github.com/{0}/releases', github.repository) || '' }}
         run: |
