@@ -323,9 +323,9 @@ def unsafe_item(node):
 
 
 def safety_heading(run):
-    """Whether the doc run has a `# Safety` heading outside Markdown code: not in a fenced block and
-    not indented as code."""
-    fence = None
+    """Whether the doc run has a `# Safety` heading outside Markdown code (not in a fenced block and
+    not indented as code) with a contract under it, before the next heading or the run's end."""
+    fence, section = None, False
     for comment in run:
         text = comment.text[3:].rstrip(b"\r\n")
         text = text[1:] if text.startswith(b" ") else text
@@ -333,9 +333,17 @@ def safety_heading(run):
         if fence is not None:
             if opening and opening[1][0] == fence[0] and len(opening[1]) >= len(fence) and not opening[2].strip():
                 fence = None
+            elif section:
+                return True
         elif opening:
             fence = opening[1]
+            if section:
+                return True
         elif SAFETY_HEADING.fullmatch(text):
+            section = True
+        elif section and re.match(rb" {0,3}#", text):
+            section = False
+        elif section and text.strip():
             return True
     return False
 

@@ -180,6 +180,10 @@ pub unsafe fn indented() {}
 /// ````
 /// Refused: a shorter fence does not close the block.
 pub unsafe fn fenced() {}
+/// Refused: the contract sits above an empty heading.
+///
+/// # Safety
+pub unsafe fn empty() {}
 """
         self.assertEqual(bodies("file.rs", rust), [
             b"// SAFETY: refused, a safe function's body is not this comment's code.",
@@ -187,6 +191,7 @@ pub unsafe fn fenced() {}
             b"/// Text.\n", b"///\n", b"///     # Safety\n", b"/// Refused: the heading is indented code.\n",
             b"/// ````text\n", b"/// ```\n", b"/// # Safety\n", b"/// ````\n",
             b"/// Refused: a shorter fence does not close the block.\n",
+            b"/// Refused: the contract sits above an empty heading.\n", b"///\n", b"/// # Safety\n",
         ])
 
     def test_function_pointer_types_unsafe_attributes_and_foreign_functions(self):

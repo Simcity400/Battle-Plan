@@ -179,6 +179,11 @@ const AFTER: Rva = Rva(0x54);
                     self.assertEqual(sites.published_names(),
                                      {0x20: "sites::Append", 0x28: "sites::Destroy", 0x38: "sites::Lost"})
 
+    def test_a_promotion_names_every_published_site_left_without_a_key(self):
+        with patch.object(sites, "published_names", return_value={0x20: "sites::Append", 0x28: "sites::Destroy"}):
+            self.assertEqual(sites.unplaced({0x20: "sites::Append"}), ["sites::Destroy"])
+            self.assertEqual(sites.unplaced({0x20: "sites::Append", 0x28: "sites::Destroy"}), [])
+
     def test_a_failed_publication_restores_the_outputs_already_replaced(self):
         with tempfile.TemporaryDirectory() as root:
             first, second = Path(root, "generated.rs"), Path(root, "spec.json")

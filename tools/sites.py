@@ -1190,6 +1190,11 @@ def report(image, spec, recorded, layout_checked):
     return reasons, wrong, withheld
 
 
+def unplaced(keys):
+    """The published names, moved to the current reference, that no source key carries any more."""
+    return sorted(name for rva, name in published_names().items() if rva not in keys)
+
+
 def digest(path):
     """The SHA-256 of the executable at `path`, as engine_sites::LAYOUT_CHECKED records it."""
     with open(path, "rb") as f:
@@ -1275,6 +1280,10 @@ def main(argv):
         if promoted_from:
             print("the reference changed from %s: other builds are compared through its relocation map; "
                   "relocate each one, then run check" % BUILDS[promoted_from])
+            dropped = unplaced(keys)
+            if dropped:
+                raise SystemExit("%s and spec.json are unchanged: %d published sites have no key at their new "
+                                 "position (%s); move each declaration there" % (OUTPUT, len(dropped), ", ".join(dropped[:5])))
         if problems or verify(spec, images, reference, written=False, promoted_from=promoted_from):
             raise SystemExit("%s and spec.json are unchanged: publishing a failing table would lose or "
                              "replace published names" % OUTPUT)
