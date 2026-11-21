@@ -495,6 +495,20 @@ def failure_report(sorted_report, beyond=()):
     return lines
 
 
+COMPILING = re.compile(r"^\s+(?:Compiling|Checking) (\S+) v", re.M)
+
+
+def compiled(log):
+    """How many units a Cargo command built, naming the first few, so a leg shows how much its
+    restored cache saved."""
+    try:
+        names = COMPILING.findall(Path(log).read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return ""
+    shown = ", ".join(dict.fromkeys(names[:8]))
+    return f"compiled {len(names)} units" + (f" ({shown}{', ...' if len(names) > 8 else ''})" if names else "")
+
+
 def held_detail(held):
     return "; ".join(f"{sum(binaries.values())} not run here: {reason}" for reason, binaries in held.items())
 
@@ -544,7 +558,7 @@ class Runner:
                         code = 0
                     held = held_detail(found[2])
         seconds = time.monotonic() - started
-        detail = ", ".join(filter(None, [decision.detail, held]))
+        detail = ", ".join(filter(None, [decision.detail, held, compiled(log) if job.kind == "crates" else ""]))
         if code == 0:
             return Outcome(job.name, "pass", detail, seconds, str(log))
         if self.local and job.kind == "crates" and (code == BOAT_FAILED or b"BOAT UNAVAILABLE" in log.read_bytes()):
