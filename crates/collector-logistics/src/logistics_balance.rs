@@ -451,7 +451,8 @@ impl Drop for HistoryChange<'_> {
 }
 /// # Safety
 /// The original passed here is a live function with the hooked function's ABI that accepts these
-/// arguments, and every object they reach stays valid for the call.
+/// arguments, and every object they reach stays valid for the reads its site makes; one the
+/// original destroys is an identity only once it returns.
 unsafe fn history_change(history: usize, target: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::LogisticsBalance);
     let _guard = Guard::enter();
@@ -583,7 +584,7 @@ impl CellBinding<'_> {
 }
 /// # Safety
 /// The arguments are ones the hooked balance write's original accepts, with `offset` that call
-/// site's, and every object they reach stays valid for the call.
+/// site's, and every object they reach stays valid for the reads that site makes.
 unsafe fn write(record: usize, balance: i64, archetype: u32, stack: usize, offset: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::LogisticsBalance);
     let _guard = Guard::enter();

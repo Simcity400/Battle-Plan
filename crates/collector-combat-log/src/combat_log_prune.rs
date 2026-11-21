@@ -34,9 +34,10 @@ struct Log {
 //   final decrement, and all their writes happen before the drain's reads.
 //   A running writer (a violated precondition) makes the drain refuse.
 // - The drain reads only reserved elements within the log, all marked.
-// - A log is replaced or freed only with `HANDOFF` set and `ACTIVE` then
-//   loaded as 0; a writer tests `HANDOFF` after entering its call, and loads
-//   `LOG` only when it is clear. So no writer holds a replaced log.
+// - A log's published pointer is removed only with `HANDOFF` set and `ACTIVE`
+//   then loaded as 0; a writer tests `HANDOFF` after entering its call, and
+//   loads `LOG` only when it is clear. So no writer holds a removed log, which
+//   may then be freed later without `HANDOFF`.
 unsafe impl Sync for Log {}
 
 impl Log {

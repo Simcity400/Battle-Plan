@@ -931,7 +931,8 @@ impl Hooks {
 
 /// # Safety
 /// The original passed here is a live function with the hooked function's ABI that accepts these
-/// arguments, and every object they reach stays valid for the call.
+/// arguments, and every object they reach stays valid for the reads its site makes; one the
+/// original destroys is an identity only once it returns.
 unsafe fn forwarded(
     site: collector_observers::world_input_changes::Forward,
     call: collector_observers::world_input_changes::ForwardCall,
@@ -1052,7 +1053,8 @@ fn returned(memory: &impl Memory, base: usize, site: usize, pointer: usize, firs
 
 /// # Safety
 /// The arguments are ones `SITE`'s published original accepts with its ABI, and every object they
-/// reach stays valid for the call, as when a hooked call's detour passes them.
+/// reach stays valid for the reads its site makes; one the original destroys is an identity only
+/// once it returns.
 unsafe fn callback<const SITE: usize>(
     first: usize,
     second: usize,
@@ -1069,7 +1071,8 @@ unsafe fn callback<const SITE: usize>(
 
 /// # Safety
 /// The original passed here is a live function with the hooked function's ABI that accepts these
-/// arguments, and every object they reach stays valid for the call.
+/// arguments, and every object they reach stays valid for the reads its site makes; one the
+/// original destroys is an identity only once it returns.
 unsafe fn around<const SITE: usize>(
     args: [usize; 4],
     original: collector_observers::world_input_changes::Original,
@@ -1078,7 +1081,8 @@ unsafe fn around<const SITE: usize>(
 }
 /// # Safety
 /// The original passed here is a live function with the hooked function's ABI that accepts these
-/// arguments, and every object they reach stays valid for the call.
+/// arguments, and every object they reach stays valid for the reads its site makes; one the
+/// original destroys is an identity only once it returns.
 unsafe fn around_with_identities<const SITE: usize>(
     [first, second, third, fourth]: [usize; 4],
     original: collector_observers::world_input_changes::Original,

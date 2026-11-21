@@ -124,7 +124,8 @@ unsafe extern "system" fn straits_reload(map: usize, b: usize, c: usize, d: usiz
 }
 /// # Safety
 /// The original passed here is a live function with the hooked function's ABI that accepts these
-/// arguments, and every object they reach stays valid for the call.
+/// arguments, and every object they reach stays valid for the reads its site makes; one the
+/// original destroys is an identity only once it returns.
 unsafe fn reload(original: &AtomicUsize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::WorldLifetime);
     ACTIVE.fetch_add(1, Ordering::SeqCst);

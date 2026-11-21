@@ -16,8 +16,8 @@ fn enabled(availability: Availability) {
     );
 }
 /// # Safety
-/// `receiver` is the object the forwarded notification concerns, or zero. It is read only in
-/// `Phase::Before`, while it is valid; afterwards a destroyed object's address is an identity only.
+/// `receiver` is an opaque identity in every phase: this handler uses it only as a registry key,
+/// so any value, zero included, meets the contract.
 unsafe fn receive(writer: Writer, receiver: usize, phase: Phase) {
     let every = !matches!(
         writer,

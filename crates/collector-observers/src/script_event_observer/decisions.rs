@@ -58,7 +58,8 @@ impl Drop for Anchor {
 }
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn pass(status: usize, arg: usize, index: usize, container: u8) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
@@ -158,7 +159,8 @@ unsafe extern "system-unwind" fn erase_range(header: usize, first: usize, last: 
 }
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn reset_or_restore(status: usize, b: usize, c: usize, index: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
@@ -281,7 +283,8 @@ unsafe extern "system-unwind" fn state_candidates(
 }
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn global_candidates(closure: usize, arg: usize, index: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
@@ -340,7 +343,8 @@ fn clear_candidates(status: usize) {
 }
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn ignore_token(container: usize, token: usize, index: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
@@ -370,7 +374,8 @@ unsafe extern "system-unwind" fn unignore(a: usize, b: usize) -> usize {
 }
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn update(status: usize, b: usize, index: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
@@ -392,7 +397,8 @@ unsafe extern "system-unwind" fn refresh(a: usize, b: usize) -> usize {
 }
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn detour(a: usize, b: usize, c: usize, index: usize) -> usize {
     use super::staging::{Detour, Unit, Witness};
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
@@ -516,7 +522,8 @@ unsafe fn retirement(a: usize, b: usize, c: usize) -> usize {
 }
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn call(a: usize, b: usize, c: usize, index: usize) -> usize {
     if index == REPLACE_EVENT_RETIREMENT {
         return unsafe { retirement(a, b, c) };

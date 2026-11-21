@@ -154,7 +154,8 @@ fn reset_forwarder_enabled(enabled: bool) {
 }
 /// # Safety
 /// The original passed here is a live function with the hooked function's ABI that accepts these
-/// arguments, and every object they reach stays valid for the call.
+/// arguments, and every object they reach stays valid for the reads its site makes; one the
+/// original destroys is an identity only once it returns.
 unsafe fn forwarded_reset(a: usize, b: usize, c: usize, d: usize, original: usize) -> usize {
     let _mine = MINES.notify(life_key(a));
     let _accident = ACCIDENTS.notify(a);
@@ -291,7 +292,8 @@ pub(crate) fn patch_sites() -> Vec<(&'static str, Rva)> {
 
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn original(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let native: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[index].load(Ordering::Acquire)) };
@@ -326,7 +328,8 @@ fn event_slice(index: usize, navy: usize, second: usize) -> Option<usize> {
 
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn changed(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
     let _running = MINES.running();
@@ -340,7 +343,8 @@ unsafe fn changed(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize
 }
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn lifecycle(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
     let navy = lifecycle_receiver(index, a);
@@ -351,7 +355,8 @@ unsafe fn lifecycle(index: usize, a: usize, b: usize, c: usize, d: usize) -> usi
 }
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn ledger(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
     LEDGER_CALLS[index].fetch_add(1, Ordering::Relaxed);
@@ -367,7 +372,8 @@ fn ledger_write(ledgers: &WatchRegistry, navy: usize, write: impl FnOnce() -> us
 }
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn reports(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
     let _mark = ACCIDENTS.notify(a);

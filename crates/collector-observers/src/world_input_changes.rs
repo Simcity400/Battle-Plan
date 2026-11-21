@@ -71,7 +71,8 @@ fn forwarded_site(site: usize) -> Option<Forward> {
 }
 /// # Safety
 /// The arguments are ones `SITE`'s published original accepts with its ABI, and every object they
-/// reach stays valid for the call, as when a hooked call's detour passes them.
+/// reach stays valid for the reads its site makes; one the original destroys is an identity only
+/// once it returns.
 #[inline]
 unsafe fn invoke<const SITE: usize>(args: [usize; 4]) -> usize {
     let original: Original = unsafe { std::mem::transmute(ORIGINAL[SITE].load(Ordering::Acquire)) };

@@ -2635,7 +2635,8 @@ unsafe extern "system-unwind" fn delete(
 
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn returned_at(site: SiteId, reserves: usize, pool: usize) {
     let _call = Call::enter(site);
     let original: unsafe extern "system-unwind" fn(usize, usize) =
@@ -2921,7 +2922,8 @@ fn transfer_before(
 
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn transfer_roster(
     site: SiteId,
     country: usize,
@@ -2975,7 +2977,8 @@ unsafe extern "system-unwind" fn exile_transfer(country: usize, army: usize) -> 
 
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn pool_scale(site: SiteId, receiver: usize, factor: usize, cause: native::Cause) {
     let _call = Call::enter(site);
     let original: unsafe extern "system-unwind" fn(usize, usize) =

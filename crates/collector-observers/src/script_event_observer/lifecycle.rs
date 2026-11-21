@@ -312,7 +312,8 @@ fn duration_result(
 }
 /// # Safety
 /// The arguments are ones the selected site's published original accepts with its ABI, and
-/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn remove(status: usize, definition: usize, flags: usize, index: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();

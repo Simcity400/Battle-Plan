@@ -42,7 +42,8 @@ fn design_source_availability(enabled: bool) {
 }
 /// # Safety
 /// The original passed here is a live function with the hooked function's ABI that accepts these
-/// arguments, and every object they reach stays valid for the call.
+/// arguments, and every object they reach stays valid for the reads its site makes; one the
+/// original destroys is an identity only once it returns.
 unsafe fn design_source_invoke(args: [usize; 4], original: DesignSourceOriginal) -> usize {
     let receiver = DESIGN_SOURCES.load(Ordering::Acquire);
     if let Some(receiver) = unsafe { receiver.as_ref() } {

@@ -1123,7 +1123,8 @@ unsafe extern "system-unwind" fn leader_tap(side: usize, caller: usize, target: 
 }
 /// # Safety
 /// The original passed here is a live function with the hooked function's ABI that accepts these
-/// arguments, and every object they reach stays valid for the call.
+/// arguments, and every object they reach stays valid for the reads its site makes; one the
+/// original destroys is an identity only once it returns.
 unsafe fn leader_observation(call: &Call, side: usize, caller: usize, target: usize) -> usize {
     let original: unsafe extern "system-unwind" fn(usize) -> usize =
         unsafe { std::mem::transmute(target) };
