@@ -541,6 +541,7 @@ impl<const N: usize> Raw for [u8; N] {
 #[inline]
 fn copy_scalar<T: Raw>(memory: &(impl Memory + ?Sized), address: usize) -> Option<T> {
     let mut value = T::ZERO;
+    // SAFETY: Raw is sealed to initialized, padding-free, all-bit-pattern types.
     let bytes = unsafe {
         std::slice::from_raw_parts_mut((&mut value as *mut T).cast::<u8>(), size_of::<T>())
     };
@@ -558,6 +559,8 @@ pub fn scalar_from_bytes<T: Raw>(source: &[u8]) -> Option<T> {
         return None;
     }
     let mut value = T::ZERO;
+    // SAFETY: Raw has no padding or invalid bit patterns; the exact destination
+    // is initialized, writable and cannot overlap the borrowed source.
     let destination = unsafe {
         std::slice::from_raw_parts_mut((&mut value as *mut T).cast::<u8>(), size_of::<T>())
     };
@@ -658,6 +661,8 @@ fn initialized(bytes: &mut [MaybeUninit<u8>]) -> &mut [u8] {
     for byte in bytes.iter_mut() {
         byte.write(0);
     }
+    // SAFETY: every byte was written just above, and `u8` has the layout of
+    // `MaybeUninit<u8>`; the borrow is the caller's unique borrow.
     unsafe { &mut *(std::ptr::from_mut(bytes) as *mut [u8]) }
 }
 
@@ -690,6 +695,9 @@ impl Memory for SliceMemory<'_> {
         let source = self
             .bytes
             .get(start..start.checked_add(destination.len())?)?;
+        // SAFETY: `source` and `destination` have the same length and cannot
+        // overlap (one is borrowed shared, the other unique). The copy writes
+        // every destination byte, so all of them are initialized after it.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 source.as_ptr(),
@@ -715,11 +723,11 @@ pub struct LiveMemory(std::marker::PhantomData<std::rc::Rc<()>>);
 
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 impl LiveMemory {
-    #[doc = " # Safety"]
-    #[doc = " Use only for foreign game memory under the caller's consistency protocol,"]
-    #[doc = " or immutable synthetic storage in tests."]
-    #[doc = " SEH protects against invalid addresses, not concurrent writes or Rust aliasing violations."]
-    #[doc = " This handle is deliberately neither Send nor Sync."]
+    /// # Safety
+    /// Use only for foreign game memory under the caller's consistency protocol,
+    /// or immutable synthetic storage in tests.
+    /// SEH protects against invalid addresses, not concurrent writes or Rust aliasing violations.
+    /// This handle is deliberately neither Send nor Sync.
     pub unsafe fn new() -> Self {
         Self(std::marker::PhantomData)
     }
@@ -769,6 +777,11 @@ impl LiveMemory {
         if copy_count == 0 {
             return count;
         }
+        // SAFETY: spans[..count] is initialized, including empty entries, and
+        // metadata and writable destinations outlive C. Both native paths copy
+        // the same exact spans in order, returning the completed prefix on a
+        // fault. The opt-in path only hints validated future spans; it performs
+        // no future loads, and hints cannot consume a guard-page exception.
         let copied = unsafe {
             if PREFETCH {
                 seh_guarded_copy_scattered_prefetched(spans.as_ptr().cast::<Span>(), copy_count)
@@ -784,12 +797,15 @@ impl LiveMemory {
     }
 }
 
-#[doc = " One guarded copy of `len` foreign bytes from `address` to `destination`,"]
-#[doc = " true only when all of them were copied; a fault may leave a written prefix."]
-#[doc = ""]
-#[doc = " # Safety"]
-#[doc = " `destination` must be valid for `len` byte writes, and `address..+len`"]
-#[doc = " must have passed the null, overflow and canonical gates."]
+/// One guarded copy of `len` foreign bytes from `address` to `destination`,
+/// true only when all of them were copied; a fault may leave a written prefix.
+///
+/// # Safety
+/// `destination` must be valid for `len` byte writes, `address..+len`
+/// must have passed the null, overflow and canonical gates, and the two
+/// ranges must not overlap. As for `LiveMemory::new`, the source is foreign
+/// memory read under the caller's consistency protocol, or immutable synthetic
+/// storage, for the whole copy.
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 #[inline(always)]
 unsafe fn guarded_copy(destination: *mut u8, address: usize, len: usize) -> bool {
@@ -821,6 +837,9 @@ impl Memory for LiveMemory {
         unsafe extern "C" {
             fn seh_guarded_read4(src: *const u8) -> u64;
         }
+        // SAFETY: C guards exactly the admitted four-byte foreign source. Its
+        // upper word is one on success and zero on failure, independently of
+        // every possible lower-word value. Failed loads publish no value.
         let packed = unsafe { seh_guarded_read4(address as *const u8) };
         if packed >> 32 == 0 {
             return None;
@@ -855,6 +874,10 @@ impl Memory for LiveMemory {
             return plan.execute(self, destination);
         };
         let mut completed = 0;
+        // SAFETY: PreparedPlan owns immutable repr(C) descriptors and expected
+        // bytes; its constructor validates every source and destination bound.
+        // The writable owned destination outlives C, which guards only the
+        // active exact source copy and stops before every later read on failure.
         let result = unsafe {
             seh_execute_read_plan(
                 native.reads.as_ptr(),
@@ -909,6 +932,11 @@ impl Memory for LiveMemory {
         {
             return None;
         }
+        // SAFETY: the destination pointer covers `len` writable bytes the
+        // caller borrows uniquely; C only stores to them and never reads them.
+        // C returns nonzero only when it copied the whole source range, so
+        // then every destination byte is initialized. On a fault it returns
+        // zero, possibly after storing a prefix, and no byte is exposed.
         unsafe {
             guarded_copy(
                 destination.as_mut_ptr().cast::<u8>(),
@@ -970,6 +998,15 @@ impl Memory for LiveMemory {
             RecordSources::Pointers(pointers) => (pointers.as_ptr(), 0, 0),
             RecordSources::Strided { base, stride, .. } => (std::ptr::null(), base, stride),
         };
+        // SAFETY: the two immutable metadata slices and initialized writable
+        // destination outlive the call. RecordField has the C layout, and the
+        // checked row count/stride and field bounds cover every destination.
+        // Every nonempty source within validated_field_count has passed the
+        // Rust null/overflow/canonical checks. C only evaluates that prefix,
+        // including a possible partial final row; invalid and later sources
+        // never reach a guarded instruction. SEH still decides readability in
+        // order, so an earlier unreadable field wins over a later invalid one.
+        // C preserves its completed-field witness and exact fault-range filter.
         unsafe {
             seh_guarded_copy_records(
                 pointers,

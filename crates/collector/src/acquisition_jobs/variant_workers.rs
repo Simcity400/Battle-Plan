@@ -127,6 +127,7 @@ impl Dispatch {
                 base,
                 part: work,
             }));
+            // SAFETY: this parent drains the storage child before returning its live lease.
             match unsafe { executor.submit_with_priority(&mut request, 2, true, true) } {
                 Ok(ticket) => {
                     pending.tickets.push(Some(ticket));
@@ -171,6 +172,7 @@ impl Dispatch {
             };
             let role = work.role();
             let mut request = Some(Job::VariantPart(Request { base, part: work }));
+            // SAFETY: this parent drains the child before returning its live lease.
             let submitted =
                 unsafe { executor.submit_with_priority(&mut request, self.priority, true, true) };
             note_dispatch(&pending.calibration.roles[role as usize], submitted.is_ok());
@@ -378,6 +380,7 @@ impl Dispatch {
                 base,
                 part,
             }));
+            // SAFETY: the worker parent drains every child before returning its live lease.
             let submitted =
                 unsafe { executor.submit_with_priority(&mut request, self.priority, true, true) };
             note_dispatch(&pending.calibration.roles[role as usize], submitted.is_ok());

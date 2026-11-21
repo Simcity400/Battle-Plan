@@ -506,8 +506,8 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " Host authenticates the executable and restores/quiesces before unload."]
+    /// # Safety
+    /// Host authenticates the executable and restores/quiesces before unload.
     pub unsafe fn new(
         _memory: &impl Memory,
         base: usize,

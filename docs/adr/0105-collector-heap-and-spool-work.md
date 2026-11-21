@@ -10,8 +10,4 @@ Heap creation is allocation-free so attach can refuse before an infallible Rust 
 
 The spool alone converts packs without a helper marker. Each movable pack is claimed once by the spool or a helper, with the first helper also taking map conversion. The next hour orders unknown costs first in pack order, then known costs slowest first. An unmeasured movable pack needs every available helper. Once measured, the pool size aims to bring total work per thread near the longest movable pack, subject to the available workers. The previous fixed lane order remains a benchmark comparison. Each worker reports wall time, including waits, and costs from its own packs, so merging cannot double-charge those times. An hour without conversion creates no new cost sample, and the current frame consumes its diagnostics once.
 
-## Safety contract
-
-`PrivateHeap::detach` requires every caller that could use, free or reallocate private-heap storage to have relinquished it before explicit DLL unload. Runtime restores and quiesces the hooks and joins every worker first. The loader has run the unloading thread's TLS destructors by `DllMain` and removes this module's TLS callbacks for other threads. Rust statics do not provide an automatic destructor here, so this entry point releases the heap without allocating or logging.
-
 [Private heap](../../crates/collector/src/private_heap.rs) · [Heap tests](../../crates/collector/src/private_heap/tests.rs) · [Pack conversion](../../crates/collector/src/pack_conversion.rs)

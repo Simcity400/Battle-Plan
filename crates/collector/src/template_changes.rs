@@ -258,6 +258,9 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         BASE.store(base, Ordering::Release);
@@ -375,6 +378,9 @@ impl Drop for Hooks {
             false,
         );
         crate::orders_group_changes::forwarder(false);
+        // SAFETY: like each Hook's relay, the watch tables are dropped only
+        // once the hooks were never enabled, or were removed and drained
+        // after the last capture.
         unsafe { WATCHES.registry.release() };
     }
 }
@@ -425,6 +431,7 @@ pub(crate) fn native_notification(
     first: usize,
     second: usize,
 ) -> (Notification<'_>, Option<Notification<'static>>) {
+    // SAFETY: all reads are guarded on the native calling thread.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     notification(
         watches,

@@ -1478,6 +1478,7 @@ mod scale {
     fn batched_naming_matches_the_per_field_reader_over_guarded_memory() {
         for templates in [64, 500] {
             let world = World::new(2_000, templates);
+            // SAFETY: the world owns the complete synthetic graph, alive and immutable through every read.
             let live = unsafe { crate::memory::LiveMemory::new() };
             let mut keys = Default::default();
             let expected: Vec<_> = world
@@ -1512,6 +1513,7 @@ mod scale {
     #[test]
     fn a_key_that_does_not_fit_is_counted_once_per_pass() {
         let world = World::new(4, 1);
+        // SAFETY: the world owns the complete synthetic graph, alive and immutable through every read.
         let live = unsafe { crate::memory::LiveMemory::new() };
         let mut groups = name::GroupKeys::with_capacity(4, 4);
         for pass in 0..2 {
@@ -1536,6 +1538,7 @@ mod scale {
     #[test]
     fn a_second_division_of_a_template_costs_only_the_member_copy() {
         let world = World::new(3, 1);
+        // SAFETY: the world owns the complete synthetic graph, alive and immutable through every read.
         let counted = Counted {
             inner: unsafe { crate::memory::LiveMemory::new() },
             calls: Cell::new(0),
@@ -1574,6 +1577,7 @@ mod scale {
                 .armies
                 .iter()
                 .map(|&(army, _)| {
+                    // SAFETY: the world owns the complete synthetic graph, alive and immutable through every read.
                     let live = unsafe { crate::memory::LiveMemory::new() };
                     read::<u64>(&live, army + NAME_GROUP_MEMBER).unwrap() as usize
                 })
@@ -1621,6 +1625,7 @@ mod scale {
                 }),
             ];
             for (label, run) in runs {
+                // SAFETY: the world owns the complete synthetic graph, alive and immutable through every read.
                 let counted = Counted {
                     inner: unsafe { crate::memory::LiveMemory::new() },
                     calls: Cell::new(0),

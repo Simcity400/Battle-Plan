@@ -160,6 +160,8 @@ pub(super) struct ProviderReset {
     complete: bool,
 }
 impl ProviderReset {
+    /// # Safety
+    /// The hooked original returned normally, on the native thread that began this reset.
     pub(super) unsafe fn finish(mut self) {
         self.complete = true;
         if let Some(invocation) = self.invocation.take() {
@@ -175,6 +177,9 @@ impl Drop for ProviderReset {
         }
     }
 }
+/// # Safety
+/// Only the provider reset detour calls this, on the native thread running it, with `pointer` that
+/// call's live provider.
 pub(super) unsafe fn provider_reset(
     memory: &impl Memory,
     base: usize,
@@ -847,9 +852,10 @@ pub struct Hooks {
     liveness: liveness::Hooks,
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " The caller verified this process's executable identity and exclusively"]
-    #[doc = " owns these sites, and must quiesce every callback before unloading."]
+    /// # Safety
+    /// The caller verified this process's executable identity and exclusively
+    /// owns these sites, and must quiesce every callback before unloading. The owner stays live,
+    /// and drops these hooks, only once patch restoration and callback quiescence are proved.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         BASE.store(base, Ordering::Release);
         let mut hooks = Vec::new();
@@ -923,6 +929,9 @@ impl Hooks {
     }
 }
 
+/// # Safety
+/// Only the forwarding family's detour calls this, on the native thread running the hooked call,
+/// with that call's arguments and its original.
 unsafe fn forwarded(
     site: collector_observers::world_input_changes::Forward,
     call: collector_observers::world_input_changes::ForwardCall,
@@ -1041,6 +1050,9 @@ fn returned(memory: &impl Memory, base: usize, site: usize, pointer: usize, firs
     }
 }
 
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and `SITE`'s published original.
 unsafe fn callback<const SITE: usize>(
     first: usize,
     second: usize,
@@ -1055,12 +1067,18 @@ unsafe fn callback<const SITE: usize>(
     unsafe { around::<SITE>([first, second, third, fourth], original) }
 }
 
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and its original.
 unsafe fn around<const SITE: usize>(
     args: [usize; 4],
     original: collector_observers::world_input_changes::Original,
 ) -> usize {
     unsafe { around_with_identities::<SITE>(args, original, None) }
 }
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and its original.
 unsafe fn around_with_identities<const SITE: usize>(
     [first, second, third, fourth]: [usize; 4],
     original: collector_observers::world_input_changes::Original,
@@ -2160,12 +2178,12 @@ impl Captured {
             None,
         );
     }
-    #[doc = " `capture`, with the dirty country context parts acquired by `acquire`."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " Snapshot parts borrow this drain's batch and retained cache. `speculate` must return,"]
-    #[doc = " on success, failure or unwind, only once it has dropped or returned every part it was"]
-    #[doc = " given and no other thread still uses one."]
+    /// `capture`, with the dirty country context parts acquired by `acquire`.
+    ///
+    /// # Safety
+    /// Snapshot parts borrow this drain's batch and retained cache. `speculate` must return,
+    /// on success, failure or unwind, only once it has dropped or returned every part it was
+    /// given and no other thread still uses one.
     pub unsafe fn capture_partitioned(
         &mut self,
         base: usize,
@@ -2427,6 +2445,8 @@ impl Drop for Hooks {
         }
         storage::release();
         writers::release();
+        // SAFETY: the owner drops these hooks only after patch restoration and callback
+        // quiescence, with acquisition stopped.
         unsafe { repair::release() };
         super::bonus_snapshots::release();
         sources::release();

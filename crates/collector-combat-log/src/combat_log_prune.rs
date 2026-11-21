@@ -16,28 +16,27 @@ use std::{
 
 #[doc = " The rows prunes reserved since the last drain, and the load signal of the"]
 #[doc = " session that logged each (`None`: reserved, but not read)."]
-#[doc = ""]
-#[doc = " Safety argument, for every access below:"]
-#[doc = " - A writer reserves `first..first + len` with one `CURSOR.fetch_add`, so"]
-#[doc = "   two writers' ranges never overlap. It writes only the part of its range"]
-#[doc = "   within the log, and marks every element of that part."]
-#[doc = " - Each writer runs inside a [`Call`], which increments `ACTIVE` before the"]
-#[doc = "   reservation and decrements it (`SeqCst`) after its last write."]
-#[doc = " - The drain runs at the hourly sample, when no prune can run: the prune"]
-#[doc = "   runs only inside the daily update, which the hourly update runs"]
-#[doc = "   after the sample, and the callback holds the game thread while it"]
-#[doc = "   drains. It reads only after loading `ACTIVE` as 0: every `ACTIVE` change"]
-#[doc = "   is a read-modify-write, so that load synchronises with every writer's"]
-#[doc = "   final decrement, and all their writes happen before the drain's reads."]
-#[doc = "   A running writer (a violated precondition) makes the drain refuse."]
-#[doc = " - The drain reads only reserved elements within the log, all marked."]
-#[doc = " - A log is replaced or freed only with `HANDOFF` set and `ACTIVE` then"]
-#[doc = "   loaded as 0; a writer tests `HANDOFF` after entering its call, and loads"]
-#[doc = "   `LOG` only when it is clear. So no writer holds a replaced log."]
 struct Log {
     rows: Box<[UnsafeCell<Row>]>,
     signals: Box<[UnsafeCell<Option<i64>>]>,
 }
+// SAFETY: every access to a log's cells follows this protocol.
+// - A writer reserves `first..first + len` with one `CURSOR.fetch_add`, so
+//   two writers' ranges never overlap. It writes only the part of its range
+//   within the log, and marks every element of that part.
+// - Each writer runs inside a [`Call`], which increments `ACTIVE` before the
+//   reservation and decrements it (`SeqCst`) after its last write.
+// - The drain runs inside the capture boundary, which keeps new prune
+//   writers out for the whole drain: the game thread is held, or a prune,
+//   which runs in the game's command batch, waits at the capture gate. It
+//   reads only after loading `ACTIVE` as 0: every `ACTIVE` change is a
+//   read-modify-write, so that load synchronises with every earlier writer's
+//   final decrement, and all their writes happen before the drain's reads.
+//   A running writer (a violated precondition) makes the drain refuse.
+// - The drain reads only reserved elements within the log, all marked.
+// - A log is replaced or freed only with `HANDOFF` set and `ACTIVE` then
+//   loaded as 0; a writer tests `HANDOFF` after entering its call, and loads
+//   `LOG` only when it is clear. So no writer holds a replaced log.
 unsafe impl Sync for Log {}
 
 impl Log {
@@ -51,8 +50,9 @@ impl Log {
         self.rows.len()
     }
 
-    #[doc = " # Safety"]
-    #[doc = " The caller alone reserved `range`, which lies within the log."]
+    /// # Safety
+    /// The caller alone reserved `range`, which lies within the log, and makes no other borrow of
+    /// it while the returned slice lives.
     #[allow(clippy::mut_from_ref)]
     unsafe fn rows_mut(&self, range: Range<usize>) -> &mut [Row] {
         unsafe {
@@ -63,14 +63,14 @@ impl Log {
         }
     }
 
-    #[doc = " # Safety"]
-    #[doc = " As [`Log::rows_mut`], for `index`."]
+    /// # Safety
+    /// As [`Log::rows_mut`], for `index`.
     unsafe fn mark(&self, index: usize, signal: Option<i64>) {
         unsafe { self.signals[index].get().write(signal) };
     }
 
-    #[doc = " # Safety"]
-    #[doc = " No writer is active and `index` was marked."]
+    /// # Safety
+    /// No writer is active and `index` was marked.
     unsafe fn read(&self, index: usize) -> (Option<i64>, Row) {
         unsafe {
             (
@@ -195,11 +195,13 @@ fn record(
         spilled(end);
         if let Some(log) = log {
             for index in first..end.min(log.len()) {
+                // SAFETY: this writer alone reserved `first..end`.
                 unsafe { log.mark(index, None) };
             }
         }
         return spill_rows(first, signal, demand, read);
     };
+    // SAFETY: this writer alone reserved `first..end`, within the log.
     let kept = match read(unsafe { log.rows_mut(first..end) }) {
         Ok(Outcome::Rows { len }) => len,
         Ok(Outcome::Truncated { len, unread_rows }) => {
@@ -337,6 +339,7 @@ pub fn drain(signal: i64, output: &mut Vec<Row>) -> Result<(), &'static str> {
         COUNTERS[7].fetch_add(1, Ordering::Relaxed);
         return Err("combat log prune running during the sample");
     }
+    // SAFETY: only this boundary and detach replace the installed log.
     let log = unsafe { LOG.load(Ordering::SeqCst).as_ref() };
     let reserved = log.map_or(0, |log| CURSOR.load(Ordering::SeqCst).min(log.len()));
     let mut pending = held();
@@ -359,6 +362,8 @@ pub fn drain(signal: i64, output: &mut Vec<Row>) -> Result<(), &'static str> {
         while let Some(spilled) = spills.next_if(|spilled| spilled.first <= index) {
             spilled.rows.iter().for_each(|&row| take(spilled.signal, row));
         }
+        // SAFETY: no writer is active and every reserved element within the
+        // log was marked (see the `Sync` impl for `Log`).
         if let Some((Some(logged), row)) = log.map(|log| unsafe { log.read(index) }) {
             take(logged, row);
         }
@@ -436,13 +441,13 @@ pub struct Hooks {
 }
 
 impl Hooks {
-    #[doc = " The runtime's build gate admitted this family before construction."]
-    #[doc = " Never fails: without the hook every drain reports the prunes unobserved."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// The runtime's build gate admitted this family before construction.
+    /// Never fails: without the hook every drain reports the prunes unobserved.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
         let hook = unsafe { Self::install(base) }
             .map_err(|reason| {
@@ -455,6 +460,9 @@ impl Hooks {
         }
     }
 
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     unsafe fn install(base: usize) -> Result<Hook, &'static str> {
         crate::located(base, PRUNE_RVA)?;
         let code = engine_sites::hook(base, PRUNE_RVA)?;

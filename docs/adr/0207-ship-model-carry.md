@@ -12,11 +12,4 @@ Each range retains its generation only when every finished row carries whole in 
 
 The observer forwards carrier-base destruction from its installed patch to the air-base owner. Install and retire hooks under shared family publication, preserving process-static forwarding storage while its owner can still notify. The original receives the native operands unchanged. Capture publishes owned observations only, while optional refusal aggregation is deferred to frame settlement.
 
-## Safety contracts
-
-- `ship_model_changes::Hooks::new` follows runtime build admission and requires the memory source and base to identify the authenticated executable in this process. The caller owns the sites exclusively and must restore the hooks and quiesce native calls before code release or unload. A failed site lookup leaves the family uninstalled so ShipModels reads ships afresh.
-- `ship_model_changes::Hooks::drop` releases receiver watches and relays only if the hooks never became active or were removed and drained after the last capture. Keep the variant registry available for notifications from the separate design forwarder.
-- `ship_model_changes::variant_capability_is_current` reconstructs a function pointer only when `VARIANT_VALIDATE` is nonzero. `variant_availability` is its sole writer and stores a `fn(u64) -> bool`.
-- `ship_model_changes::forward` notifies the appropriate receiver and forwards the four original register arguments in RCX through R9, returning the original result in RAX. None of these writers takes stack arguments.
-
 [Ship models](../../crates/collector-ship-models/src/ship_models.rs) · [Writer observations](../../crates/collector-ship-models/src/ship_model_changes.rs) · [Carrier capacity](../../crates/collector-ship-models/src/air_capacity.rs)

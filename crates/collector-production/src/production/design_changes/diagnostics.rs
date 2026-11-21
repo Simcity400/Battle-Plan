@@ -38,6 +38,7 @@ impl Site {
 }
 fn sites(mut visit: impl FnMut(&Site)) {
     let mut next = HEAD.load(Ordering::Acquire);
+    // SAFETY: published nodes have process-static storage and are never removed or freed.
     while let Some(site) = unsafe { next.as_ref() } {
         visit(site);
         next = site.next.load(Ordering::Acquire);

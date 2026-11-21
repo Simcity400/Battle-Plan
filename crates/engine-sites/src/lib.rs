@@ -73,6 +73,7 @@ pub fn install_file(file: &[u8], sha256: &[u8; 32], base: usize) -> Verified<&'s
 }
 
 pub fn located() -> Option<&'static Located> {
+    // SAFETY: only `install` stores, a leaked and never freed table.
     unsafe { LOCATED.load(Ordering::Acquire).as_ref() }
 }
 

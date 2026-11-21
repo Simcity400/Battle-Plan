@@ -67,6 +67,8 @@ pub(crate) fn started_in(module: HMODULE) -> Result<Vec<u32>, String> {
 
 fn image(module: HMODULE) -> Range<usize> {
     let base = module as usize;
+    // SAFETY: a loaded image's headers stay mapped while it is loaded, which the caller's being
+    // in it or holding it guarantees.
     let size = unsafe {
         let dos = std::ptr::read_unaligned(base as *const IMAGE_DOS_HEADER);
         let nt =

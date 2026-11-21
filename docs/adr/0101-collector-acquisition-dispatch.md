@@ -12,8 +12,4 @@ Worker publication transfers owned data before waking a consumer. Batch adoption
 
 Production and construction acquire their scheduled parts, while Economy owns hourly province supply and the resource census plus its own daily operands. Production modifier slices and research jobs can run beside their parent. The projects and governance producers can release independent raw source work beside their main walks. Fingerprint or held-row stores are borrowed once by their owners and restored or invalidated on failure. Daily production walks still supply distinct table scopes. Shared unspecialized reads belong to the family's hourly anchor, including ProvinceSupply in Economy. Nested scopes account for each table's own inputs. Refused or panicked Map model, relations and presentation work preserves its named missing state.
 
-## Safety contracts
-
-`Pool::submit` requires every accepted job to finish within the callback's foreign-world lease. `Batch` owns that barrier through unwinding. A caller of `Batch::submit` retains the lease through guard destruction and releases any lock that queued work needs before finishing or dropping the guard. `Pool::run_inline` needs an admitted lease for the duration of the call. `Batch::run_inline` inherits the submission lease and accepts only an eligible request retained after rejection.
-
 [Acquisition dispatch](../../crates/collector/src/acquisition_jobs.rs) · [Presentation handoff](../../crates/collector/src/acquisition_jobs/presentation.rs) · [Worker slot reservation tests](../../crates/collector/src/acquisition_jobs/batch_drain_tests.rs)

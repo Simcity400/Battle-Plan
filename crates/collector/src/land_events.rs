@@ -1121,6 +1121,9 @@ unsafe extern "system-unwind" fn leader_tap(side: usize, caller: usize, target: 
     _call.finish();
     result
 }
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and its original.
 unsafe fn leader_observation(call: &Call, side: usize, caller: usize, target: usize) -> usize {
     let original: unsafe extern "system-unwind" fn(usize) -> usize =
         unsafe { std::mem::transmute(target) };
@@ -1152,6 +1155,9 @@ pub struct Hooks {
     publication_attempted: bool,
 }
 impl Hooks {
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
         let hooks = unsafe { Self::install(memory, base) }.unwrap_or_else(|reason| {
             crate::hook::installation::refused(
@@ -1167,6 +1173,9 @@ impl Hooks {
             publication_attempted: false,
         }
     }
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     unsafe fn install(_memory: &impl Memory, base: usize) -> Result<Vec<Hook>, String> {
         let sites = [
             (

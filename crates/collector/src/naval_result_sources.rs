@@ -466,6 +466,9 @@ unsafe extern "system-unwind" fn fill(result: usize, combat: usize) -> usize {
 unsafe extern "system-unwind" fn merge(result: usize, combat: usize) -> usize {
     unsafe { result_call(1, result, combat) }
 }
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and its site, whose original is published.
 unsafe fn result_call(site: usize, result: usize, combat: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::NavalResultSources);
     let call = Call::enter(site);
@@ -507,6 +510,9 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, Ordering::Relaxed);
         let _ = store();

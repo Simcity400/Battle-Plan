@@ -919,6 +919,7 @@ impl NativeWindow {
         let placement = Placement { bounds: Some(bounds), ..self.placement.get() };
         self.placement.set(placement);
         let visibility = if placement.show() { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW };
+        // SAFETY: an asynchronous call on the map's window; its own thread applies it.
         let success = unsafe {
             SetWindowPos(
                 self.hwnd(),
@@ -936,6 +937,7 @@ impl NativeWindow {
     fn visibility(&self, visible: bool) {
         let placement = Placement { visible, ..self.placement.get() };
         self.placement.set(placement);
+        // SAFETY: asynchronous calls on the map's window; its own thread applies them.
         unsafe {
             ShowWindowAsync(self.hwnd(), if placement.show() { SW_SHOWNOACTIVATE } else { SW_HIDE });
             if placement.show() && GetForegroundWindow() == GetAncestor(self.hwnd(), GA_ROOT) {

@@ -12,8 +12,4 @@ An exile row is possible only for a committed division whose template has origin
 
 An acquisition pass shares the country census, definition metadata, and template width terms. It reads the division's identity, ownership, base speed, and template pointer separately. Capture width terms in template order, retaining the first read that failed. Each division checks its own name arena between the template's width count and payload reads.
 
-## Safety of the synthetic live reads
-
-The `scale` test module's `batched_naming_matches_the_per_field_reader_over_guarded_memory`, `a_key_that_does_not_fit_is_counted_once_per_pass`, and `a_second_division_of_a_template_costs_only_the_member_copy` construct `LiveMemory` only after the test's `World` owns the complete synthetic graph. The world remains alive and immutable throughout every guarded read. The same invariant covers both live-memory handles in `division_stats_and_naming_capture_cost_at_scale`, first when collecting member pointers and then while measuring each reader.
-
 [Combat input reader](../../crates/engine-native/src/carmy_combat_inputs.rs) · [Combat input parity tests](../../crates/engine-native/src/carmy_combat_inputs/tests.rs)

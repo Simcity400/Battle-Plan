@@ -449,6 +449,7 @@ fn division_input_parts_scale() {
             std::thread::scope(|scope| {
                 for (census, &slots) in censuses.iter_mut().zip(&ranges) {
                     scope.spawn(move || {
+                        // SAFETY: the synthetic world is immutable and outlives the scoped worker joins.
                         let memory = unsafe { engine_native::memory::LiveMemory::new() };
                         census.capture_inputs_part(&memory, base, state, slots);
                     });

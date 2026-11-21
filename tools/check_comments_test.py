@@ -58,6 +58,244 @@ class Comments(unittest.TestCase):
         looped = b"// quarantine: #3 why\r\nfor (const x of [1]) test.skip(`n ${x}`, () => {});\r\n"
         self.assertEqual(list(lint.added_comments("ui/src/a.test.ts", b"", looped)), [])
 
+    def test_safety_contracts_are_exempt_only_at_unsafe_code(self):
+        rust = b"""fn f(p: *const u8) -> u8 {
+    // SAFETY: kept.
+    // Continued.
+    let a = unsafe { *p };
+    // SAFETY: kept.
+    #[allow(unused_unsafe)]
+    unsafe { g() };
+    if a > 0
+        // SAFETY: kept.
+        && let Some(b) = unsafe { p.as_ref() }
+    {
+        h(a,
+            // SAFETY: kept.
+            unsafe { *p },
+        );
+    }
+    macro_rules! read {
+        () => {{
+            // SAFETY: kept.
+            unsafe { *p }
+        }};
+    }
+    // SAFETY: refused, the code is safe.
+    let c = a;
+
+    // Refused, not part of the run above.
+    a // SAFETY: refused, trailing.
+}
+// SAFETY: kept.
+unsafe impl Send for S {}
+// SAFETY: refused, not an unsafe impl.
+impl S { fn i() { unsafe { g() } } }
+// SAFETY: refused, a function's contract belongs in its docs.
+unsafe fn j() {}
+// Safety: refused, not the marker.
+unsafe impl Sync for S {}
+/// Kept summary.
+///
+/// # Safety
+/// Kept contract.
+#[inline]
+pub unsafe fn k() {}
+/// # Safety
+/// Refused, the function is safe.
+pub fn l() {}
+/// Refused, no Safety section.
+pub unsafe fn m() {}
+/// # Safety
+/// Kept.
+pub unsafe trait T {}
+"""
+        self.assertEqual([body for body in bodies("file.rs", rust)], [
+            b"// SAFETY: refused, the code is safe.", b"// Refused, not part of the run above.",
+            b"// SAFETY: refused, trailing.", b"// SAFETY: refused, not an unsafe impl.",
+            b"// SAFETY: refused, a function's contract belongs in its docs.", b"// Safety: refused, not the marker.",
+            b"/// # Safety\n", b"/// Refused, the function is safe.\n", b"/// Refused, no Safety section.\n",
+        ])
+
+    def test_safety_contracts_must_touch_their_code_and_stay_inside_their_statement(self):
+        rust = b"""fn f(p: *const u8) {
+    // SAFETY: refused, detached by a blank line.
+
+    // SAFETY: kept.
+    unsafe { g() };
+    macro_rules! m {
+        () => {{
+            // SAFETY: refused, the statement it precedes is safe.
+            if ready { h() } else { i() }
+            unsafe { g() }
+            // SAFETY: kept.
+            if ready { unsafe { g() } }
+        }};
+    }
+}
+/// Refused: the heading is only an example.
+/// ```text
+/// # Safety
+/// ```
+pub unsafe fn j() {}
+macro_rules! emit {
+    () => {
+        /// # Safety
+        /// Kept: an unsafe function the macro emits.
+        pub unsafe fn k() {}
+    };
+}
+"""
+        self.assertEqual(bodies("file.rs", rust), [
+            b"// SAFETY: refused, detached by a blank line.", b"// SAFETY: refused, the statement it precedes is safe.",
+            b"/// Refused: the heading is only an example.\n", b"/// ```text\n", b"/// # Safety\n",
+            b"/// ```\n",
+        ])
+
+    def test_macro_items_attribute_lines_and_markdown_code_are_classified_exactly(self):
+        rust = b"""macro_rules! m {
+    ($p:expr) => {
+        // SAFETY: refused, a safe function's body is not this comment's code.
+        pub fn safe() { unsafe { g() } }
+        /// # Safety
+        /// Refused: a type alias is not an unsafe item.
+        type Callback = unsafe fn();
+        // SAFETY: kept, the unsafe call is in this statement.
+        let x = S { v: 1 }.combine(unsafe { *$p });
+        // SAFETY: kept.
+        unsafe impl Send for S {}
+    };
+}
+/// # Safety
+/// Kept, with its attribute on the item's line.
+#[inline] pub unsafe fn fetch() {}
+/// Text.
+///
+///     # Safety
+/// Refused: the heading is indented code.
+pub unsafe fn indented() {}
+/// ````text
+/// ```
+/// # Safety
+/// ````
+/// Refused: a shorter fence does not close the block.
+pub unsafe fn fenced() {}
+"""
+        self.assertEqual(bodies("file.rs", rust), [
+            b"// SAFETY: refused, a safe function's body is not this comment's code.",
+            b"/// # Safety\n", b"/// Refused: a type alias is not an unsafe item.\n",
+            b"/// Text.\n", b"///\n", b"///     # Safety\n", b"/// Refused: the heading is indented code.\n",
+            b"/// ````text\n", b"/// ```\n", b"/// # Safety\n", b"/// ````\n",
+            b"/// Refused: a shorter fence does not close the block.\n",
+        ])
+
+    def test_function_pointer_types_unsafe_attributes_and_foreign_functions(self):
+        rust = b"""fn f(callback: unsafe fn()) {
+    // SAFETY: refused, storing a function pointer is safe.
+    let alias: unsafe fn() = callback;
+}
+// SAFETY: kept, the exported symbol is unique in this image.
+#[unsafe(no_mangle)]
+extern "C" fn exported() {}
+/// # Safety
+/// Kept: the caller's contract, with the symbol's contract between it and the function.
+// SAFETY: kept, the exported symbol is unique in this image.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn first(reason: u32) -> i32 { 1 }
+// SAFETY: kept, the exported symbol is unique in this image.
+#[unsafe(no_mangle)]
+/// # Safety
+/// Kept: the caller's contract after the symbol's.
+pub unsafe extern "system" fn second(reason: u32) -> i32 { 1 }
+unsafe extern "C" {
+    /// # Safety
+    /// Kept: a foreign function is unsafe to call.
+    fn copy(destination: *mut u8, len: usize);
+    /// # Safety
+    /// Refused: declared safe.
+    pub(crate) safe fn version() -> u32;
+}
+macro_rules! entry {
+    ($name:ident) => {
+        /// # Safety
+        /// Kept: the macro emits an unsafe callback.
+        unsafe extern "system-unwind" fn $name() {}
+    };
+}
+macro_rules! imports {
+    () => {
+        // SAFETY: kept, the macro declares foreign functions.
+        unsafe extern "C" {
+            /// # Safety
+            /// Kept: a foreign function the macro declares is unsafe to call.
+            #[link_name = "native_entry"]
+            fn native();
+            /// # Safety
+            /// Refused: declared safe.
+            safe fn version() -> u32;
+        }
+    };
+}
+macro_rules! visible {
+    ($vis:vis) => {
+        /// # Safety
+        /// Kept: a visibility parameter before an unsafe function.
+        $vis unsafe fn fetch() {}
+        // SAFETY: refused, a visibility parameter before a safe function.
+        $vis fn safe() { unsafe { g() } }
+    };
+}
+macro_rules! detours {
+    ($($name:ident),*) => {
+        $(
+            /// # Safety
+            /// Kept: each repetition emits an unsafe callback.
+            unsafe extern "system" fn $name() {}
+            // SAFETY: refused, a safe function's body is not this comment's code.
+            fn safe() { unsafe { g() } }
+        )*
+    };
+}
+fn g(cells: &[*const u8]) -> Vec<u8> {
+    cells
+        .iter()
+        // SAFETY: kept, every cell points at a live byte.
+        .map(|p| unsafe { **p })
+        .collect()
+}
+fn checked(p: *const u32) {
+    assert_eq!(
+        // SAFETY: kept, `p` points at a live word.
+        Ok::<_, &'static str>(unsafe { *p }),
+        Ok(1),
+    );
+    assert_eq!(
+        // SAFETY: refused, the empty vector is safe; the unsafe call is the next argument.
+        Vec::<Vec<u8>>::new(),
+        unsafe { make_vec() },
+    );
+}
+macro_rules! pop {
+    ($head:expr) => {{
+        // SAFETY: kept, every linked base holds a header that push wrote.
+        let Node { next, bytes, .. } = unsafe { $head.read() };
+    }};
+}
+fn total(cells: &[*const u32]) -> std::io::Result<u32> {
+    cells
+        .iter()
+        // SAFETY: kept, every cell points at a live word.
+        .try_fold::<_, _, std::io::Result<u32>>(0, |sum, &p| Ok(sum + unsafe { *p }))
+}
+"""
+        self.assertEqual(bodies("file.rs", rust), [
+            b"// SAFETY: refused, storing a function pointer is safe.", b"/// # Safety\n", b"/// Refused: declared safe.\n",
+            b"/// # Safety\n", b"/// Refused: declared safe.\n",
+            b"// SAFETY: refused, a visibility parameter before a safe function.",
+            b"// SAFETY: refused, a safe function's body is not this comment's code.",
+            b"// SAFETY: refused, the empty vector is safe; the unsafe call is the next argument.",
+        ])
+
     def test_git_status_keeps_rename_baselines_without_granting_them_to_copies(self):
         with patch.object(lint, "paths", side_effect=[
             ["R100", "old.rs", "new.rs", "C100", "old.rs", "copy.rs", "M", "edit.rs", "A", "add.rs"],

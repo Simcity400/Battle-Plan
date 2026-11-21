@@ -14,8 +14,4 @@ Workers run above normal priority when the game is held. When the capture runs b
 
 Tests use observed worker entry, active-settlement watches and controlled releases to check the relevant concurrent state. Hang guards may rescue a deliberately lost wake so the fixture fails by assertion. The allocation accounting fixture includes alignment padding, Arc headers, reserved vector space and zero-sized closures. The optional submission benchmark measures submission wall costs and wake policies under a held burst and busy workers.
 
-## Safety contracts
-
-The callers of `Pool::submit` and `Pool::submit_with_priority` keep the native read lease until all accepted tickets and admitted successors drain and active publishers settle, including on failure. Each mutable output has one owner, shared seeds outlive every consumer, and each ticket has one collecting owner. A nested worker collects only its own children through `finish_worker_into`.
-
 [Acquisition executor](../../crates/collector/src/acquisition.rs) · [Readiness tests](../../crates/collector/src/acquisition/readiness_tests.rs)

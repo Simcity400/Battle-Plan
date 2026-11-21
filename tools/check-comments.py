@@ -172,12 +172,202 @@ def exempt(name, start, comment, source=b""):
     return bool(re.fullmatch(rb"(?:#|//|/\*)\s*SPDX-License-Identifier: [\w.+() -]+(?:\*/)?", comment))
 
 
+SAFETY_COMMENT = re.compile(rb"// SAFETY: \S")
+SAFETY_HEADING = re.compile(rb" {0,3}#[ \t]+Safety[ \t]*#*[ \t]*")
+UNSAFE_ATTRIBUTE = re.compile(rb"#?\[\s*unsafe\s*\(")
+FENCE = re.compile(rb" {0,3}(`{3,}|~{3,})(.*)")
+NOT_UNSAFE_SITES = {"function_item", "function_signature_item", "mod_item", "struct_item", "enum_item",
+                    "union_item", "trait_item", "macro_definition"}
+UNSAFE_ITEMS = {"function_item", "function_signature_item", "trait_item", "impl_item"}
+TOKEN_QUALIFIERS = {b"pub", b"const", b"async", b"unsafe", b"extern", b"default"}
+TOKEN_ITEMS = {b"fn", b"mod", b"struct", b"enum", b"union", b"trait", b"impl", b"type", b"macro_rules"}
+CONTINUATIONS = {b"else", b".", b"?", b"as", b"=", b"=>", b"+", b"-", b"*", b"/", b"%", b"==", b"!=", b"<", b">", b"<=",
+                 b">=", b"&&", b"||", b"&", b"|", b"^", b".."}
+
+
+def comment_run(node, kind):
+    run = [node]
+    while (after := run[-1].next_sibling) is not None and kind(after) and after.start_point[0] == run[-1].start_point[0] + 1:
+        run.append(after)
+    return run
+
+
+def adjacent_code(last, past=None):
+    """The code on the line after the comment `last`, past attributes on the lines that follow (or on
+    the attribute's own line); None when a blank line or another comment comes first. `past` names
+    the other kind of safety contract that may sit between: "safety" passes a `// SAFETY:` run (for
+    one on an unsafe attribute), "docs" passes a `///` run."""
+    rows, node, in_safety = (last.start_point[0] + 1,), last.next_sibling, False
+    while node is not None and node.start_point[0] in rows:
+        attribute = node.next_sibling if node.type == "#" else None
+        plain = node.type == "line_comment" and not node.text.startswith((b"///", b"//!"))
+        if node.type == "attribute_item":
+            end, in_safety = node.end_point[0], False
+        elif attribute is not None and attribute.type == "token_tree" and attribute.text.startswith(b"["):
+            end, node, in_safety = attribute.end_point[0], attribute, False
+        elif past == "safety" and plain and (in_safety or SAFETY_COMMENT.match(node.text)):
+            end, in_safety = node.start_point[0], True
+        elif past == "docs" and node.type == "line_comment" and node.text.startswith(b"///"):
+            end = node.start_point[0]
+        elif node.type in ("line_comment", "block_comment"):
+            return None
+        else:
+            return node
+        rows, node = (end, end + 1), node.next_sibling
+    return None
+
+
+def has_unsafe(node):
+    """Whether `node` holds an unsafe operation, block or item; `unsafe fn` types and pointers are not."""
+    if node.type == "function_type":
+        return False
+    if node.type == "unsafe":
+        following = node.next_sibling
+        if in_macro(node) and following is not None and following.text == b"extern":
+            following = following.next_sibling
+            if following is not None and following.type == "string_literal":
+                following = following.next_sibling
+        return not (in_macro(node) and following is not None and following.text == b"fn")
+    return node.type == "unsafe_block" or any(has_unsafe(child) for child in node.children)
+
+
+def unsafe_attribute(last, code):
+    """Whether an `#[unsafe(...)]` attribute sits between the comment `last` and `code`."""
+    node = last.next_sibling
+    while node is not None and node.start_byte < code.start_byte:
+        if node.type in ("attribute_item", "token_tree") and UNSAFE_ATTRIBUTE.match(node.text):
+            return True
+        node = node.next_sibling
+    return False
+
+
+def in_macro(node):
+    return node.parent is not None and node.parent.type in ("token_tree", "token_repetition")
+
+
+def braces(node):
+    return node.type == "token_tree" and node.text.startswith(b"{")
+
+
+def token_item(node):
+    """For tokens in a macro body: the item keyword the tokens at `node` declare, and whether
+    `unsafe` qualifies it; (None, False) when they begin no item. A metavariable directly before a
+    qualifier or item keyword, such as `$vis`, can only be a visibility."""
+    qualified = False
+    while node is not None and (node.text in TOKEN_QUALIFIERS or node.type == "string_literal"
+                                or node.type == "token_tree" and node.prev_sibling is not None and node.prev_sibling.text == b"pub"
+                                or node.type == "metavariable" and node.next_sibling is not None
+                                and node.next_sibling.text in TOKEN_QUALIFIERS | TOKEN_ITEMS):
+        qualified = qualified or node.text == b"unsafe"
+        node = node.next_sibling
+    return (node.text.decode(), qualified) if node is not None and node.text in TOKEN_ITEMS else (None, False)
+
+
+def foreign_block(tree):
+    """Whether the macro-body token tree `tree` is the braces of an `unsafe extern "ABI" { ... }`
+    block, whose functions are unsafe to call unless declared `safe fn`."""
+    before = tree.prev_sibling if braces(tree) else None
+    if before is not None and before.type == "string_literal":
+        before = before.prev_sibling
+    return before is not None and before.text == b"extern" and before.prev_sibling is not None and before.prev_sibling.text == b"unsafe"
+
+
+def unsafe_site(node):
+    if node.type == "." and node.parent.type == "field_expression":
+        call = node.parent.parent
+        if call is not None and call.type == "generic_function":
+            call = call.parent
+        if call is not None and call.type == "call_expression":
+            arguments = call.child_by_field_name("arguments")
+            return arguments is not None and has_unsafe(arguments)
+    if node.type in NOT_UNSAFE_SITES:
+        return False
+    if node.type == "impl_item":
+        return unsafe_item(node)
+    if node.is_named and not in_macro(node):
+        return has_unsafe(node)
+    if in_macro(node):
+        item, qualified = token_item(node)
+        if item is not None:
+            return item == "impl" and qualified
+    unit, generics = node, 0
+    while unit is not None and unit.type != ";" and (unit.type != "," or generics):
+        if has_unsafe(unit):
+            return True
+        if unit.text == b"<" and unit.prev_sibling is not None and (unit.prev_sibling.text == b"::" or generics):
+            generics += 1
+        elif unit.text in (b">", b">>") and generics:
+            generics = max(0, generics - len(unit.text))
+        elif braces(unit) and (unit.next_sibling is None or unit.next_sibling.text not in CONTINUATIONS):
+            return False
+        unit = unit.next_sibling
+    return False
+
+
+def unsafe_item(node):
+    if node is None:
+        return False
+    if in_macro(node):
+        item, qualified = token_item(node)
+        tree = node.parent.parent if node.parent.type == "token_repetition" else node.parent
+        return item in ("fn", "trait", "impl") and (qualified or item == "fn" and foreign_block(tree))
+    if node.type == "function_signature_item" and node.parent.parent is not None and node.parent.parent.type == "foreign_mod_item":
+        return not any(child.type == "ERROR" and child.text == b"safe" for child in node.children)
+    return node.type in UNSAFE_ITEMS and any(
+        child.type == "unsafe" or child.type == "function_modifiers" and has_unsafe(child) for child in node.children
+    )
+
+
+def safety_heading(run):
+    """Whether the doc run has a `# Safety` heading outside Markdown code: not in a fenced block and
+    not indented as code."""
+    fence = None
+    for comment in run:
+        text = comment.text[3:].rstrip(b"\r\n")
+        text = text[1:] if text.startswith(b" ") else text
+        opening = FENCE.fullmatch(text)
+        if fence is not None:
+            if opening and opening[1][0] == fence[0] and len(opening[1]) >= len(fence) and not opening[2].strip():
+                fence = None
+        elif opening:
+            fence = opening[1]
+        elif SAFETY_HEADING.fullmatch(text):
+            return True
+    return False
+
+
+def safety_contracts(source):
+    """Comment spans exempt as safety contracts: a `// SAFETY:` run directly before code that
+    contains an `unsafe` block, keyword or impl, and a `///` run with a `# Safety` heading directly
+    on an unsafe function, trait or impl."""
+    if b"SAFETY" not in source and b"Safety" not in source:
+        return set()
+    plain = lambda node: node.type == "line_comment" and not node.text.startswith((b"///", b"//!"))
+    outer = lambda node: node.type == "line_comment" and node.text.startswith(b"///") and not node.text.startswith(b"////")
+    exempt_spans = set()
+    for node in captures("rust", "(line_comment) @comment", parser_for("rust").parse(source).root_node, "comment"):
+        previous = node.prev_sibling
+        if plain(node) and SAFETY_COMMENT.match(node.text):
+            if source[source.rfind(b"\n", 0, node.start_byte) + 1:node.start_byte].strip():
+                continue
+            run = comment_run(node, lambda after: plain(after) and not SAFETY_COMMENT.match(after.text))
+            code = adjacent_code(run[-1], past="docs")
+            if code is not None and (unsafe_site(code) or unsafe_attribute(run[-1], code)):
+                exempt_spans.update((comment.start_byte, comment.end_byte) for comment in run)
+        elif outer(node) and not (previous is not None and outer(previous) and previous.start_point[0] == node.start_point[0] - 1):
+            run = comment_run(node, outer)
+            if safety_heading(run) and unsafe_item(adjacent_code(run[-1], past="safety")):
+                exempt_spans.update((comment.start_byte, comment.end_byte) for comment in run)
+    return exempt_spans
+
+
 def comments(name, source):
     language = language_of(name)
     if language is None:
         return []
     spans = comment_spans(language, source, workflow=name.startswith(".github/workflows/") and language == "yaml")
-    return [(a, b) for a, b in spans if not exempt(name, a, source[a:b], source)]
+    contracts = safety_contracts(source) if language == "rust" else set()
+    return [(a, b) for a, b in spans if (a, b) not in contracts and not exempt(name, a, source[a:b], source)]
 
 
 def added_comments(name, before, after, old_name=None):

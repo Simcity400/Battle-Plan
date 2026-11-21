@@ -42,11 +42,11 @@ pub fn forwarder(enabled: bool) {
     WATCHES.set_enabled(cfg!(feature = "retreat_ban_changes") && enabled);
 }
 
-#[doc = " Free the watch tables once the forwarding patches were removed and"]
-#[doc = " drained after the last capture."]
-#[doc = ""]
-#[doc = " # Safety"]
-#[doc = " No notification may still hold a table."]
+/// Free the watch tables once the forwarding patches were removed and
+/// drained after the last capture.
+///
+/// # Safety
+/// No notification may still hold a table.
 pub unsafe fn release() {
     unsafe { WATCHES.release() };
 }

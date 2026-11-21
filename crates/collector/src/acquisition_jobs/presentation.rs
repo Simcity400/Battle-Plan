@@ -116,6 +116,8 @@ impl PresentationDispatch {
                 stitch: Some((Arc::clone(continuation), index)),
             }));
             let role = job.as_ref().unwrap().role();
+            // SAFETY: the parent belongs to the callback's Batch. The ledger
+            // drains every child on unwind until that Batch adopts its ticket.
             let result =
                 unsafe { executor.submit_with_priority(&mut job, role.priority(), true, false) };
             note_dispatch(
@@ -198,6 +200,8 @@ fn submit_retained(
     job: &mut Option<Job>,
 ) -> RangeTicket {
     let role = job.as_ref().expect("retained successor").role();
+    // SAFETY: Batch owns the ledger until every child is drained. Each phase
+    // has its own reservation because preceding tickets may be uncollected.
     let result = unsafe { executor.submit_with_priority(job, role.priority(), true, false) };
     note_dispatch(&calibration.roles[role as usize], result.is_ok());
     match result {

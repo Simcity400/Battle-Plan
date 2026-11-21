@@ -5579,6 +5579,8 @@ mod tests {
             let old = u64::from_le_bytes(world.bytes[offset..offset + 8].try_into().unwrap());
             world.u64(pointer, (address + old as usize - synthetic::START) as u64);
         }
+        // SAFETY: the fixture is fully allocated and its pointers relocated; it retains every pointee
+        // and stays immutable through the walk.
         let memory = CountedMemory::new(unsafe { LiveMemory::new() });
         let mut rows = vec![SentVolunteerRow::default(); divisions];
         ReadCounts::take_current();

@@ -152,6 +152,9 @@ fn reset_forwarder_enabled(enabled: bool) {
     RESET_ENABLED.store(enabled, Ordering::Release);
     observation_enabled();
 }
+/// # Safety
+/// Only the forwarding family's detour calls this, on the native thread running the hooked call,
+/// with that call's arguments and its original.
 unsafe fn forwarded_reset(a: usize, b: usize, c: usize, d: usize, original: usize) -> usize {
     let _mine = MINES.notify(life_key(a));
     let _accident = ACCIDENTS.notify(a);
@@ -161,6 +164,9 @@ unsafe fn forwarded_reset(a: usize, b: usize, c: usize, d: usize, original: usiz
     unsafe { original(a, b, c, d) }
 }
 impl Hooks {
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub(crate) unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let callbacks = [
             region_add as *const () as usize,
@@ -283,6 +289,9 @@ pub(crate) fn patch_sites() -> Vec<(&'static str, Rva)> {
         .collect()
 }
 
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and the index of its published original.
 unsafe fn original(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let native: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[index].load(Ordering::Acquire)) };
@@ -315,6 +324,9 @@ fn event_slice(index: usize, navy: usize, second: usize) -> Option<usize> {
     }
 }
 
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and the index of its published original.
 unsafe fn changed(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
     let _running = MINES.running();
@@ -326,6 +338,9 @@ unsafe fn changed(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize
     let _mark = part.map(|part| MINES.notify(slice_key(a, part)));
     timing.original(|| unsafe { original(index, a, b, c, d) })
 }
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and the index of its published original.
 unsafe fn lifecycle(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
     let navy = lifecycle_receiver(index, a);
@@ -334,6 +349,9 @@ unsafe fn lifecycle(index: usize, a: usize, b: usize, c: usize, d: usize) -> usi
     let _ledger = LEDGERS.notify(navy);
     timing.original(|| unsafe { original(index, a, b, c, d) })
 }
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and the index of its published original.
 unsafe fn ledger(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
     LEDGER_CALLS[index].fetch_add(1, Ordering::Relaxed);
@@ -347,6 +365,9 @@ fn ledger_write(ledgers: &WatchRegistry, navy: usize, write: impl FnOnce() -> us
     let _mark = ledgers.notify(navy);
     write()
 }
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and the index of its published original.
 unsafe fn reports(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
     let _mark = ACCIDENTS.notify(a);

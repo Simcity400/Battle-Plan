@@ -448,10 +448,11 @@ impl Drop for BorrowedScope {
         BORROWED_CONTEXT.set(self.0);
     }
 }
-#[doc = " The caller keeps this immutable context live until the returned guard drops."]
-#[doc = " # Safety"]
-#[doc = " The pointer must refer to an initialized context that stays alive and is not"]
-#[doc = " mutated while this thread holds the returned scope."]
+/// The caller keeps this immutable context live until the returned guard drops.
+/// # Safety
+/// The pointer must refer to an initialized context that stays alive and is not
+/// mutated while this thread holds the returned scope. Nested scopes drop in reverse order, so
+/// each restores a context that is still alive.
 pub unsafe fn borrow_context(pointer: *const Context) -> BorrowedScope {
     BorrowedScope(BORROWED_CONTEXT.replace(pointer))
 }

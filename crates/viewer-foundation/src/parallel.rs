@@ -333,6 +333,9 @@ struct Turns {
     profile: Option<Arc<Counts>>,
 }
 
+// SAFETY: `task` is `Sync`, and the borrowed callback it points at outlives every call: both
+// entry points (`Workers::run_beside` and `Admitted::run_turns`) keep it alive through
+// `Turns::finish`, which closes admission and waits until no registered helper remains.
 unsafe impl Send for Turns {}
 unsafe impl Sync for Turns {}
 
@@ -350,6 +353,10 @@ impl Turns {
         beside: Option<&Beside<'_>>,
         profile: Option<Arc<Counts>>,
     ) -> Arc<Self> {
+        // SAFETY: the lifetime is erased only for the pool's jobs, which run
+        // `task` only while registered in `Turns::state` before it is closed.
+        // Both callers finish this run before the borrowed callbacks expire:
+        // `finish` closes it and waits until no job is registered.
         let task: *const (dyn Fn(usize) + Sync + 'static) = unsafe {
             std::mem::transmute::<*const (dyn Fn(usize) + Sync + '_), *const (dyn Fn(usize) + Sync)>(
                 task,
@@ -410,6 +417,11 @@ impl Turns {
             if caller && let Some(counts) = &self.profile {
                 counts.caller.fetch_add(1, Ordering::Relaxed);
             }
+            // SAFETY: the calling thread (`caller`) runs this synchronously inside
+            // `Workers::run_beside` or `Admitted::run_turns`, which hold the borrowed callback
+            // throughout. A helper registered before `Turns::finish` closed admission and may run
+            // after the close, but `finish` waits until no helper is registered, and both entry
+            // points keep the callback alive through that wait.
             unsafe { (*self.task)(at) };
             self.completed.fetch_add(1, Ordering::Release);
         }

@@ -63,6 +63,8 @@ impl Lanes {
         if table.is_null() {
             return Err("experience gain storage not prepared");
         }
+        // SAFETY: a published table is replaced only while the gate is closed
+        // with no lease, and released only after hook quiescence.
         unsafe { &*table }.add(owner, source.branch, amount)
     }
 }
@@ -637,11 +639,11 @@ pub struct Hooks {
     publication_attempted: bool,
 }
 impl Hooks {
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         let result = (|| {
             let mut located = [(0, [0; 16]); native::SITES.len()];

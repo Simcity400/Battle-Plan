@@ -56,6 +56,9 @@ impl Drop for Anchor {
         }
     }
 }
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and the index of its published original.
 unsafe fn pass(status: usize, arg: usize, index: usize, container: u8) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
@@ -153,6 +156,9 @@ unsafe extern "system-unwind" fn erase_range(header: usize, first: usize, last: 
     flight.returned();
     result
 }
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and the index of its published original.
 unsafe fn reset_or_restore(status: usize, b: usize, c: usize, index: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
@@ -273,6 +279,9 @@ unsafe extern "system-unwind" fn state_candidates(
     flight.returned();
     result
 }
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and the index of its published original.
 unsafe fn global_candidates(closure: usize, arg: usize, index: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
@@ -329,6 +338,9 @@ fn clear_candidates(status: usize) {
         rows::ALL | rows::CLEAR_ALL_CANDIDATES,
     );
 }
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and the index of its published original.
 unsafe fn ignore_token(container: usize, token: usize, index: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
@@ -356,6 +368,9 @@ unsafe extern "system-unwind" fn ignore(a: usize, b: usize) -> usize {
 unsafe extern "system-unwind" fn unignore(a: usize, b: usize) -> usize {
     unsafe { ignore_token(a, b, 17) }
 }
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and the index of its published original.
 unsafe fn update(status: usize, b: usize, index: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
@@ -375,6 +390,9 @@ unsafe extern "system-unwind" fn hourly(a: usize, b: usize) -> usize {
 unsafe extern "system-unwind" fn refresh(a: usize, b: usize) -> usize {
     unsafe { update(a, b, 19) }
 }
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and the index of its published original.
 unsafe fn detour(a: usize, b: usize, c: usize, index: usize) -> usize {
     use super::staging::{Detour, Unit, Witness};
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
@@ -479,6 +497,9 @@ fn committed_removal(instance: usize, was: bool) {
         Err(reason) => feed::refuse(reason),
     }
 }
+/// # Safety
+/// Only the replaced-event retirement call's detour calls this, on the native thread running it,
+/// with that call's arguments.
 unsafe fn retirement(a: usize, b: usize, c: usize) -> usize {
     use super::staging::{Detour, Unit, Witness};
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
@@ -493,6 +514,9 @@ unsafe fn retirement(a: usize, b: usize, c: usize) -> usize {
     });
     result
 }
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and the index of its published original.
 unsafe fn call(a: usize, b: usize, c: usize, index: usize) -> usize {
     if index == REPLACE_EVENT_RETIREMENT {
         return unsafe { retirement(a, b, c) };
@@ -694,6 +718,9 @@ unsafe extern "system-unwind" fn tap(r: &Registers, index: usize) {
         _ => feed::refuse("decision retained-state tap identity differs"),
     }
 }
+/// # Safety
+/// `base` identifies the authenticated executable in this process. The caller owns these sites
+/// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
 pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), String> {
     let verify = |site: native::Site| verify_hook::<16>(base, site);
     let callbacks = [
@@ -803,6 +830,9 @@ fn verify_call(base: usize, site: native::Site) -> Result<(usize, [u8; 16], usiz
     })
 }
 
+/// # Safety
+/// `base` identifies the authenticated executable in this process. The caller owns these sites
+/// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
 pub(super) unsafe fn selection_tap(base: usize) -> Result<Tap, String> {
     let site = sites::TARGETED_SELECTION_RESULT;
     let (at, original) = verify_hook::<16>(base, site)?;

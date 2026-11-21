@@ -94,7 +94,7 @@ All Rust is in `crates/`; names group by prefix.
 
 - Design every part, new or changed, as the best solution built from scratch, not a patch on what is there, and make it as fast and efficient as it can be.
 - Design for 1,500 countries. No caps we made up.
-- New source comments fail the ratchet. Put decisions in `docs/adr/`. Use `/delete-comment` to audit existing comments. Licence notices stay.
+- New comments fail the ratchet except `// SAFETY:` and `# Safety` at unsafe code. Decisions go in `docs/adr/`; audit with `/delete-comment`.
 - A lint suppression (`#[allow]`, `#[expect]`) gives `reason = "..."`. `tools/check-suppressions.py` fails a change that adds one without.
 
 ## Pull requests

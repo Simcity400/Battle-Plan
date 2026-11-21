@@ -395,10 +395,10 @@ pub fn prepare(memory: &impl Memory, base: usize) -> io::Result<usize> {
     Ok(rows)
 }
 
-#[doc = " Clears retained heap storage so detach/reattach begins without observations."]
-#[doc = ""]
-#[doc = " # Safety"]
-#[doc = " Hooks must be removed and all callbacks/readers quiescent before release."]
+/// Clears retained heap storage so detach/reattach begins without observations.
+///
+/// # Safety
+/// Hooks must be removed and all callbacks/readers quiescent before release.
 pub unsafe fn release() {
     debug_assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
     ENABLED.store(false, Ordering::SeqCst);
@@ -449,6 +449,9 @@ impl Drop for HistoryChange<'_> {
         }
     }
 }
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked call, with that
+/// call's arguments and its original.
 unsafe fn history_change(history: usize, target: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::LogisticsBalance);
     let _guard = Guard::enter();
@@ -578,6 +581,9 @@ impl CellBinding<'_> {
         self.write.refusal = Some(refusal);
     }
 }
+/// # Safety
+/// Only this family's detours call this, on the native thread running the hooked balance write,
+/// with that call's arguments and its call site's offset.
 unsafe fn write(record: usize, balance: i64, archetype: u32, stack: usize, offset: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::LogisticsBalance);
     let _guard = Guard::enter();
@@ -649,10 +655,10 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         BASE.store(base, Ordering::Release);
         let mut hooks = Vec::new();

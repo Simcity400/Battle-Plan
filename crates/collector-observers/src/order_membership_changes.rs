@@ -69,8 +69,8 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " The runtime owns the authenticated image and this patch family's lifetime."]
+    /// # Safety
+    /// The runtime owns the authenticated image and this patch family's lifetime.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "order_membership_changes") {

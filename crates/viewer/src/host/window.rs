@@ -77,6 +77,9 @@ impl Window {
         });
         let class = wide(CLASS);
         let title = wide(title);
+        // SAFETY: a class registered once per process with this module's procedure; the window
+        // keeps one strong reference to the link, released at WM_NCDESTROY. A creation that fails
+        // after WM_NCCREATE releases it a second time below (#1630).
         unsafe {
             let instance = GetModuleHandleW(ptr::null());
             let description = WNDCLASSEXW {
@@ -304,6 +307,8 @@ fn button(message: u32, wparam: WPARAM) -> Option<(egui::PointerButton, bool)> {
     })
 }
 
+/// # Safety
+/// `hwnd` is the live window whose procedure is running on this thread.
 unsafe fn center(hwnd: HWND) -> POINT {
     let mut client = RECT::default();
     unsafe { GetClientRect(hwnd, &mut client) };
@@ -313,6 +318,9 @@ unsafe fn center(hwnd: HWND) -> POINT {
 }
 
 unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // SAFETY: the link pointer is the window's own strong reference from WM_NCCREATE until
+    // WM_NCDESTROY, read only on this, the window's, thread; the OS supplies each message's
+    // documented struct pointer for the call.
     unsafe {
         if message == WM_NCCREATE {
             let created = &*(lparam as *const CREATESTRUCTW);

@@ -277,6 +277,8 @@ fn precise_wait(left: Duration) {
         }
         thread_local! {
             static TIMER: *mut c_void = {
+                // SAFETY: a nameless, uninherited timer with no attributes; the handle is kept for
+                // this thread's life and only ever set and waited on.
                 let timer = unsafe { CreateWaitableTimerExW(std::ptr::null_mut(), std::ptr::null(), HIGH_RESOLUTION, TIMER_ALL_ACCESS) };
                 timer
             };

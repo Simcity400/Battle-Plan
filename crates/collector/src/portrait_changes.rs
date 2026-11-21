@@ -176,6 +176,10 @@ enum Log {
     Full,
 }
 
+// SAFETY: a slot is written only by the writer that reserved it, before its record is
+// published; published slots are only read until the next capture begins, after every reader
+// of this one returned; the storage is replaced only while no writer logs and no capture reads.
+// `image` still borrows the whole text buffer while writers fill other slots (#1636).
 unsafe impl Sync for PreImages {}
 
 impl PreImages {
@@ -197,6 +201,8 @@ impl PreImages {
     }
 
     fn begin(&self) -> bool {
+        // SAFETY: open with no writer logging since the last end, and the capture gate admits
+        // one capture at a time.
         let storage = unsafe { &*self.storage.get() };
         let used = self.reserved[RECORDS].load(Ordering::SeqCst);
         for record in &storage.records[..used.min(storage.records.len())] {
@@ -230,6 +236,7 @@ impl PreImages {
             std::thread::yield_now();
         }
         if grow {
+            // SAFETY: open with no writer logging, and the capture's readers returned.
             unsafe { self.grow() };
         }
     }
@@ -261,8 +268,8 @@ impl PreImages {
         }
     }
 
-    #[doc = " # Safety"]
-    #[doc = " Open, with no writer logging and no capture reading."]
+    /// # Safety
+    /// Open, with no writer logging and no capture reading.
     unsafe fn grow(&self) {
         let storage = unsafe { &mut *self.storage.get() };
         let [records, entries, text] = self.demand.each_ref().map(|d| d.load(Ordering::SeqCst));
@@ -332,11 +339,13 @@ impl PreImages {
     }
 
     fn find(&self, array: usize) -> Option<&Record> {
+        // SAFETY: replaced only while no writer logs and no capture reads.
         let storage = unsafe { &*self.storage.get() };
         let len = self.reserved[RECORDS].load(Ordering::SeqCst);
         storage.records[..len.min(storage.records.len())]
             .iter()
             .find(|record| {
+                // SAFETY: a ready record's fields were written before it was published.
                 record.ready.load(Ordering::Acquire) && unsafe { *record.array.get() } == array
             })
     }
@@ -348,6 +357,7 @@ impl PreImages {
         let (Some(record), Some(image)) = (storage.records.get(slot), image) else {
             return Log::Full;
         };
+        // SAFETY: this writer reserved the slot; nothing reads it before it is published.
         unsafe {
             *record.array.get() = array;
             *record.image.get() = image;
@@ -411,6 +421,7 @@ impl PreImages {
             if !fits {
                 continue;
             }
+            // SAFETY: cells this writer reserved, contiguous in one allocation.
             let text = unsafe {
                 std::slice::from_raw_parts_mut(
                     UnsafeCell::raw_get(storage.text.as_ptr().add(start)),
@@ -420,6 +431,7 @@ impl PreImages {
             if len != 0 && !memory.copy(source, text) {
                 return unreadable;
             }
+            // SAFETY: an entry slot this writer reserved.
             unsafe {
                 *storage.entries[first + index as usize].get() = EntryImage {
                     head,
@@ -446,6 +458,8 @@ impl engine_native::portrait_cache::PreImages for PreImages {
             ));
         }
         let record = self.find(array)?;
+        // SAFETY: a published record and the slots it names are not written again until the
+        // next capture begins, after every reader of this one has returned.
         Some(match unsafe { *record.image.get() } {
             Logged::Unreadable => Err("character portrait pre-image unreadable"),
             Logged::Holder {
@@ -568,6 +582,9 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "portrait_changes") {

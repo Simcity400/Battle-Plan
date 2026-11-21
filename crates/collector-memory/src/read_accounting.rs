@@ -135,6 +135,7 @@ impl Capture {
             let mut state = state.borrow_mut();
             state.flush();
             let previous = capture.previous.as_mut_ptr();
+            // SAFETY: every field of `previous` is written before `open` is set.
             unsafe {
                 #[cfg(any(test, feature = "test-support"))]
                 std::ptr::addr_of_mut!((*previous).tables).write(state.tables);
@@ -168,6 +169,7 @@ impl Capture {
         if !std::mem::take(&mut self.open) {
             return;
         }
+        // SAFETY: `open` was set only after `new` initialized `previous`.
         let previous = unsafe { self.previous.assume_init_ref() };
         STATE.with(|state| {
             let mut state = state.borrow_mut();

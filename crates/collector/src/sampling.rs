@@ -849,6 +849,10 @@ impl Shared {
     }
 
     fn bind_doctrine_observer(&self) {
+        // SAFETY: `with_sizing` binds the stable store and all three handlers before any hook is
+        // published. Shared owns this box, which loans move without moving, through hook restoration
+        // and native callback quiescence, so every registered handler's context stays valid until
+        // the callbacks drain.
         unsafe {
             let doctrines = (*self.doctrine_store.get())
                 .as_deref()
@@ -1491,6 +1495,7 @@ impl Shared {
 
     pub(crate) fn prepare_clock_len(&mut self, len: usize) {
         let capture = self.clock_capture.get_mut() as *mut ClockCapture;
+        // SAFETY: `&mut self`: no hook runs and nothing else holds the clock buffers.
         let _ = engine_allocation::advisory(|| unsafe { self.grow_own_clock(&mut *capture, len) });
         self.grow_free_clocks(len, 0);
         *self.clock_frames.get_mut() = len;
@@ -1525,6 +1530,12 @@ impl Shared {
         }
     }
 
+    /// The capture's own clock buffers grown to hold a `required`-byte campaign id. Each
+    /// buffer is checked rather than a remembered length: the loss witnesses trade places with
+    /// the frames' as hours pass.
+    ///
+    /// # Safety
+    /// The caller is the running capture, or holds `&mut self`.
     unsafe fn grow_own_clock(
         &self,
         capture: &mut ClockCapture,
@@ -1553,6 +1564,14 @@ impl Shared {
         Ok(())
     }
 
+    /// The capture's clock destination, its own buffers grown first when the game holds a
+    /// longer campaign id than they do. It takes no lock and waits for nothing: these buffers
+    /// are the running capture's alone, and the frame it takes is grown by [`Self::take_frame`]. A
+    /// refused growth is the collector's allocation failure; the hour's clock read then fails.
+    ///
+    /// # Safety
+    /// The running capture, which makes no other borrow of the clock buffers while this one lives;
+    /// the borrow ends with the hour.
     #[allow(
         clippy::mut_from_ref,
         reason = "the running capture owns the clock buffers alone"
@@ -1588,6 +1607,9 @@ impl Shared {
         );
     }
 
+    /// # Safety
+    /// Captures only: the capture gate keeps command-batch writers out of the roster `memory` reads.
+/// Portrait writers may still run, so a portrait read here would need the capture's pre-images.
     unsafe fn sample_roster(
         &self,
         memory: &impl engine_native::Memory,
@@ -1630,6 +1652,7 @@ fn forget_unpublished_families(shared: &Shared) {
     }
     for (family, store) in shared.slice_fingerprints.iter().enumerate() {
         if families & (1 << family) != 0 {
+            // SAFETY: one capture at a time, between captures' loans.
             if let Some(store) = unsafe { &mut *store.get() }.as_mut() {
                 store.forget();
             }
@@ -1637,6 +1660,10 @@ fn forget_unpublished_families(shared: &Shared) {
     }
 }
 
+/// Take a sliced family's fingerprint store for this hour's job.
+///
+/// # Safety
+/// Captures only, and the previous capture returned the store.
 unsafe fn take_slice_store(
     shared: &Shared,
     family: usize,
@@ -1646,6 +1673,10 @@ unsafe fn take_slice_store(
         .expect("sliced family store returned by the previous callback")
 }
 
+/// Return a store [`take_slice_store`] lent.
+///
+/// # Safety
+/// Captures only, in the capture that took it.
 unsafe fn return_slice_store(
     shared: &Shared,
     family: usize,
@@ -1688,6 +1719,7 @@ fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize) {
         .enumerate()
         .filter(|_| read)
     {
+        // SAFETY: one capture at a time; every store was returned by this capture.
         if let Some(fingerprints) = unsafe { &mut *fingerprints.get() }.as_mut() {
             frame
                 .extended
@@ -1762,6 +1794,12 @@ fn callback_profile_counters(shared: &Shared) -> crate::callback_profile::Sample
     }
 }
 
+/// Contain callback failures without reusing partially restored capture storage.
+/// Once a callback panics, subsequent hours record losses until the loader
+/// restores the hook; they must not consume more buffers or wait for the lost one.
+///
+/// # Safety
+/// Only the running capture may mutate the pending loss batch.
 unsafe fn guarded_acquisition(
     shared: &Shared,
     entry: Option<Clock<&[u8]>>,
@@ -1810,12 +1848,25 @@ pub(crate) unsafe fn synthetic_callback(
     complete
 }
 
+/// Reads one hour, every scheduled table when `full`. The caller guarantees that no command batch
+/// writes the simulation until it returns: the game thread is held, or every command-batch writer
+/// waits at the capture gate. False when hourly captures are not admitted, so nothing was read; an admitted
+/// hour that is not recorded (recording stopped, or the collector's allocation failed) is
+/// consumed.
+///
+/// # Safety
+/// One capture at a time, on the game thread or the capture thread. The caller holds the capture
+/// gate at the admitted write boundary and excludes command-batch writes for the whole native read.
+/// Portrait writers are not excluded: the caller holds a `PreImagesCapture` for the whole read, and
+/// the portrait reader reads live bytes, then accepts, replaces or withholds them by that log, so
+/// live portrait storage is never treated as fixed.
 pub(crate) unsafe fn capture(placement: Placement, full: bool) -> bool {
     let hook_entry = qpc();
     let shared = SHARED.load(Ordering::Acquire);
     if shared.is_null() {
         return false;
     }
+    // SAFETY: published before any hook is installed and withdrawn after the last capture.
     let shared = unsafe { &*shared };
     let Some(admission) = crate::runtime::admit_hourly_capture() else {
         return false;
@@ -1849,6 +1900,10 @@ pub(crate) fn hurry() {
     }
 }
 
+/// Hours that ended and were never read, recorded as lost before whatever frame comes next.
+///
+/// # Safety
+/// The running capture, or no capture can run.
 pub(crate) unsafe fn record_lost(shared: &Shared, hours: u32) {
     let pending = unsafe { &mut *shared.pending.get() };
     for _ in 0..hours {
@@ -1857,6 +1912,8 @@ pub(crate) unsafe fn record_lost(shared: &Shared, hours: u32) {
     }
 }
 
+/// # Safety
+/// As [`capture`], and `shared` is the published runtime state.
 unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, full: bool) {
     let history_capture = shared.history_frames.capture();
     let _frame_priority = shared.frame_priority.callback();
@@ -1963,6 +2020,9 @@ unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, f
     }
 }
 
+/// # Safety
+/// Only the hourly update's detour calls this, on the game thread, with that call's arguments,
+/// once attach has published the runtime state.
 pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     #[cfg(feature = "worker_sampler")]
     let sampler_callback = crate::worker_sampler::callback();
@@ -2006,6 +2066,8 @@ struct PendingBoundary {
     pending: PendingAcquisition,
 }
 
+/// # Safety
+/// The caller holds the original native boundary through the join.
 unsafe fn submit_observer_boundary(
     shared: &Shared,
     batch: &mut acquisition::Batch<'_>,
@@ -2018,6 +2080,8 @@ unsafe fn submit_observer_boundary(
     }
 }
 
+/// # Safety
+/// As [`submit_observer_boundary`].
 unsafe fn finish_observer_boundary(
     shared: &Shared,
     batch: &mut acquisition::Batch<'_>,
@@ -2076,6 +2140,12 @@ impl Drop for CallbackPriority {
     }
 }
 
+/// # Safety
+/// The callback holds the live acquisition boundary: nothing writes the simulation until this
+/// returns, because the game is held at the hourly boundary or the capture runs beside it with
+/// every command-batch writer waiting at the capture gate. Portrait writers may proceed; the
+/// capture's `PreImagesCapture` keeps their pre-images, and the portrait reader validates the live
+/// bytes it reads against them.
 unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
     let memory = unsafe { LiveMemory::new() };
     #[cfg(test)]
@@ -2083,6 +2153,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
     unsafe { acquire_with_memory(shared, dispatch, memory) };
 }
 
+/// # Safety
+/// As [`acquire`], with `memory` reading the live game.
 unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: impl Memory) {
     let Dispatch {
         world_generation,
@@ -2209,6 +2281,9 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             );
             boundary_request.market_clock = Some(clock.with_campaign_id(campaign_epoch));
             boundary_request.market_refresh = force_full;
+            // SAFETY: the capture's write boundary holds through the boundary job: the game is held,
+            // or command-batch writers wait at the capture gate, and the batch drains the job before
+            // the capture ends and the gate reopens.
             let boundary_pending =
                 unsafe { submit_observer_boundary(shared, &mut batch, boundary_request) };
             let state = clock.game_state as usize;
@@ -2276,6 +2351,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             macro_rules! queue {
                 ($job:expr) => {{
                     let job = || $job;
+                    // SAFETY: batch drains all accepted work before this callback returns.
                     unsafe { queue_acquisition(shared, &mut batch, job) }
                 }};
             }
@@ -2288,6 +2364,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             macro_rules! collected {
                 ($pending:expr, $variant:ident) => {{
                     let pending = $pending;
+                    // SAFETY: this thread still owns the live acquisition boundary.
                     unsafe {
                         presentation.wait_for(shared, &mut batch, Some(&pending));
                         collect_acquisition(
@@ -3233,6 +3310,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                             shared
                                 .pool_bytes
                                 .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                            // SAFETY: the IntelResidual job has joined; no worker retains this store.
                             unsafe { *shared.script_flag_store.get() = Some(store) };
                         }
                     });
@@ -3505,6 +3583,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 handling = Some((step, handled));
                 match step {
                     EarlyStep::Presentation => {
+                        // SAFETY: readiness proved publication; no preparation wait here.
                         unsafe { presentation.advance(shared, &mut batch) };
                     }
                     EarlyStep::Roots => {
@@ -3611,6 +3690,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                         };
                         weather_pending = Some({
                             let mut payload = decode::acquire_weather_job();
+                            // SAFETY: the capture; the previous capture returned it.
                             payload.carry = unsafe { &mut *shared.weather_carry.get() }.take();
                             if let Some(carry) = payload.carry.as_mut() {
                                 carry.begin(
@@ -3704,6 +3784,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                                 }
                                 joining = input_failure.is_none() && census.joinable();
                             }
+                            // SAFETY: the part has joined; only this callback returns it.
                             unsafe { (*shared.division_parts.get())[part] = Some(captured) };
                         }
                         input_request.payload.overflowed |= input_request.payload.census.overflowed;
@@ -3852,6 +3933,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     }
                     EarlyStep::Ships => {
                         let dispatched = out_of_line(|| {
+                            // SAFETY: this thread still owns the live acquisition boundary.
                             let (mut ship_models_request, mut ship_models_report) = unsafe {
                                 collect_acquisition(
                                     shared,
@@ -3934,6 +4016,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                                 shared
                                     .pool_bytes
                                     .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                                // SAFETY: the Countries job has joined; no worker retains this store.
                                 unsafe { *shared.appearance_store.get() = Some(store) };
                             }
                             frame.countries_result = countries_report.countries;
@@ -4061,6 +4144,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                                 air_failure.is_some(),
                             );
                             if store.is_some() {
+                                // SAFETY: the AirWing job has joined; no worker retains this store.
                                 unsafe { *shared.wing_store.get() = store };
                             }
                             let previous = shared.wing_store_bytes.swap(bytes, Ordering::Relaxed);
@@ -4399,6 +4483,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                             shared
                                 .pool_bytes
                                 .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                            // SAFETY: the AirMissions job has joined; no worker retains this store.
                             unsafe { *shared.mission_store.get() = Some(store) };
                         }
                         install_air_verdicts(frame, air_stats_raw, air_bases_raw);
@@ -4420,6 +4505,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                             shared
                                 .pool_bytes
                                 .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                            // SAFETY: the ScoresRails job has joined; no worker retains
+                            // these stores.
                             unsafe { *shared.raid_air_scores.get() = Some(air_scores) };
                             if let Some(store) = rail_store {
                                 let bytes = store.allocated_bytes() as u64;
@@ -4519,6 +4606,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     EarlyStep::Orders => {
                         let (orders, parts) = order_joins.take().expect("ready order producers");
                         stitch_pending = Some(out_of_line(|| {
+                            // SAFETY: the callback still owns the live boundary;
+                            // every part published before this slot-order merge.
                             let orders =
                                 unsafe { collect_orders(shared, &mut batch, orders, parts) };
                             queue!(acquisition::Job::OrdersStitch(orders))
@@ -4557,6 +4646,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     if failure.is_some() || request.payload.staging_failed() {
                         carry.forget();
                     }
+                    // SAFETY: the capture; the Weather job has joined.
                     unsafe { *shared.weather_carry.get() = Some(carry) };
                 }
                 weather_report = report;
@@ -4595,6 +4685,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 shared
                     .pool_bytes
                     .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the Provinces job has joined; no worker retains this store.
                 unsafe { *shared.area_store.get() = Some(store) };
             }
             if let Some(mut store) = provinces_request.payload.province_store.take() {
@@ -4622,6 +4713,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 shared
                     .pool_bytes
                     .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the States job has joined; no worker retains this store.
                 unsafe { *shared.state_store.get() = Some(store) };
             }
             if let Some(mut store) = states_request.occupation_store.take() {
@@ -4633,6 +4725,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 shared
                     .pool_bytes
                     .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the States worker has joined; frame snapshots contain no store borrow.
                 unsafe { *shared.occupation_store.get() = Some(store) };
             }
             let states_report =
@@ -4651,6 +4744,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 shared
                     .pool_bytes
                     .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the Wars job has joined; no worker retains this store.
                 unsafe { *shared.war_store.get() = Some(store) };
             }
             let wars_report = frame.restore_wars_request(wars_request, wars_report, wars_failure);
@@ -4672,6 +4766,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 shared
                     .pool_bytes
                     .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the Factions job has joined and returned exclusive ownership.
                 unsafe { *shared.faction_goal_store.get() = Some(store) };
             }
             if let Some(mut store) = factions_request.companion_store.take() {
@@ -4686,6 +4781,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 shared
                     .pool_bytes
                     .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the Factions job joined and returned exclusive ownership.
                 unsafe { *shared.faction_companion_store.get() = Some(store) };
             }
             frame.faction_companions = std::mem::take(&mut factions_request.companions);
@@ -4754,6 +4850,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 shared
                     .pool_bytes
                     .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the ProvinceUnitOrder job has joined; no worker
+                // retains this store, and only this callback returns it.
                 unsafe { *shared.province_unit_store.get() = Some(store) };
             }
             out_of_line(|| {
@@ -4782,6 +4880,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 shared
                     .pool_bytes
                     .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the Slow job has joined; no worker retains this store.
                 unsafe { *shared.advisor_store.get() = Some(store) };
             }
             if let Some(store) = stores.local_subunits {
@@ -4800,6 +4899,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 shared
                     .pool_bytes
                     .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the existing Slow job has joined and returned its loan.
                 unsafe { *shared.doctrine_store.get() = Some(store) };
             }
             if let Some(pending) = war_overview_pending {
@@ -4863,6 +4963,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 gated_request,
                 gated_failure.is_none() && gated_projects_failure.is_none(),
             );
+            // SAFETY: the Gated job has joined; no worker retains this store.
             unsafe { return_slice_store(shared, crate::slicing::PROJECTS, project_store) };
             let (character_inputs_request, character_inputs_report) =
                 collected!(character_inputs_pending, CharacterInputs);
@@ -4877,6 +4978,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 shared
                     .pool_bytes
                     .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the CharacterInputs job has joined; no worker retains this store.
                 unsafe { *shared.character_role_store.get() = Some(store) };
             }
             out_of_line(|| {
@@ -4896,6 +4998,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     shared
                         .pool_bytes
                         .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                    // SAFETY: the Governance job has joined; no worker retains this store.
                     unsafe { *shared.building_store.get() = Some(store) };
                 }
                 if let Some(store) = leader_store {
@@ -4971,18 +5074,22 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     shared
                         .pool_bytes
                         .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                    // SAFETY: the Ordinary job has joined; no worker retains this store.
                     unsafe { *shared.counter_store.get() = Some(store) };
                 }
                 frame
                     .extended
                     .restore_ordinary_request(ordinary_request, ordinary_failure, parts)
             });
+            // SAFETY: every terminal Ordinary outcome returns its original
+            // store after invalidating unpublished/failed sliced observations.
             unsafe {
                 if let Some(store) = naval_missions.fingerprints {
                     *shared.slice_fingerprints[crate::slicing::NAVAL_MISSIONS].get() = Some(store);
                 }
             }
             out_of_line(|| {
+                // SAFETY: this thread still owns the live acquisition boundary.
                 let (feed, report) = unsafe {
                     collect_acquisition(
                         shared,
@@ -5060,6 +5167,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     .install_fronts(fronts_request.fronts, fronts_failure.is_none());
             }
             out_of_line(|| {
+                // SAFETY: the callback retains the live boundary through every part.
                 let (mut presentation_request, presentation_report) =
                     unsafe { presentation.finish(shared, &mut batch) };
                 let (movement_request, movement_report) =
@@ -5126,6 +5234,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     shared
                         .pool_bytes
                         .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                    // SAFETY: the ScriptVariables job has joined; no worker retains this store.
                     unsafe { *shared.script_variable_store.get() = Some(store) };
                 }
             });
@@ -5186,6 +5295,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     shared
                         .pool_bytes
                         .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                    // SAFETY: the AirBases job has joined; no worker retains this store.
                     unsafe { *shared.air_base_store.get() = Some(store) };
                 }
                 air_bases_report = report;
@@ -5666,6 +5776,11 @@ enum PendingAcquisition {
     Rejected(acquisition::Ticket),
 }
 
+/// Builds one request and submits it out of line: the job-sized request lives
+/// only in this frame, never in the hourly body's.
+///
+/// # Safety
+/// As `submit_acquisition`.
 #[inline(never)]
 unsafe fn queue_acquisition(
     shared: &Shared,
@@ -5676,6 +5791,8 @@ unsafe fn queue_acquisition(
     unsafe { submit_retained(shared, batch, &mut retained) }
 }
 
+/// # Safety
+/// `batch` belongs to this callback, which holds the live-read lease until the batch drains.
 unsafe fn submit_acquisition(
     shared: &Shared,
     batch: &mut acquisition::Batch<'_>,
@@ -5684,6 +5801,8 @@ unsafe fn submit_acquisition(
     unsafe { submit_retained(shared, batch, &mut Some(request)) }
 }
 
+/// # Safety
+/// As [`submit_acquisition`].
 unsafe fn submit_retained(
     shared: &Shared,
     batch: &mut acquisition::Batch<'_>,
@@ -5691,6 +5810,7 @@ unsafe fn submit_retained(
 ) -> PendingAcquisition {
     #[cfg(feature = "callback_profile")]
     let begin = qpc();
+    // SAFETY: the caller's batch owns this callback's complete live lease.
     let pending = match unsafe { batch.submit(retained) } {
         Ok(ticket) => PendingAcquisition::Accepted(ticket),
         Err(_) => PendingAcquisition::Rejected(
@@ -5709,6 +5829,13 @@ unsafe fn submit_retained(
     pending
 }
 
+/// Collects one join out of line: the completion, with its job-sized request
+/// and read counts, lives only in this frame. The hourly body receives the
+/// variant's request and report.
+///
+/// # Safety
+/// As `finish_acquisition_into`. `request` must select the variant payload the completion owns
+/// exclusively: it is moved out once and the completion is never dropped.
 #[inline(never)]
 unsafe fn collect_acquisition<T, R>(
     shared: &Shared,
@@ -5720,6 +5847,7 @@ unsafe fn collect_acquisition<T, R>(
     let mut completed = std::mem::ManuallyDrop::new(None);
     unsafe { finish_acquisition_into(shared, batch, pending, &mut completed) };
     let completed = completed.as_ref().expect("every join yields a completion");
+    // SAFETY: `completed` is never dropped, so the variant is read exactly once.
     let variant = unsafe { std::ptr::read(request(&completed.request)) };
     (variant, completed.report.map(report))
 }
@@ -5735,6 +5863,9 @@ unsafe fn finish_acquisition(
     completed.expect("every join yields a completion")
 }
 
+/// # Safety
+/// `pending` came from [`submit_acquisition`] on `batch`, and the callback still holds the
+/// live-read lease.
 unsafe fn finish_acquisition_into(
     shared: &Shared,
     batch: &mut acquisition::Batch<'_>,
@@ -5860,6 +5991,12 @@ impl PresentationPending {
         }
     }
 
+    /// Await an existing join, servicing published presentation edges meanwhile.
+    /// A ready unrelated join wins over an unfinished preparation. Only `None`,
+    /// at the original Presentation join, may wait for this chain alone.
+    ///
+    /// # Safety
+    /// The callback retains its live acquisition boundary through the batch.
     unsafe fn wait_for(
         &mut self,
         shared: &Shared,
@@ -5878,10 +6015,14 @@ impl PresentationPending {
             if !advance {
                 break;
             }
+            // SAFETY: publication is proved above; the same boundary is held.
             unsafe { self.advance(shared, batch) };
         }
     }
 
+    /// Collect only published producers, dispatching their consumer immediately.
+    /// # Safety
+    /// As `wait_for`; `ready` must hold.
     #[inline(never)]
     unsafe fn advance(&mut self, shared: &Shared, batch: &mut acquisition::Batch<'_>) {
         assert!(self.ready(batch), "presentation producer published");
@@ -5920,6 +6061,9 @@ impl PresentationPending {
         request
     }
 
+    /// # Safety
+    /// `pending` is this hour's published preparation on the callback's `batch`, and the callback
+    /// holds the live-read lease until the batch drains.
     #[inline(never)]
     unsafe fn dispatch_ranges(
         &mut self,
@@ -5927,6 +6071,7 @@ impl PresentationPending {
         batch: &mut acquisition::Batch<'_>,
         pending: PendingAcquisition,
     ) {
+        // SAFETY: this published preparation belongs to the callback's batch.
         let (mut request, report) = unsafe {
             collect_acquisition(
                 shared,
@@ -5971,6 +6116,7 @@ impl PresentationPending {
                 .enumerate()
                 .take(request.captured.status_part_count())
             {
+                // SAFETY: the batch drains every range before releasing the boundary.
                 *pending = Some(unsafe {
                     queue_acquisition(shared, batch, || {
                         let part = request.captured.take_status_part(index);
@@ -5995,6 +6141,9 @@ impl PresentationPending {
         self.park(batch, request);
     }
 
+    /// # Safety
+    /// Every range this dispatch submitted is on the callback's `batch`, and the callback holds the
+    /// live-read lease until the batch drains.
     #[inline(never)]
     unsafe fn dispatch_stitch(&mut self, shared: &Shared, batch: &mut acquisition::Batch<'_>) {
         let mut request = self.unpark(batch);
@@ -6004,6 +6153,7 @@ impl PresentationPending {
                 continue;
             };
             out_of_line(|| {
+                // SAFETY: every range published before this ordered collection.
                 let (mut part, report) = unsafe {
                     collect_acquisition(
                         shared,
@@ -6074,6 +6224,7 @@ impl PresentationPending {
                     submit_acquisition(shared, batch, acquisition::Job::PresentationSettle(request))
                 });
             } else {
+                // SAFETY: all shared leases were dropped above; the batch owns the stitch.
                 self.pending = Some(unsafe {
                     submit_acquisition(shared, batch, acquisition::Job::Presentation(request))
                 });
@@ -6083,6 +6234,8 @@ impl PresentationPending {
         }
     }
 
+    /// # Safety
+    /// As `wait_for`; called only at the original Presentation join.
     #[inline(never)]
     unsafe fn finish(
         &mut self,
@@ -6177,6 +6330,13 @@ fn orders_complete(
         .all(|pending| pending_complete(batch, pending))
 }
 
+/// Join the Orders job and its parts into the census the stitch takes. A
+/// failed Orders job fails the census; each part returns, and the first that
+/// did not run fails the census with the reason the single job would have
+/// had, unless the census already failed.
+///
+/// # Safety
+/// The caller still owns the live acquisition boundary.
 unsafe fn collect_orders(
     shared: &Shared,
     batch: &mut acquisition::Batch<'_>,
@@ -6258,15 +6418,31 @@ fn settle_stitch(
     });
 }
 
+/// Before this hour's root census job: its order census parts follow the
+/// split the last stitched hour planned, whichever pooled frame either hour
+/// uses. Returns the parts' storage before the job prepares them
+/// ([`charge_order_parts`]).
+///
+/// # Safety
+/// Only the capture reads and writes `shared`'s order split.
 unsafe fn begin_order_parts(shared: &Shared, orders: &mut crate::map_capture::Orders) {
     let split = unsafe { *shared.order_split.get() };
     orders.begin_parts(split, shared.frequency);
 }
 
+/// After this hour's stitch joins: the split it planned for the next hour,
+/// or one part when it planned none.
+///
+/// # Safety
+/// As [`begin_order_parts`].
 unsafe fn end_order_parts(shared: &Shared, orders: &crate::map_capture::Orders) {
     unsafe { *shared.order_split.get() = orders.next_split() };
 }
 
+/// A rejected request's join, out of line from the accepted path.
+///
+/// # Safety
+/// As `finish_acquisition_into`.
 #[inline(never)]
 unsafe fn finish_rejected(
     batch: &mut acquisition::Batch<'_>,
@@ -6334,10 +6510,14 @@ unsafe fn finish_rejected(
         Some(Ok(report))
     });
     if !completed {
+        // SAFETY: the unhandled request remains parked and is eligible inline.
         unsafe { finish_rejected_inline(batch, ticket, out) };
     }
 }
 
+/// # Safety
+/// `batch` rejected and parked `ticket`'s request before it acquired any live state, and the
+/// callback holds the batch's live-read lease.
 #[inline(never)]
 unsafe fn finish_rejected_inline(
     batch: &mut acquisition::Batch<'_>,
@@ -6347,6 +6527,7 @@ unsafe fn finish_rejected_inline(
     let request = batch
         .unpark(ticket)
         .expect("parked inline acquisition request");
+    // SAFETY: this request was rejected before acquiring any live state.
     *out = Some(unsafe { batch.run_inline(request) });
 }
 

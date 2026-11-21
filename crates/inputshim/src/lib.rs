@@ -128,6 +128,9 @@ struct Slot {
     hook: usize,
 }
 
+/// # Safety
+/// The process's main module stays loaded, every page of the `SizeOfImage` span its headers
+/// declare is readable, and nothing writes that span while this reads it.
 unsafe fn imports() -> Option<Vec<Slot>> {
     let base = unsafe { GetModuleHandleW(ptr::null()) } as *mut u8;
     if base.is_null() || unsafe { base.cast::<u16>().read_unaligned() } != 0x5a4d {
@@ -214,6 +217,8 @@ unsafe fn imports() -> Option<Vec<Slot>> {
     (!slots.is_empty()).then_some(slots)
 }
 
+/// # Safety
+/// Only `DllMain` calls this, once, at process attach. The requirements of [`imports`] apply.
 unsafe fn install() -> bool {
     let Some(slots) = (unsafe { imports() }) else {
         return false;
@@ -294,6 +299,8 @@ unsafe fn install() -> bool {
     true
 }
 
+/// # Safety
+/// Only the Windows loader calls this, with its own arguments.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllMain(
     _module: HINSTANCE,

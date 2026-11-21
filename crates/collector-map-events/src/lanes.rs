@@ -782,11 +782,11 @@ pub fn capacity() -> Capacity {
     capacity
 }
 
-#[doc = " Free every generation."]
-#[doc = ""]
-#[doc = " # Safety"]
-#[doc = " No callback can publish: the hooks are restored, no native call holds"]
-#[doc = " one, and every reader of an assembled interval has finished."]
+/// Free every generation.
+///
+/// # Safety
+/// No callback can publish: the hooks are restored, no native call holds
+/// one, and every reader of an assembled interval has finished.
 pub unsafe fn release() {
     CURRENT.store(std::ptr::null_mut(), Ordering::SeqCst);
     ADMITTED.store(0, Ordering::SeqCst);

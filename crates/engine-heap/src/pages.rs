@@ -90,6 +90,7 @@ fn node(base: usize) -> *mut Node {
 
 impl Kept {
     fn push(&mut self, base: usize, bytes: usize, freed: Instant) {
+        // SAFETY: a freed block's committed pages, larger than a header and page aligned.
         unsafe {
             node(base).write(Node {
                 next: 0,
@@ -108,6 +109,7 @@ impl Kept {
         let first = self.head;
         let mut last = 0;
         let mut at = self.head;
+        // SAFETY: every linked base holds a header [`Self::push`] wrote.
         while at != 0 && now.duration_since(unsafe { (*node(at)).freed }) >= DELAY {
             last = at;
             at = unsafe { (*node(at)).next };
@@ -156,6 +158,7 @@ impl Kept {
             0 => return None,
             base => base,
         };
+        // SAFETY: a linked base holds a header [`Self::push`] wrote.
         let Node { next, bytes, .. } = unsafe { node(base).read() };
         self.head = next;
         if next == 0 {
@@ -171,6 +174,7 @@ impl Kept {
 
 fn release_chain(mut at: usize) {
     while at != 0 {
+        // SAFETY: a header [`Kept::push`] wrote, read before its block goes.
         let Node { next, bytes, .. } = unsafe { node(at).read() };
         release(at as *mut u8, bytes);
         at = next;
@@ -241,14 +245,19 @@ fn reuse(bytes: usize, class: usize, now: Instant) -> Option<(usize, usize)> {
 }
 
 fn release(base: *mut u8, bytes: usize) {
+    // SAFETY: the base of a reservation [`alloc`] made.
     unsafe { VirtualFree(base.cast(), 0, MEM_RELEASE) };
     COMMITTED.fetch_sub(bytes, Relaxed);
 }
 
+/// # Safety
+/// [`own`] accepts the layout `size` comes from.
 pub(crate) unsafe fn alloc(size: usize, zeroed: bool) -> *mut u8 {
     unsafe { alloc_at(size, zeroed, Instant::now()) }
 }
 
+/// # Safety
+/// As [`alloc`].
 unsafe fn alloc_at(size: usize, zeroed: bool, now: Instant) -> *mut u8 {
     let _call = InFlight::enter();
     let bytes = rounded(size);
@@ -258,6 +267,7 @@ unsafe fn alloc_at(size: usize, zeroed: bool, now: Instant) -> *mut u8 {
     if let Some((base, held)) = reused {
         let base = base as *mut u8;
         if held > bytes {
+            // SAFETY: committed pages past the block, in its own reservation.
             unsafe { VirtualFree(base.add(bytes).cast(), held - bytes, MEM_DECOMMIT) };
             COMMITTED.fetch_sub(held - bytes, Relaxed);
         }
@@ -279,10 +289,15 @@ unsafe fn alloc_at(size: usize, zeroed: bool, now: Instant) -> *mut u8 {
     base.cast()
 }
 
+/// # Safety
+/// `pointer` is a live block [`alloc`] returned, `size` its current size after any [`resize`],
+/// and the block is never used again.
 pub(crate) unsafe fn free(pointer: *mut u8, size: usize) {
     unsafe { free_at(pointer, size, Instant::now()) }
 }
 
+/// # Safety
+/// As [`free`].
 unsafe fn free_at(pointer: *mut u8, size: usize, now: Instant) {
     let _call = InFlight::enter();
     let bytes = rounded(size);
@@ -303,10 +318,15 @@ unsafe fn free_at(pointer: *mut u8, size: usize, now: Instant) {
     sweep(class, now);
 }
 
+/// # Safety
+/// `pointer` is a live block [`alloc`] returned, `old` its current size, and nothing else uses
+/// the block during the call. [`own`] accepts the layout `new` comes from. On `true` the block
+/// holds `new` bytes and that is its current size; on `false` it is unchanged.
 pub(crate) unsafe fn resize(pointer: *mut u8, old: usize, new: usize) -> bool {
     let (held, wanted) = (rounded(old), rounded(new));
     if wanted <= held {
         if wanted < held {
+            // SAFETY: committed pages past the shrunk block, in its own reservation.
             unsafe { VirtualFree(pointer.add(wanted).cast(), held - wanted, MEM_DECOMMIT) };
             COMMITTED.fetch_sub(held - wanted, Relaxed);
         }
@@ -328,6 +348,7 @@ pub(crate) unsafe fn resize(pointer: *mut u8, old: usize, new: usize) -> bool {
     {
         return false;
     }
+    // SAFETY: reserved, uncommitted pages of the block's own reservation.
     if unsafe { VirtualAlloc(tail.cast(), wanted - held, MEM_COMMIT, PAGE_READWRITE) }.is_null() {
         return false;
     }

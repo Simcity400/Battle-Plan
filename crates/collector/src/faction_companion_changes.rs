@@ -110,8 +110,8 @@ pub(crate) fn prime() {
     presize();
     boundary(false);
 }
-#[doc = " # Safety"]
-#[doc = " Only the Factions worker under its exclusive native quiescent lease."]
+/// # Safety
+/// Only the Factions worker under its exclusive native quiescent lease.
 pub(crate) unsafe fn install_growth() {
     for watches in &WATCHES {
         unsafe {
@@ -145,8 +145,8 @@ pub struct Hooks {
     available: [bool; FAMILIES],
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " Attach owns the authenticated image, patch publication and hook lifetime."]
+    /// # Safety
+    /// Attach owns the authenticated image, patch publication and hook lifetime.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         BASE.store(base, Ordering::Release);
         let mut hooks = Vec::new();

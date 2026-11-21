@@ -160,8 +160,8 @@ pub(super) fn invalidate() {
     GAINS.watches.boundary(true);
     EXPIRIES.watches.boundary(true);
 }
-#[doc = " # Safety"]
-#[doc = " The doctrine callbacks and acquisition worker have quiesced."]
+/// # Safety
+/// The doctrine callbacks and acquisition worker have quiesced.
 pub(super) unsafe fn release() {
     for pending in [&GAINS, &EXPIRIES] {
         unsafe { pending.watches.release() };

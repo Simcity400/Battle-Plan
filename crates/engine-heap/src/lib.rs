@@ -7,6 +7,7 @@ use libmimalloc_sys as _;
 
 pub struct Heap;
 
+// SAFETY: a block goes back the way it came, which its layout alone decides.
 unsafe impl GlobalAlloc for Heap {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {

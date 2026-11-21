@@ -256,6 +256,9 @@ pub(crate) struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub(crate) unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         if !cfg!(feature = "mission_changes") {
             return Ok(Self { hooks: Vec::new() });

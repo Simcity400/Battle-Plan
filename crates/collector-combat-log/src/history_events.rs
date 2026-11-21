@@ -647,8 +647,8 @@ pub struct Hooks {
     tap: Option<Tap>,
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " The caller owns hook publication and quiescence for the verified image."]
+    /// # Safety
+    /// The caller owns hook publication and quiescence for the verified image.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, SeqCst);
         match unsafe { Self::install(base) } {
@@ -662,6 +662,9 @@ impl Hooks {
             }
         }
     }
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     unsafe fn install(base: usize) -> Result<Self, String> {
         let sites = [
             (

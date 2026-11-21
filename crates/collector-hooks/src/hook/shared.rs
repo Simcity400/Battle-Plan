@@ -384,6 +384,9 @@ fn publish() -> Shared {
         let mut groups: Vec<Group<'_>> = Vec::new();
         if groups.try_reserve_exact(families).is_ok() {
             for entry in &recorded {
+                // SAFETY: a family's own hook storage, recorded in this round's
+                // collect pass; nothing else reaches it until the report
+                // pass, and no two families share a hook.
                 let hooks = match &entry.hooks {
                     RecordedHooks::Slice(hooks, len) => {
                         Hooks::Slice(unsafe { std::slice::from_raw_parts_mut(*hooks, *len) })
@@ -489,6 +492,8 @@ impl Hooks<'_> {
             Self::Slice(hooks) => (&hooks[..], &[][..]),
             Self::Pointers(hooks) => (&[][..], &hooks[..]),
         };
+        // SAFETY: the collect/report contract gives this publisher the only
+        // access to these stable hooks until it releases the groups.
         slice
             .iter()
             .chain(pointers.iter().map(|hook| unsafe { &**hook }))
@@ -498,6 +503,8 @@ impl Hooks<'_> {
             Self::Slice(hooks) => (&mut hooks[..], &[][..]),
             Self::Pointers(hooks) => (&mut [][..], &hooks[..]),
         };
+        // SAFETY: as above; each pointer was an exclusive reference to a
+        // distinct hook, and this iterator borrows the group exclusively.
         slice
             .iter_mut()
             .chain(pointers.iter().map(|hook| unsafe { &mut **hook }))

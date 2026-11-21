@@ -54,12 +54,14 @@ fn header(read: impl Fn(usize, usize) -> Option<Vec<u8>>) -> Verified<Header> {
 }
 
 impl Image<'static> {
-    #[doc = " The image of the module loaded at `base` in this process."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " `base` must be the base of a loaded PE32+ module that stays loaded for the program's life."]
+    /// The image of the module loaded at `base` in this process.
+    ///
+    /// # Safety
+    /// `base` must be the base of a loaded PE32+ module that stays loaded for the program's life, and
+    /// whose section bytes are readable and unchanged while this image borrows them (#1628).
     pub unsafe fn module(base: usize) -> Verified<Self> {
         let read = |offset: usize, len: usize| {
+            // SAFETY: the headers of a loaded module are mapped and readable.
             Some(unsafe { std::slice::from_raw_parts((base + offset) as *const u8, len) }.to_vec())
         };
         let header = header(read)?;
@@ -69,6 +71,7 @@ impl Image<'static> {
             .map(|&(name, rva, virtual_size, _, _)| Section {
                 name,
                 rva,
+                // SAFETY: a loaded module maps every section at its RVA for its virtual size.
                 bytes: unsafe {
                     std::slice::from_raw_parts((base + rva as usize) as *const u8, virtual_size as usize)
                 },

@@ -198,9 +198,9 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " The host has authenticated the image and owns patch publication and"]
-    #[doc = " quiescence for the enclosing country-input hook family."]
+    /// # Safety
+    /// The host has authenticated the image and owns patch publication and
+    /// quiescence for the enclosing country-input hook family.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         BASE.store(base, Ordering::Release);

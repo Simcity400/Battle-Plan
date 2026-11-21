@@ -535,6 +535,20 @@ impl Captured {
             }
         }
         pub(crate) struct HelperView<'a>(&'a Captured);
+        // SAFETY: threads convert through this view only while the spool
+        // thread is inside `Helpers::join_some`, which orders each helper's
+        // accesses with the spool thread's through its mutex. `@helper` and
+        // `@helper_appearance` packs are reached through `sync_pack`, whose bound proves them
+        // `Sync`, so any threads may read them at once. The `@helper_cached`
+        // packs (characters, intel, character portraits) and the
+        // `@helper_exclusive` pack (division presentation) need not be `Sync`:
+        // the hour's queue (`pack_conversion::Queue`) hands each to exactly
+        // one thread, the spool thread's own packs skip them while the queue
+        // runs, and no other pack reads them. The exclusive pack's observers
+        // (`observe_*`) run before conversion, and outcomes, slice selections
+        // and merging after the join. The thread that takes one of these
+        // packs therefore has exclusive use, as if it held `&mut`. No other
+        // pack is reachable through the view.
         unsafe impl Sync for HelperView<'_> {}
         unsafe impl Send for HelperView<'_> {}
         impl<'a> HelperView<'a> {
