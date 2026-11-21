@@ -128,7 +128,7 @@ impl AtHour for ResearchSlots {
 
     const CLOCK_DEPENDENT: bool = false;
 
-    fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits) -> bool {
+    fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits, _held: &DecodedFrame, _at: &dashboard_base::products::at_hour::ReadsAt<'_, Self::Context>) -> bool {
         match stage {
             1 => edits.fields(TableId::CountryLinks, u64::MAX),
             2 => edits.fields(TableId::CountryLinks, u64::MAX) || edits.fields(TableId::ResearchModifiers, u64::MAX),

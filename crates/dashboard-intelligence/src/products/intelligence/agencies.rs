@@ -209,7 +209,7 @@ impl AtHour for AgencyComparison {
         }
     }
 
-    fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits) -> bool {
+    fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits, _held: &DecodedFrame, _at: &dashboard_base::products::at_hour::ReadsAt<'_, Self::Context>) -> bool {
         stage == 1 && edits.fields(TableId::AgencyUpgradeLevels, u64::MAX)
     }
 

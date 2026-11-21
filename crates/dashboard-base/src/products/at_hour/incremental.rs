@@ -379,7 +379,7 @@ where P::Context: Sync, P::Params: Sync {
             }
             let mut edits = Edits::default();
             let mut selected = BTreeSet::new();
-            let at = ReadsAt { holders: &holders, context: &*context, run, hour };
+            let at = ReadsAt { holders: &holders, context: &*context, run, hour, since: (!seed).then_some(previous_hour) };
             let read_run = pool.pages.run_of(run).ok_or_else(|| dashboard_core::refused(format!("{} hour is in a run the recording cannot read", P::TITLE)))?;
             let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step: step.filter(|s| s.step.last() == hour), placed: None };
             let mut tried: HashMap<TableId, Vec<u64>> = HashMap::new();
@@ -391,7 +391,7 @@ where P::Context: Sync, P::Params: Sync {
                     if stage >= state.plans.len() {
                         let planned = sampling(&state.frame, &mut state.sampled, || P::retained_reads(&params, owner, stage, &state.frame, &at));
                         state.plans.push(planned);
-                    } else if identity_changed || clocked || hour > state.plans[stage].1 || P::plan_changes(stage, &edits) {
+                    } else if identity_changed || clocked || hour > state.plans[stage].1 || P::plan_changes(stage, &edits, &state.frame, &at) {
                         state.plans[stage] = sampling(&state.frame, &mut state.sampled, || P::retained_reads(&params, owner, stage, &state.frame, &at));
                     }
                     let (asks, _) = &state.plans[stage];

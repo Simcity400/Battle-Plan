@@ -12,7 +12,7 @@ mod reply {
         fn none<T>() -> Result<T, String> {
             Err("no content in this test".to_owned())
         }
-        Content { catalogue: none(), laws: none(), equipment: none::<std::sync::Arc<content_reader_core::equipment::Database>>().into(), red: None, warnings: Vec::new(), names: Mutex::default(), world: Mutex::default(), eligible: Mutex::default() }
+        Content { catalogue: none(), laws: none(), equipment: none::<std::sync::Arc<content_reader_core::equipment::Database>>().into(), red: None, warnings: Vec::new(), names: Mutex::default(), world: Mutex::default(), judged: Mutex::default() }
     }
 
     fn resistance(state: u32, country: u32, active: u8, level: i64) -> StateResistanceRow {
@@ -232,6 +232,32 @@ mod reply {
         let mut replaced = edits(&frame(), &all[..1]);
         replaced.replaced.insert(TableId::StateGarrisons);
         assert!(!states::structure_holds(&frame(), &replaced), "a table read again whole");
+    }
+
+    #[test]
+    fn judged_laws_hold_through_world_edits_only_where_their_triggers_read_nothing_that_moved() {
+        use crate::products::at_hour::{Edits, field_mask};
+        use dashboard_text::triggers::inputs;
+        let at = |hour| { let mut frame = frame(); frame.hour = hour; frame };
+        let start = at(500);
+        let (_, read) = inputs::capture(&start, || inputs::fields(&start, TableId::ScriptFlags, &["value"]));
+        let content = content();
+        *content.judged.lock().unwrap() = super::super::Judged { at: Some((start.branch, 500)), decisions: [(("law".to_owned(), 1, 2), (Ok(true), read))].into() };
+        let edit = |table, fields: &[&str]| {
+            let mut edits = Edits::default();
+            edits.tables.insert(table, [(7u128, if fields.is_empty() { u64::MAX } else { field_mask(table, fields) })].into());
+            edits
+        };
+        let judged = || content.judged.lock().unwrap().at.map(|(_, hour)| hour);
+
+        assert!(states::judged_through(&content, &at(524), Some(500), &edit(TableId::ScriptVariables, &["seed"])), "a table no trigger read");
+        assert_eq!(judged(), Some(524), "and the laws now stand at the new hour");
+        assert!(states::judged_through(&content, &at(524), Some(500), &Edits::default()), "asked again within the hour");
+        assert!(!states::judged_through(&content, &at(572), Some(548), &Edits::default()), "an hour the laws were not judged through");
+        assert_eq!(judged(), Some(524));
+        assert!(!states::judged_through(&content, &at(548), Some(524), &edit(TableId::ScriptFlags, &[])), "a flag came or went");
+        assert_eq!(judged(), None, "and nothing stands until they are judged again");
+        assert!(!states::judged_through(&content, &at(548), None, &Edits::default()), "a read that starts the stream");
     }
 
     #[test]

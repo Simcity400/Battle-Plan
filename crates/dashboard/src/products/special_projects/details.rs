@@ -495,7 +495,7 @@ impl AtHour for SpecialProjectDetailsAt {
         (table == TableId::Projects).then(|| dashboard_base::products::at_hour::field_columns(table, &["definition_id", "runtime"]))
     }
 
-    fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits) -> bool {
+    fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits, _held: &DecodedFrame, _at: &dashboard_base::products::at_hour::ReadsAt<'_, Self::Context>) -> bool {
         match stage {
             1 => [TableId::CountryLinks, TableId::Scientists, TableId::ProjectPrograms].iter().any(|&t| edits.fields(t, u64::MAX)),
             2 => DETAIL_TABLES.iter().any(|&t| t != TableId::SliceReads && t != TableId::LexicalTokens && edits.fields(t, u64::MAX)),

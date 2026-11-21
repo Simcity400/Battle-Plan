@@ -85,6 +85,7 @@ pub struct ReadsAt<'a, C> {
     pub context: &'a C,
     pub run: u32,
     pub hour: i32,
+    pub since: Option<i32>,
 }
 
 pub trait AtHour: 'static {
@@ -137,7 +138,7 @@ pub trait AtHour: 'static {
 
     fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> { Self::columns(table) }
 
-    fn plan_changes(_stage: usize, edits: &Edits) -> bool { !edits.tables.is_empty() || !edits.replaced.is_empty() }
+    fn plan_changes(_stage: usize, edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool { !edits.tables.is_empty() || !edits.replaced.is_empty() }
 
     fn compares_previous(_table: TableId) -> bool { false }
 
@@ -261,7 +262,7 @@ fn answered<P: AtHour, C: std::borrow::Borrow<P::Context>>(query: &Query<'_>, po
     let mut read_frame = |reads: &[Read]| dashboard_query::cost::storage(|| input.frame(reads, P::columns, query.timeline.id));
     for step in 0.. {
         crate::metadata::check_cancel(cancelled)?;
-        let reads = P::reads_in(params, owner, step, &answer.frame, &ReadsAt { holders: &query.holders, context, run, hour });
+        let reads = P::reads_in(params, owner, step, &answer.frame, &ReadsAt { holders: &query.holders, context, run, hour, since: None });
         if reads.is_empty() {
             break;
         }

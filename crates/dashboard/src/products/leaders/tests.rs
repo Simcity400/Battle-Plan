@@ -165,7 +165,7 @@ fn a_leader_whose_role_may_have_conditions_reads_its_character_first_and_the_tri
     held.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(vec![leader])).into();
     let params = UnitLeadersParams { branch_id: "1".into(), selection: LeaderSelection::All, leaders: LeaderKinds::All };
     let holders = dashboard_query::identity::Holders::new(Default::default(), Vec::new());
-    let at = ReadsAt { holders: &holders, context: &context, run, hour: 100 };
+    let at = ReadsAt { holders: &holders, context: &context, run, hour: 100, since: None };
     let first: Vec<TableId> = UnitLeaders::reads_in(&params, None, 1, &held, &at).iter().map(|read| read.table).collect();
     assert_eq!(first, [TableId::Characters, TableId::LexicalTokens], "the leader's character and the tokens, not every trigger table");
     assert!(UnitLeaders::reads_in(&params, None, 2, &held, &at).is_empty(), "without the content no role is known to have conditions, and no table read would decide one");
