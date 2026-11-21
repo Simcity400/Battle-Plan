@@ -215,3 +215,20 @@ test('after a witnessed start an unexplained surplus shows no breakdown', () => 
   const split = researchTimeSplit(researchJourney([parked], parked, parked.entries[0]), false)!;
   assert.equal(split.earlier, 6000000n);
 });
+
+test('with the game days left, the rest of an active research reads in calendar days and both rows still close', () => {
+  const split: ResearchTimeSplit = { base: 13750000n, penalty: 0n, bonus: 5430000n, juggle: 0n, earlier: 0n, remaining: 5700000n, paused: 0n, taken: 2620000n,
+    modifiers: [{ key: 'Bonus', kind: 'research speed', label: 'Bonus', days: 5430000n }], other: 0n, floored: false };
+  const total = (segments: readonly { value: bigint }[]) => segments.reduce((sum, s) => sum + s.value, 0n);
+  const rows = researchTimeRows(split, true, 19)!;
+  assert.equal(rows.left, 1900000n);
+  assert.deepEqual(rows.took.filter(s => s.key === 'rest' || s.key === 'remaining').map(s => [s.key, s.value, s.name]),
+    [['rest', 3800000n, 'Bonuses on the rest'], ['remaining', 1900000n, 'Time left']]);
+  assert.equal(total(rows.took), total(rows.expected));
+  const slow = researchTimeRows(split, true, 70)!;
+  assert.equal(slow.expected.find(s => s.key === 'rest-slower')?.value, 1300000n);
+  assert.equal(total(slow.took), total(slow.expected));
+  const unknown = researchTimeRows(split, true, null)!;
+  assert.equal(unknown.left, null);
+  assert.equal(unknown.took.find(s => s.key === 'remaining')?.name, 'Base research time still to do');
+});

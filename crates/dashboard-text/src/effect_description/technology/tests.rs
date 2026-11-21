@@ -603,6 +603,63 @@ fn bound_technology_effect_keeps_body_order_and_fresh_completion_scope() {
 }
 
 #[test]
+fn bound_technology_entity_links_mark_every_unlock_only_when_asked() {
+    use crate::effect_description::{EntityKind, Span, spans};
+    use content_reader_localisation::localisation::Piece;
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (fixture, _folder) = fixture();
+    let content = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .effects()
+        .unwrap();
+    let render = |links| {
+        fixture.with_context_linking(content.view(None), links, |context| {
+            technology_description("mod_callback", context, 1)
+        })
+    };
+    let (plain, linked) = (render(false), render(true));
+    assert!(plain.refusals.is_empty(), "{:?}", plain.refusals);
+    assert_eq!(plain.refusals, linked.refusals);
+    assert!(!plain.text.contains(['\u{1}', '\u{2}', '\u{3}']), "{:?}", plain.text);
+    let mut unmarked = String::new();
+    let mut links = Vec::new();
+    let mut open = None;
+    for span in spans(&linked.text).unwrap() {
+        match span {
+            Span::Open { kind, token } => open = Some((kind, token, String::new())),
+            Span::Close => links.push(open.take().unwrap()),
+            Span::Piece(piece) => {
+                let text = match piece {
+                    Piece::Text(text) => text.to_owned(),
+                    Piece::Colour(code) => format!("\u{11}{code}"),
+                    Piece::Icon(name) => format!("\u{13}{name} "),
+                    other => panic!("unexpected {other:?}"),
+                };
+                if let Some((_, _, name)) = &mut open {
+                    name.push_str(&text);
+                }
+                unmarked.push_str(&text);
+            }
+        }
+    }
+    assert_eq!(unmarked, plain.text);
+    assert_eq!(
+        links,
+        [
+            (EntityKind::Equipment, "mod_equipment", "Alpha equipment".to_owned()),
+            (EntityKind::Module, "mod_module", "Zero module".to_owned()),
+            (EntityKind::Module, "mod_second_module", "Zero second".to_owned()),
+            (EntityKind::Building, "mod_lab", "Lab".to_owned()),
+            (EntityKind::SubUnit, "mod_unit", "Alpha unit".to_owned()),
+            (EntityKind::Tactic, "mod_tactic", "Alpha tactic".to_owned()),
+        ]
+    );
+}
+
+#[test]
 fn bound_technology_effect_combines_limits_and_accepts_unresearched_status() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

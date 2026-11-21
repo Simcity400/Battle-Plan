@@ -1,4 +1,5 @@
 use super::*;
+use crate::effect_description::entity_links::{EntityKind, mark, unmark};
 use content_reader_core::{parser::c_string, tokens::Token};
 
 const TECHNOLOGY_ID: u64 = mask::<replay_data::rows::TechnologyDefinitionRow>(&["id"]);
@@ -170,6 +171,7 @@ impl Renderer<'_, '_, '_> {
                         false,
                         scopes,
                     )?;
+                    let name = self.technology_entity(EntityKind::Equipment, &definition.name, name);
                     self.technology_join(
                         &mut names,
                         &name,
@@ -208,11 +210,12 @@ impl Renderer<'_, '_, '_> {
             }
             if !modules.is_empty() {
                 let mut names = String::new();
-                for (ordinal, name) in modules.iter().enumerate() {
-                    if !self.technology_module_allowed(&catalog.equipment, name, country)? {
+                for (ordinal, token) in modules.iter().enumerate() {
+                    if !self.technology_module_allowed(&catalog.equipment, token, country)? {
                         continue;
                     }
-                    let name = self.technology_country_name(name, 0, false, scopes)?;
+                    let name = self.technology_country_name(token, 0, false, scopes)?;
+                    let name = self.technology_entity(EntityKind::Module, token, name);
                     self.technology_join(&mut names, &name, ordinal + 1 == modules.len(), scopes)?;
                 }
                 if !names.is_empty() {
@@ -245,6 +248,8 @@ impl Renderer<'_, '_, '_> {
                         database.by_token(token).map_err(|why| why.to_string())?
                     {
                         let name = self.localised(building.name.as_bytes(), &[], scopes, false)?;
+                        let name =
+                            self.technology_entity(EntityKind::Building, building.name.as_bytes(), name);
                         let level = self.char_native_text(
                             b"BUILDING_LEVEL",
                             &[("LEVEL", Argument::Int32(*level))],
@@ -283,13 +288,14 @@ impl Renderer<'_, '_, '_> {
             let sub_units = self.technology_enabled_subunits(&template.sub_units)?;
             if !sub_units.is_empty() {
                 let mut names = String::new();
-                for (ordinal, name) in sub_units.iter().enumerate() {
+                for (ordinal, token) in sub_units.iter().enumerate() {
                     let name = self.technology_country_name(
-                        name.as_bytes(),
+                        token.as_bytes(),
                         self.context.perspective,
                         false,
                         scopes,
                     )?;
+                    let name = self.technology_entity(EntityKind::SubUnit, token.as_bytes(), name);
                     self.technology_join(
                         &mut names,
                         &name,
@@ -357,6 +363,7 @@ impl Renderer<'_, '_, '_> {
                 false,
                 scopes,
             )?;
+            let name = self.technology_entity(EntityKind::Tactic, &tactic.token, name);
             self.technology_join(&mut names, &name, Some(tactic.id) == last, scopes)?;
         }
         Ok(names)
@@ -435,6 +442,13 @@ impl Renderer<'_, '_, '_> {
         self.technology_condition(&conditions.allowed, selected)
     }
 
+    fn technology_entity(&self, kind: EntityKind, token: &[u8], name: String) -> String {
+        match std::str::from_utf8(c_string(token)) {
+            Ok(token) if self.context.entity_links => mark(kind, token, &name),
+            _ => name,
+        }
+    }
+
     fn technology_join(
         &self,
         out: &mut String,
@@ -470,12 +484,14 @@ impl Renderer<'_, '_, '_> {
         names: &str,
         scopes: Scopes,
     ) -> Result<(), String> {
-        out.push_str(&self.char_native_text(
-            key,
-            &[(argument, Argument::Text(names))],
-            scopes,
-            false,
-        )?);
+        let text = self.char_native_text(key, &[(argument, Argument::Text(names))], scopes, false)?;
+        if self.context.entity_links {
+            let plain = unmark(names);
+            let plain = self.char_native_text(key, &[(argument, Argument::Text(&plain))], scopes, false)?;
+            out.push_str(if unmark(&text) == plain { &text } else { &plain });
+        } else {
+            out.push_str(&text);
+        }
         out.push('\n');
         Ok(())
     }

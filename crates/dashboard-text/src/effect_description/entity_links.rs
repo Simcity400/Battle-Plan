@@ -1,0 +1,146 @@
+use content_reader_localisation::localisation::{Piece, pieces};
+
+const OPEN: char = '\u{1}';
+const NAME: char = '\u{2}';
+const CLOSE: char = '\u{3}';
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EntityKind {
+    Equipment,
+    Module,
+    SubUnit,
+    Building,
+    Tactic,
+}
+
+impl EntityKind {
+    const ALL: [Self; 5] = [
+        Self::Equipment,
+        Self::Module,
+        Self::SubUnit,
+        Self::Building,
+        Self::Tactic,
+    ];
+
+    fn code(self) -> char {
+        match self {
+            Self::Equipment => 'e',
+            Self::Module => 'm',
+            Self::SubUnit => 's',
+            Self::Building => 'b',
+            Self::Tactic => 't',
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Span<'a> {
+    Piece(Piece<'a>),
+    Open { kind: EntityKind, token: &'a str },
+    Close,
+}
+
+pub(super) fn mark(kind: EntityKind, token: &str, name: &str) -> String {
+    format!("{OPEN}{}{token}{NAME}{name}{CLOSE}", kind.code())
+}
+
+pub(super) fn unmark(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find([OPEN, CLOSE]) {
+        out.push_str(&rest[..at]);
+        let marker = &rest[at..];
+        rest = match marker.strip_prefix(OPEN) {
+            Some(body) => body.find(NAME).map_or("", |end| &body[end + NAME.len_utf8()..]),
+            None => &marker[CLOSE.len_utf8()..],
+        };
+    }
+    out.push_str(rest);
+    out
+}
+
+pub fn spans(text: &str) -> Result<Vec<Span<'_>>, String> {
+    let mut out = Vec::new();
+    let mut open = false;
+    let mut rest = text;
+    while let Some(at) = rest.find([OPEN, CLOSE]) {
+        out.extend(pieces(&rest[..at]).into_iter().map(Span::Piece));
+        let marker = &rest[at..];
+        if let Some(body) = marker.strip_prefix(OPEN) {
+            if open {
+                return Err("an entity link opens inside another".into());
+            }
+            let end = body.find(NAME).ok_or("an entity link names no token")?;
+            let mut header = body[..end].chars();
+            let code = header.next().ok_or("an entity link names no kind")?;
+            let kind = EntityKind::ALL
+                .into_iter()
+                .find(|kind| kind.code() == code)
+                .ok_or_else(|| format!("an entity link names the unknown kind {code:?}"))?;
+            out.push(Span::Open {
+                kind,
+                token: header.as_str(),
+            });
+            open = true;
+            rest = &body[end + NAME.len_utf8()..];
+        } else {
+            if !open {
+                return Err("an entity link closes without opening".into());
+            }
+            out.push(Span::Close);
+            open = false;
+            rest = &marker[CLOSE.len_utf8()..];
+        }
+    }
+    if open {
+        return Err("an entity link is not closed".into());
+    }
+    out.extend(pieces(rest).into_iter().map(Span::Piece));
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marked_names_split_into_links_around_game_pieces() {
+        let text = format!(
+            "Equipment:\u{11}H{}\u{11}!, {}\n",
+            mark(EntityKind::Equipment, "mod_equipment", "Alpha"),
+            mark(EntityKind::Tactic, "mod_tactic", "Beta")
+        );
+        assert_eq!(
+            spans(&text).unwrap(),
+            [
+                Span::Piece(Piece::Text("Equipment:")),
+                Span::Piece(Piece::Colour('H')),
+                Span::Open {
+                    kind: EntityKind::Equipment,
+                    token: "mod_equipment"
+                },
+                Span::Piece(Piece::Text("Alpha")),
+                Span::Close,
+                Span::Piece(Piece::Colour('!')),
+                Span::Piece(Piece::Text(", ")),
+                Span::Open {
+                    kind: EntityKind::Tactic,
+                    token: "mod_tactic"
+                },
+                Span::Piece(Piece::Text("Beta")),
+                Span::Close,
+                Span::Piece(Piece::Text("\n")),
+            ]
+        );
+        assert_eq!(unmark(&text), "Equipment:\u{11}HAlpha\u{11}!, Beta\n");
+    }
+
+    #[test]
+    fn broken_links_are_refused() {
+        assert!(spans("\u{1}eunclosed").is_err());
+        assert!(spans("\u{1}etoken\u{2}name").is_err());
+        assert!(spans("name\u{3}").is_err());
+        assert!(spans("\u{1}xtoken\u{2}name\u{3}").is_err());
+        assert_eq!(spans("plain").unwrap(), [Span::Piece(Piece::Text("plain"))]);
+    }
+}

@@ -22,7 +22,7 @@ fn asked(source: &Source, request: Value) -> Result<Value, dashboard_core::Query
 #[test]
 fn effects_without_the_recorded_content_are_withheld_by_name() {
     let reply = asked(&recording(), json!({ "branchId": "1", "country": "GER", "token": "basic_train", "hour": 25 })).unwrap();
-    assert_eq!(reply["text"], "");
+    assert_eq!(reply["runs"], json!([]));
     assert!(reply["unavailable"].as_str().unwrap().contains("recorded content"), "{reply}");
 }
 

@@ -30,9 +30,12 @@ test('project details keep duplicate traits, supporting assignments, pending cho
   assert.throws(() => validateProjectDetails({ ...reply, programs: [{ ...reply.programs[0], readHour: 25 }] }), /Invalid/);
   assert.throws(() => validateProjectDetails({ ...reply, projects: [{ ...reply.projects[0], pendingKnown: false }] }), /Invalid/);
   assert.throws(() => validateProjectDetails({ ...reply, warnings: undefined }), /Invalid/);
-  const effects = { hour: 24, output: { text: 'Output', refusals: { 'Scope unavailable': 1 } }, options: [{ text: '', refusals: {} }], unavailable: null, warnings: [] };
+  const effects = { hour: 24, output: { text: 'Output', refusals: { 'Scope unavailable': 1 } }, options: [{ text: '', refusals: {} }],
+    iterations: [{ ordinal: 0, effects: { text: 'Gained a bonus', refusals: {} } }], unavailable: null, warnings: [] };
   assert.equal(validateProjectEffects(effects), effects);
   assert.throws(() => validateProjectEffects({ ...effects, output: { text: 'Output', refusals: { reason: 0 } } }), /Invalid/);
+  assert.throws(() => validateProjectEffects({ ...effects, iterations: [{ ordinal: -1, effects: effects.iterations[0].effects }] }), /Invalid/);
+  assert.throws(() => validateProjectEffects({ ...effects, iterations: undefined }), /Invalid/);
 });
 
 test('a daily read moves only painted texts: its read date, counts and values never change the structure that renders', () => {

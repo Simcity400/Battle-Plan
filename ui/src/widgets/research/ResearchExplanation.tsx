@@ -18,9 +18,9 @@ const date = (hour: number) => { const value = gameDate(hour); return value ? fo
 const amount = (raw: bigint) => researchNumber(raw < 0n ? -raw : raw);
 const days = (raw: bigint) => { const text = amount(raw); return `${text} ${text === '1' ? 'day' : 'days'}`; };
 
-function TimeBar({ split, active }: { split: ResearchTimeSplit; active: boolean }) {
+function TimeBar({ split, active, daysLeft }: { split: ResearchTimeSplit; active: boolean; daysLeft: number | null }) {
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
-  const rows = useMemo(() => researchTimeRows(split, active), [split, active]);
+  const rows = useMemo(() => researchTimeRows(split, active, daysLeft), [split, active, daysLeft]);
   const hovered = hoveredKey === null || !rows ? null : [...rows.expected, ...rows.took].find(s => s.key === hoveredKey) ?? null;
   if (hoveredKey !== null && !hovered) setHoveredKey(null);
   if (!rows) return null;
@@ -42,7 +42,7 @@ function TimeBar({ split, active }: { split: ResearchTimeSplit; active: boolean 
     <span className="research-time-value">{amount(elapsed)} d</span>
     <p className="research-time-readout" aria-hidden="true">
       {hovered ? <><span className={`research-time-swatch is-${hovered.tone}`} style={{ '--shade': hovered.index ?? 0 } as CSSProperties} /><span className="research-time-name">{hovered.name}</span><small>{hovered.kind}</small><strong>{hovered.effect}</strong></>
-        : active ? <span>{days(split.remaining)} of research left</span>
+        : active ? <span>{rows.left === null ? `${days(split.remaining)} of base research time still to do` : `${days(rows.left)} left at the current research speed`}</span>
           : difference === 0n ? <span>As expected</span>
             : <><span>{difference > 0n ? 'Faster' : 'Slower'}</span><strong data-tone={difference > 0n ? 'faster' : 'slower'}>{difference > 0n ? '−' : '+'}{days(difference)}</strong></>}
     </p>
@@ -55,8 +55,8 @@ export function breakdownParts(slots: readonly ResearchSlotHistory[], slot: Rese
     started: part.entry.startedAfterHour !== null }));
 }
 
-export default function ResearchExplanation({ client, track, tag, hour, history, slots, slot, entry, description }: {
-  client: DashboardClient; track: BoundTrack; tag: string; hour: number;
+export default function ResearchExplanation({ client, track, tag, hour, history, slots, slot, entry, description, daysLeft = null }: {
+  client: DashboardClient; track: BoundTrack; tag: string; hour: number; daysLeft?: number | null;
   history: ResearchHistory; slots: ResearchSlotHistory[]; slot: ResearchSlotHistory; entry: ResearchEntry; description?: string | null;
 }) {
   const parts = breakdownParts(slots, slot, entry, hour);
@@ -81,7 +81,7 @@ export default function ResearchExplanation({ client, track, tag, hour, history,
     </div>
     {error && !data ? <WidgetState kind="error" failure={error} onRetry={retry} />
       : !data ? <p className="research-unavailable" role="status">Loading research time breakdown…</p>
-        : split ? <TimeBar split={split} active={active} />
+        : split ? <TimeBar split={split} active={active} daysLeft={daysLeft} />
           : <p className="research-unavailable">Research time breakdown unavailable{missing.length ? `: ${missing.join(' ')}` : '.'}</p>}
     {description && <details className="research-description-text"><summary>Description<Icon name="chevron-down" className="research-chevron" aria-hidden="true" /></summary><p>{description}</p></details>}
   </div>;

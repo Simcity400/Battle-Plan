@@ -224,6 +224,27 @@ fn string(value: &Value) -> io::Result<String> {
 }
 
 impl Catalog {
+    pub fn reward_named(&self, project: &str, token: &str) -> Result<&PrototypeReward, String> {
+        if let Some(reason) = &self.unsettled {
+            return Err(reason.clone());
+        }
+        let project = self
+            .projects
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(project))
+            .map(|(_, value)| value)
+            .ok_or("Special project definition is unavailable")?;
+        let mut found = project.reward_order.iter().filter_map(|occurrence| match occurrence {
+            RewardOccurrence::Inline(value) => Some(value),
+            RewardOccurrence::Reference(identity) => self.rewards.get(identity),
+        }).filter(|reward| Token::c_str(reward.token.as_bytes()) == Token::c_str(token.as_bytes()));
+        let reward = found.next().ok_or("Chosen reward is absent from recorded content")?;
+        if found.any(|other| !std::ptr::eq(other, reward)) {
+            return Err("Several reward occurrences share this recorded token".into());
+        }
+        Ok(reward)
+    }
+
     pub fn reward_at(
         &self,
         project: &str,
@@ -542,6 +563,9 @@ mod tests {
             "other"
         );
         assert!(catalog.reward_at("mod_project", 1, "mod_reward").is_err());
+        assert_eq!(catalog.reward_named("mod_project", "MOD_REWARD").unwrap().options.len(), 3);
+        assert!(catalog.reward_named("mod_project", "mod_inline").unwrap_err().contains("Several"));
+        assert!(catalog.reward_named("mod_project", "missing").is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 

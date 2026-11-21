@@ -1,6 +1,7 @@
 use super::{
     LoadContext,
     at_hour::{At, AtHour},
+    game_text::{GameRun, runs},
     politics_content::{PoliticsContent, politics_content},
 };
 use crate::Source;
@@ -31,8 +32,8 @@ pub struct TechnologyEffectsParams {
 #[serde(rename_all = "camelCase")]
 pub struct TechnologyEffects {
     pub hour: i32,
-    #[doc = " The game's text for what researching the technology does; empty where nothing could be described."]
-    pub text: String,
+    #[doc = " The game's text for what researching the technology does, as it shows it; empty where nothing could be described."]
+    pub runs: Vec<GameRun>,
     #[doc = " Why parts of the text were withheld, with how often each was met."]
     pub refusals: BTreeMap<String, usize>,
     pub unavailable: Option<String>,
@@ -70,6 +71,11 @@ impl AtHour for TechnologyEffectsAt {
         dashboard_base::products::validate_country(&params.country)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
+    fn types() -> Vec<String> {
+        vec![TechnologyEffectsParams::decl(), TechnologyEffects::decl(), GameRun::decl(), super::game_text::EntityKind::decl()]
+    }
+
     fn owner(params: &Self::Params) -> Option<&Country> {
         Some(&params.country)
     }
@@ -88,7 +94,7 @@ impl AtHour for TechnologyEffectsAt {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Technology effects name no country"))?;
-        let mut out = TechnologyEffects { hour: at.hour, text: String::new(), refusals: BTreeMap::new(), unavailable: None, warnings: Vec::new() };
+        let mut out = TechnologyEffects { hour: at.hour, runs: Vec::new(), refusals: BTreeMap::new(), unavailable: None, warnings: Vec::new() };
         let content = match &at.context.content {
             Ok(content) => content,
             Err(why) => {
@@ -101,14 +107,14 @@ impl AtHour for TechnologyEffectsAt {
             let scripted = catalogue.scripted_content()?;
             let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, owner.slot);
             let cache = scripted.effects()?;
-            let context = dashboard_text::effect_description::Context::new(&text, &catalogue.localisation, owner.slot, "technology effects", cache.view(None));
+            let context = dashboard_text::effect_description::Context::new(&text, &catalogue.localisation, owner.slot, "technology effects", cache.view(None)).with_entity_links();
             Ok(dashboard_text::effect_description::technology_description(&params.token, &context, owner.slot))
         };
         match render() {
             Ok(mut description) => {
-                out.text = crate::catalogue::plain_text(&description.text).unwrap_or_else(|why| {
+                out.runs = runs(&description.text).unwrap_or_else(|why| {
                     *description.refusals.entry(why).or_default() += 1;
-                    String::new()
+                    Vec::new()
                 });
                 out.refusals = description.refusals;
             }

@@ -50,13 +50,14 @@ export function validateProjectDetails(value: unknown): SpecialProjectDetails {
 
 export function validateProjectEffects(value: unknown): SpecialProjectEffects {
   if (!object(value) || !integer(value.hour) || !(value.output === null || effects(value.output)) || !Array.isArray(value.options) || !value.options.every(effects)
+    || !Array.isArray(value.iterations) || !value.iterations.every(item => object(item) && uint(item.ordinal) && effects(item.effects))
     || !nullable(value.unavailable) || !strings(value.warnings)) throw new Error('Invalid special-project effects');
   return value as unknown as SpecialProjectEffects;
 }
 
 export function effectsStructure(reply: SpecialProjectEffects) {
   const shape = (value: SpecialProjectEffects['output']) => value && [value.text ? value.text.split('\n').length : 0, Object.keys(value.refusals)];
-  return JSON.stringify([reply.unavailable, reply.options.map(shape), shape(reply.output), reply.warnings]);
+  return JSON.stringify([reply.unavailable, reply.options.map(shape), shape(reply.output), reply.iterations.map(item => [item.ordinal, shape(item.effects)]), reply.warnings]);
 }
 
 export function effectTexts(reply: SpecialProjectEffects) {
@@ -68,6 +69,7 @@ export function effectTexts(reply: SpecialProjectEffects) {
   };
   reply.options.forEach((value, i) => add(String(i), value));
   add('output', reply.output);
+  for (const item of reply.iterations) add('iteration:' + item.ordinal, item.effects);
   return out;
 }
 

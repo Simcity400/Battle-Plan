@@ -465,6 +465,15 @@ impl Fixture {
         content: Content<'_>,
         run: impl FnOnce(&Context<'_, '_>) -> T,
     ) -> T {
+        self.with_context_linking(content, false, run)
+    }
+
+    pub(super) fn with_context_linking<T>(
+        &self,
+        content: Content<'_>,
+        links: bool,
+        run: impl FnOnce(&Context<'_, '_>) -> T,
+    ) -> T {
         let scripted = self.catalogue.scripted_content().unwrap();
         let text = ScriptedText::new(&self.frame, &self.catalogue.localisation, scripted, 1);
         let mut facts = ContentFacts::content_only(&self.dlcs, &self.triggers, &self.aliases);
@@ -474,6 +483,7 @@ impl Fixture {
         let world = World::read(&self.frame, facts);
         text.set_synthetic_world(world);
         let context = Context::new(&text, &self.catalogue.localisation, 1, "synthetic", content);
+        let context = if links { context.with_entity_links() } else { context };
         run(&context)
     }
 }

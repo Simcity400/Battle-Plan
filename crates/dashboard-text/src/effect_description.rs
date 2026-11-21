@@ -71,6 +71,8 @@ pub use doctrine_sources::{doctrine_benefits, doctrine_tactic_sources};
 pub use static_lists::scaled_static_modifiers;
 mod dispatch;
 mod empty;
+mod entity_links;
+pub use entity_links::{EntityKind, Span, spans};
 mod events;
 pub use events::decision_name_key_at;
 mod lists;
@@ -521,6 +523,7 @@ pub struct Context<'c, 'f> {
     perspective: u32,
     source: &'c str,
     content: Content<'c>,
+    entity_links: bool,
 }
 
 impl<'c, 'f> Context<'c, 'f> {
@@ -540,7 +543,13 @@ impl<'c, 'f> Context<'c, 'f> {
             perspective,
             source,
             content,
+            entity_links: false,
         }
+    }
+
+    pub fn with_entity_links(mut self) -> Self {
+        self.entity_links = true;
+        self
     }
 
     fn world(&self) -> Result<&'c World<'f>, String> {
