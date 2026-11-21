@@ -1185,11 +1185,12 @@ def report(image, spec, recorded, layout_checked):
     return reasons, wrong, withheld
 
 
-def verify(spec, images, reference, written, recorded=True):
+def verify(spec, images, reference, written, promoted_from=None):
     """Whether `spec` fails against the source keys and every known build, printing each failure;
-    with `written`, also whether the committed generated.rs differs from it. Without `recorded`,
-    other builds are located but not compared with their recorded addresses, which are keyed by
-    the previous reference until each is relocated."""
+    with `written`, also whether the committed generated.rs differs from it. With `promoted_from`,
+    the build that was the reference, the addresses recorded against it are re-keyed through the
+    new reference's relocation map, so every site with a known position is still compared."""
+    moved = addresses(reference) if promoted_from else {}
     failed = False
     if written:
         with open(OUTPUT, encoding="utf-8") as f:
@@ -1211,7 +1212,13 @@ def verify(spec, images, reference, written, recorded=True):
         print("FAIL the reference build %s is not in engine_sites::LAYOUT_CHECKED" % BUILDS[reference])
         failed = True
     for b in BUILDS:
-        expected_at = None if b == reference else addresses(b) if recorded else {}
+        if b == reference:
+            expected_at = None
+        elif promoted_from:
+            old = {rva: rva for rva in moved} if b == promoted_from else addresses(b)
+            expected_at = {moved[rva]: at for rva, at in old.items() if rva in moved}
+        else:
+            expected_at = addresses(b)
         for checked in ((True, False) if b in checked_builds else (False,)):
             expected = set() if checked else set(EXPECTED_WITHHELD.get(b, ())) | unwitnessed
             reasons, wrong, withheld = report(images[b], spec, expected_at, checked)
@@ -1249,11 +1256,15 @@ def main(argv):
             len(spec["keys"]), len(spec["functions"]), len(spec["vtables"]), len(spec["data"]), len(problems)))
         with open(OUTPUT, encoding="utf-8") as f:
             published = PUBLISHED_VERSION.search(f.read())
-        promoting = published is not None and published[1] != BUILDS[reference]
-        if promoting:
-            print("the reference changed from %s: other builds are located, not compared with their recorded "
-                  "addresses; relocate each one, then run check" % published[1])
-        if problems or verify(spec, images, reference, written=False, recorded=not promoting):
+        promoted_from = next((b for b, v in BUILDS.items() if published is not None and v == published[1]), None)
+        if promoted_from == reference:
+            promoted_from = None
+        if published is not None and promoted_from is None and published[1] != BUILDS[reference]:
+            raise SystemExit("%s names the unknown reference build %s" % (OUTPUT, published[1]))
+        if promoted_from:
+            print("the reference changed from %s: other builds are compared through its relocation map; "
+                  "relocate each one, then run check" % BUILDS[promoted_from])
+        if problems or verify(spec, images, reference, written=False, promoted_from=promoted_from):
             raise SystemExit("%s and spec.json are unchanged: publishing a failing table would lose or "
                              "replace published names" % OUTPUT)
         replace_files([(OUTPUT, emit(spec, BUILDS[reference])),

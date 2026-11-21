@@ -275,6 +275,12 @@ fn checked(p: *const u32) {
         unsafe { make_vec() },
     );
 }
+macro_rules! fetch {
+    ($p:expr) => {{
+        // SAFETY: kept, `$p` points at a live byte.
+        let x: Result<u8, E> = unsafe { read($p) };
+    }};
+}
 macro_rules! pop {
     ($head:expr) => {{
         // SAFETY: kept, every linked base holds a header that push wrote.

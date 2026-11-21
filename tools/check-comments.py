@@ -290,11 +290,15 @@ def unsafe_site(node):
         item, qualified = token_item(node)
         if item is not None:
             return item == "impl" and qualified
-    unit, generics = node, 0
+    unit, generics, in_type = node, 0, False
     while unit is not None and unit.type != ";" and (unit.type != "," or generics):
         if has_unsafe(unit):
             return True
-        if unit.text == b"<" and unit.prev_sibling is not None and (unit.prev_sibling.text == b"::" or generics):
+        if unit.text in (b":", b"->"):
+            in_type = True
+        elif unit.text == b"=" and not generics:
+            in_type = False
+        if unit.text == b"<" and unit.prev_sibling is not None and (unit.prev_sibling.text == b"::" or generics or in_type):
             generics += 1
         elif unit.text in (b">", b">>") and generics:
             generics = max(0, generics - len(unit.text))

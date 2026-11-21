@@ -194,25 +194,29 @@ const AFTER: Rva = Rva(0x54);
                              ("old locator", "old spec"))
             self.assertEqual(sorted(p.name for p in Path(root).iterdir()), ["generated.rs", "spec.json"])
 
-    def test_a_promoted_reference_locates_other_builds_without_their_old_addresses(self):
+    def test_a_promoted_reference_compares_other_builds_through_its_relocation(self):
         with tempfile.TemporaryDirectory() as root:
             executable = Path(root, "game.exe")
             executable.write_bytes(b"build")
             spec = {"keys": [], "vtables": []}
             seen = {}
+            recorded = {"new": {0x10: 0x20, 0x11: 0x21}, "other": {0x10: 0x30, 0x99: 0x40}}
 
-            def report(image, spec, recorded, checked):
-                seen[image] = recorded
+            def report(image, spec, expected, checked):
+                seen[image] = expected
                 return {}, [], set()
 
-            with (patch.object(sites, "BUILDS", {"new": "2.0", "old": "1.0"}), patch.object(sites, "report", side_effect=report),
-                  patch.object(sites, "addresses", return_value={0x10: 0x20}), patch.object(sites, "source_keys", return_value={}),
-                  patch.object(sites, "exe", return_value=str(executable)), patch.object(sites, "layout_checked", return_value=set()),
-                  patch.object(sites, "EXPECTED_WITHHELD", {}), patch("sys.stdout", io.StringIO())):
-                sites.verify(spec, {"new": "new image", "old": "old image"}, "new", written=False, recorded=False)
-                self.assertEqual(seen, {"new image": None, "old image": {}})
-                sites.verify(spec, {"new": "new image", "old": "old image"}, "new", written=False)
-                self.assertEqual(seen, {"new image": None, "old image": {0x10: 0x20}})
+            builds = {"new": "3.0", "old": "2.0", "other": "1.0"}
+            images = {build: build + " image" for build in builds}
+            with (patch.object(sites, "BUILDS", builds), patch.object(sites, "report", side_effect=report),
+                  patch.object(sites, "addresses", side_effect=lambda build: recorded.get(build, {})),
+                  patch.object(sites, "source_keys", return_value={}), patch.object(sites, "exe", return_value=str(executable)),
+                  patch.object(sites, "layout_checked", return_value=set()), patch.object(sites, "EXPECTED_WITHHELD", {}),
+                  patch("sys.stdout", io.StringIO())):
+                sites.verify(spec, images, "new", written=False, promoted_from="old")
+                self.assertEqual(seen, {"new image": None, "old image": {0x20: 0x10, 0x21: 0x11}, "other image": {0x20: 0x30}})
+                sites.verify(spec, images, "new", written=False)
+                self.assertEqual(seen, {"new image": None, "old image": {}, "other image": recorded["other"]})
 
     def test_a_missing_or_truncated_generated_locator_is_refused_rather_than_renaming_sites(self):
         with tempfile.TemporaryDirectory() as root:

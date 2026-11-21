@@ -184,7 +184,9 @@ fn run(
     let class = wide(CLASS);
     let title = wide("Battle Plan map");
     // SAFETY: every Win32 call below runs on this thread, which owns the window and its
-    // message loop; the state box lives until WM_NCDESTROY takes it back.
+    // message loop. WM_NCCREATE adopts the state box and sets `adopted`, and WM_NCDESTROY then
+    // frees it; when creation fails before adoption, this function frees it instead, so the box
+    // is released exactly once.
     unsafe {
         let instance = GetModuleHandleW(std::ptr::null());
         let mut description: WNDCLASSEXW = std::mem::zeroed();
