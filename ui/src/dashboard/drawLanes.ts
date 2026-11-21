@@ -6,9 +6,10 @@ export interface DrawLane { postMessage(message: ToWorker, transfer: Transferabl
 const SURFACE = new Set<ToWorker['type']>(['surface', 'table', 'dateFace', 'race', 'pointer', 'tablePointer', 'tableScroll', 'tableRead',
   'racePointer', 'inspectRace', 'detach', 'closeRace']);
 const PAGE_WIDE = new Set<FromWorker['type']>(['displayRate', 'structure', 'structureLead', 'followFailure']);
+const WEIGHT: Partial<Record<ToWorker['type'], number>> = { table: 4, race: 2 };
 
 export class DrawLanes {
-  private readonly owner = new Map<number, number>();
+  private readonly owner = new Map<number, { lane: number; weight: number }>();
   private readonly lanes: readonly DrawLane[];
   private readonly emit: (message: FromWorker) => void;
   private readonly load: number[];
@@ -22,17 +23,17 @@ export class DrawLanes {
 
   post(message: ToWorker, transfer: Transferable[] = []) {
     if (SURFACE.has(message.type) && 'id' in message) {
-      let lane = this.owner.get(message.id);
-      if (lane === undefined) {
+      let held = this.owner.get(message.id);
+      if (held === undefined) {
         if (message.type === 'detach' || message.type === 'closeRace') return;
         if (message.type !== 'surface' && message.type !== 'table' && message.type !== 'dateFace' && message.type !== 'race') {
           this.lanes[0]!.postMessage(message, transfer); return;
         }
-        lane = this.load.indexOf(Math.min(...this.load));
-        this.owner.set(message.id, lane); this.load[lane]!++;
+        held = { lane: this.load.indexOf(Math.min(...this.load)), weight: WEIGHT[message.type] ?? 1 };
+        this.owner.set(message.id, held); this.load[held.lane]! += held.weight;
       }
-      if (message.type === 'detach' || message.type === 'closeRace') { this.owner.delete(message.id); this.load[lane]!--; }
-      this.lanes[lane]!.postMessage(message, transfer);
+      if (message.type === 'detach' || message.type === 'closeRace') { this.owner.delete(message.id); this.load[held.lane]! -= held.weight; }
+      this.lanes[held.lane]!.postMessage(message, transfer);
       return;
     }
     if (message.type === 'inspect') { this.lanes[0]!.postMessage(message, transfer); return; }

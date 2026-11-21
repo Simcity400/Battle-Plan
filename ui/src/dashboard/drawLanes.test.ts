@@ -24,6 +24,16 @@ test('each surface draws on the least loaded lane, and what concerns it goes to 
   assert.deepEqual(types(1), ['table', 'tableRead', 'table', 'detach', 'table'], 'a detached surface frees its lane');
 });
 
+test('a table weighs more than a panel, so two tables draw on different lanes', () => {
+  const { draw, types } = lanes(2);
+  const panel = (id: number) => ({ type: 'surface', id, owner: 1, width: 1, height: 1, dpr: 1, model: {} } as unknown as ToWorker);
+  draw.post(table(1)); draw.post(panel(2)); draw.post(table(3)); draw.post(panel(4));
+  assert.deepEqual([types(0), types(1)], [['table', 'surface'], ['surface', 'table']]);
+  draw.post({ type: 'detach', id: 3 });
+  draw.post(table(5));
+  assert.deepEqual(types(1), ['surface', 'table', 'detach', 'table'], 'a detached table frees its weight');
+});
+
 test('follows, the clock and options reach every lane; a follow inspection the first alone', () => {
   const { draw, types } = lanes(3);
   draw.post({ type: 'add', id: 9, branch: 'b' });
