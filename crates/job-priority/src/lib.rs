@@ -306,16 +306,6 @@ pub fn foreground_thread() {
     let _ = worker(false);
 }
 
-pub fn playback_thread() {
-    #[cfg(windows)]
-    unsafe {
-        use windows_sys::Win32::System::Threading::{
-            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
-        };
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
-    }
-}
-
 pub fn is_background_thread() -> bool {
     BACKGROUND.get()
 }

@@ -938,7 +938,6 @@ impl Playhead {
         for at in 0..settings.fetch_threads {
             let held = Arc::clone(&shared);
             threads.push(spawn(format!("playhead fetch {at}"), Box::new(move || {
-                job_priority::playback_thread();
                 entered(Thread::Fetch);
                 fetcher(&held);
             }))?);
@@ -949,14 +948,12 @@ impl Playhead {
             helpers.push(send);
             let held = Arc::clone(&shared);
             threads.push(spawn(format!("playhead step {at}"), Box::new(move || {
-                job_priority::playback_thread();
                 entered(Thread::Step);
                 helper(&held, &receive);
             }))?);
         }
         let held = Arc::clone(&shared);
         let stepper = std::thread::Builder::new().name("playhead stepper".into()).spawn(move || {
-            job_priority::playback_thread();
             entered(Thread::Stepper);
             Stepper::new(held, hook, helpers).run()
         })?;

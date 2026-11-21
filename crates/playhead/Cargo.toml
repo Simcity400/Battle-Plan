@@ -14,7 +14,6 @@ bench = ["dep:serde_json"]
 test-support = []
 
 [dependencies]
-job-priority.workspace = true
 replay-columnar.workspace = true
 replay-frame.workspace = true
 replay-data.workspace = true
