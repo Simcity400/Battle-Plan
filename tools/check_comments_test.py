@@ -284,6 +284,10 @@ unsafe extern "system" fn window_proc(hwnd: usize, message: u32, lparam: isize) 
     unsafe {
         // SAFETY: kept, WM_NCCREATE's lparam is the CREATESTRUCTW the OS passes for the call.
         let created = &*(lparam as *const CREATESTRUCTW);
+        // SAFETY: kept, the block holds a u16 at `found`.
+        let language = *found.cast::<u16>();
+        // SAFETY: kept, the state box lives until WM_NCDESTROY.
+        (*state).adopted.store(true, Ordering::Release);
         // SAFETY: refused, reading a local is safe even inside an unsafe block.
         let copy = message;
     }

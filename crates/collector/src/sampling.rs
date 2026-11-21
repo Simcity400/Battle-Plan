@@ -5869,8 +5869,9 @@ unsafe fn finish_acquisition(
 }
 
 /// # Safety
-/// `pending` came from [`submit_acquisition`] on `batch`, and the callback still holds the
-/// live-read lease.
+/// `batch` owns `pending`'s uncollected ticket, whether [`submit_acquisition`] made it or the batch
+/// adopted a worker's child ticket, and the callback still holds the live-read lease. An accepted
+/// ticket joins its published completion; a rejected one runs its parked request inline.
 unsafe fn finish_acquisition_into(
     shared: &Shared,
     batch: &mut acquisition::Batch<'_>,
@@ -6158,7 +6159,8 @@ impl PresentationPending {
                 continue;
             };
             out_of_line(|| {
-                // SAFETY: every range published before this ordered collection.
+                // SAFETY: the batch owns each range's ticket and the callback holds the live-read
+                // lease; a published range is collected here, a parked one runs inline.
                 let (mut part, report) = unsafe {
                     collect_acquisition(
                         shared,

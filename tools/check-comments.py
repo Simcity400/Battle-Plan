@@ -282,16 +282,12 @@ def inside_unsafe(node):
     return False
 
 
-def pointer_dereference(node):
-    """Whether `node` dereferences an explicit raw-pointer cast, as in `*(p as *const T)`."""
+def unsafe_operation(node):
+    """Whether `node` dereferences or calls, the two kinds of operation an `unsafe` block's statement
+    can owe its contract to. Without types, a raw pointer can't be told from a reference."""
     if node.type == "unary_expression" and node.child_count == 2 and node.children[0].type == "*":
-        operand = node.children[1]
-        while operand.type == "parenthesized_expression" and operand.named_child_count == 1:
-            operand = operand.named_children[0]
-        if operand.type == "type_cast_expression":
-            target = operand.child_by_field_name("type")
-            return target is not None and target.type == "pointer_type"
-    return any(pointer_dereference(child) for child in node.children)
+        return True
+    return node.type == "call_expression" or any(unsafe_operation(child) for child in node.children)
 
 
 def unsafe_site(node):
@@ -306,7 +302,7 @@ def unsafe_site(node):
         return False
     if node.type == "impl_item":
         return unsafe_item(node)
-    if node.is_named and not in_macro(node) and inside_unsafe(node) and pointer_dereference(node):
+    if node.is_named and not in_macro(node) and inside_unsafe(node) and unsafe_operation(node):
         return True
     if node.is_named and not in_macro(node):
         return has_unsafe(node)
