@@ -304,6 +304,13 @@ macro_rules! writer {
             let scaled = $site * 2;
             // SAFETY: kept, the slot points at a live word.
             *$args = 0;
+            // SAFETY: refused, the guard neither dereferences nor calls.
+            if $site == 0 { return }
+            write_value($site);
+            // SAFETY: refused, a pattern is not a call.
+            let Some(value) = $site else { return };
+            // SAFETY: refused, a double-pointer cast is not a dereference.
+            let pp = $site as *mut *mut u8;
             // SAFETY: kept, the site's detour runs on the native thread with that call's arguments.
             invoke(site, $args)
         }
@@ -354,6 +361,9 @@ fn total(cells: &[*const u32]) -> std::io::Result<u32> {
             b"// SAFETY: refused, copying a parameter is safe even inside an unsafe block.",
             b"// SAFETY: refused, a pointer cast is neither a dereference nor a call.",
             b"// SAFETY: refused, a multiplication is not a dereference.",
+            b"// SAFETY: refused, the guard neither dereferences nor calls.",
+            b"// SAFETY: refused, a pattern is not a call.",
+            b"// SAFETY: refused, a double-pointer cast is not a dereference.",
             b"// SAFETY: refused, a comparison is safe; the unsafe read is the next field.",
         ])
 

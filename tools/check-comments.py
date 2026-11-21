@@ -303,18 +303,45 @@ def unsafe_tokens(node):
     return False
 
 
+TYPE_TOKENS = {b"*", b"const", b"mut", b"::", b"<", b">", b"&", b"dyn", b"()"}
+
+
 def token_operation(node):
-    """Whether the macro statement starting at `node` dereferences or calls: a `*` or a `(` group
-    right after a name, up to the `;` or `,` that ends it."""
-    unit = node
+    """Whether the macro statement starting at `node` dereferences or calls, up to the `;` or `,`
+    that ends it, or the `{...}` body that closes it. A `let` pattern and a cast's type are
+    skipped, since `Some(value)` and `*mut T` there are neither calls nor dereferences."""
+    unit, pattern, cast = node, node.text == b"let", False
     while unit is not None and unit.type not in (";", ","):
-        previous = unit.prev_sibling
-        statement_start = previous is None or previous.type in ("line_comment", "block_comment")
-        if unit.text == b"*" and (statement_start or previous.text in DEREFERENCE_AFTER):
-            return True
-        if unit.type == "token_tree" and unit.text.startswith(b"(") and unit.prev_sibling is not None                 and unit.prev_sibling.type in ("identifier", "metavariable", ">"):
-            return True
+        text = unit.text
+        if pattern:
+            pattern = text != b"="
+        elif cast and (text in TYPE_TOKENS or unit.type in ("identifier", "primitive_type")):
+            pass
+        elif text == b"as":
+            cast = True
+        else:
+            cast = False
+            if tokens_operate(unit):
+                return True
+            if braces(unit) and (unit.next_sibling is None or unit.next_sibling.text not in CONTINUATIONS):
+                return False
         unit = unit.next_sibling
+    return False
+
+
+def tokens_operate(unit):
+    """Whether the token `unit` is a dereferencing `*` or a call's `(` group, or, as a group, holds one."""
+    previous = unit.prev_sibling
+    if unit.text == b"*":
+        if previous is None or previous.type in ("line_comment", "block_comment"):
+            return True
+        if previous.text == b"mut":
+            return previous.prev_sibling is not None and previous.prev_sibling.text == b"&"
+        return previous.text in DEREFERENCE_AFTER
+    if unit.type == "token_tree":
+        if unit.text.startswith(b"(") and previous is not None and previous.type in ("identifier", "metavariable", ">"):
+            return True
+        return any(tokens_operate(child) for child in unit.children)
     return False
 
 

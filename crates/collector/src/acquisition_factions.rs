@@ -118,8 +118,9 @@ fn run_with(request: &mut Request, memory: &impl Memory) -> Report {
     let mut goal_ticks = 0;
     let mut companion_ticks = 0;
     let factions = if request.goal_store.is_some() || request.companion_store.is_some() {
-        // SAFETY: this worker exclusively owns both companion stores inside
-        // the existing native world's quiescent acquisition lease.
+        // SAFETY: this Factions worker holds the native world's quiescent acquisition lease and
+        // the registries' capture side alone, which is all three growth calls need, whichever of
+        // the goal and companion stores the request holds.
         unsafe {
             crate::faction_goal_changes::install_growth();
             crate::faction_companion_changes::install_growth();

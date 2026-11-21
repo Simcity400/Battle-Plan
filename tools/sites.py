@@ -762,6 +762,13 @@ def published_names():
         raise SystemExit("%d published sites have no position recorded for the new reference %s (%s); "
                          "relocate it with its layouts checked, or map them, so no site loses its name"
                          % (len(unmapped), BUILDS[reference], ", ".join(unmapped[:5])))
+    sharing = collections.defaultdict(list)
+    for rva, name in names.items():
+        sharing[moved[rva]].append(name)
+    shared = sorted(" and ".join(sorted(group)) for group in sharing.values() if len(group) > 1)
+    if shared:
+        raise SystemExit("published sites relocate onto one position for the new reference %s (%s); "
+                         "correct the relocation so no site loses its name" % (BUILDS[reference], "; ".join(shared[:5])))
     return {moved[rva]: name for rva, name in names.items()}
 
 

@@ -175,6 +175,8 @@ const AFTER: Rva = Rva(0x54);
             with patch.object(sites, "OUTPUT", str(output)), patch.object(sites, "BUILDS", {"new": "2.0", "old": "1.0"}):
                 with patch.object(sites, "addresses", return_value={0x10: 0x20, 0x20: 0x28}), self.assertRaises(SystemExit):
                     sites.published_names()
+                with patch.object(sites, "addresses", return_value={0x10: 0x20, 0x20: 0x20, 0x30: 0x38}), self.assertRaises(SystemExit):
+                    sites.published_names()
                 with patch.object(sites, "addresses", return_value={0x10: 0x20, 0x20: 0x28, 0x30: 0x38}):
                     self.assertEqual(sites.published_names(),
                                      {0x20: "sites::Append", 0x28: "sites::Destroy", 0x38: "sites::Lost"})
