@@ -76,6 +76,7 @@ class Install(unittest.TestCase):
         game.mkdir()
         (game / "hoi4.exe").touch()
         self.owner, self.commands, self.task = None, [], None
+        self.gitdir, self.commons = root / "clone" / ".git" / "worktrees" / "main", {}
         self.addCleanup(dt.configure, CI_DIR)
         self.enterContext(mock.patch.dict(os.environ, {"USERDOMAIN": "domain", "USERNAME": "user"}))
         self.enterContext(mock.patch.object(dt.subprocess, "run", side_effect=self.command))
@@ -91,10 +92,18 @@ class Install(unittest.TestCase):
             self.task = Path(command[command.index("/XML") + 1]).read_text(encoding="utf-16")
         elif command[3:5] == ["worktree", "add"]:
             self.runner_script(Path(command[6]))
+            self.gitdir.mkdir(parents=True)
         elif command[3:] == ["rev-parse", "--show-toplevel"]:
             stdout = self.owner
+        elif command[3:] == ["rev-parse", "--absolute-git-dir"]:
+            stdout = str(self.gitdir)
         elif command[3:] == ["rev-parse", "--path-format=absolute", "--git-common-dir"]:
-            stdout = str(self.root / "clone" / ".git")
+            stdout = self.commons.get(command[2], str(self.root / "clone" / ".git"))
+        elif command[3] == "checkout":
+            held = dt.hold_checkout()
+            self.free_during_checkout = held is not None
+            if held is not None:
+                os.close(held)
         return subprocess.CompletedProcess(command, 0, stdout=stdout)
 
     def runner_script(self, worktree):
@@ -104,7 +113,8 @@ class Install(unittest.TestCase):
     def installed_runner(self):
         worktree = self.ci / "main"
         self.runner_script(worktree)
-        (self.ci / dt.RUNNER_MARK).touch()
+        self.gitdir.mkdir(parents=True)
+        (self.gitdir / dt.RUNNER_MARK).touch()
         self.owner = str(worktree)
         return worktree
 
@@ -118,7 +128,7 @@ class Install(unittest.TestCase):
         self.assertEqual(dt.main(), 0)
         worktree = self.ci / "main"
         self.assertIn(["git", "-C", str(dt.ROOT), "worktree", "add", "--detach", str(worktree), "origin/main"], self.commands)
-        self.assertTrue((self.ci / dt.RUNNER_MARK).is_file())
+        self.assertTrue((self.gitdir / dt.RUNNER_MARK).is_file())
         self.assertIn(f"<WorkingDirectory>{worktree}</WorkingDirectory>", self.task)
         self.assertIn(f'run --ci-dir "{self.ci}"', self.task)
         self.assertEqual((dt.E2E_APP, dt.REPORTS), (self.ci / "e2e-app", self.ci / "reports"))
@@ -128,9 +138,22 @@ class Install(unittest.TestCase):
         self.assertEqual(dt.main(), 0)
         checkout = ["git", "-C", str(worktree), "checkout", "--quiet", "--detach", "--force", "origin/main"]
         self.assertLess(self.commands.index(checkout), [command[0] for command in self.commands].index("schtasks"))
+        self.assertFalse(self.free_during_checkout)
+
+    def test_a_new_runner_is_made_only_in_an_empty_folder(self):
+        (self.ci / "reports").mkdir(parents=True)
+        (self.ci / "reports" / "TESTS_RUNNING").write_text("4242 2026-11-20 03:00\n", encoding="utf-8")
+        self.refused()
+        self.assertFalse(any("worktree" in command for command in self.commands))
+
+    def test_a_runner_of_another_clone_is_refused(self):
+        worktree = self.installed_runner()
+        self.commons[str(worktree)] = str(self.root / "other" / ".git")
+        self.refused()
 
     def test_a_folder_install_did_not_make_is_refused_even_when_it_is_a_worktree(self):
         self.runner_script(self.ci / "main")
+        self.gitdir.mkdir(parents=True)
         self.owner = str(self.ci / "main")
         self.refused()
 
@@ -158,9 +181,10 @@ class Continuation(unittest.TestCase):
         self.enterContext(mock.patch.multiple(
             dt, WORKTREE=self.worktree, REPORTS=self.reports, MARKER=self.marker,
         ))
-        (root / dt.RUNNER_MARK).touch()
+        self.gitdir = root / "gitdir"
+        self.gitdir.mkdir()
+        (self.gitdir / dt.RUNNER_MARK).touch()
         self.lock = self.enterContext(mock.patch.object(dt, "lock_runner", return_value=41))
-        self.free = self.enterContext(mock.patch.object(dt, "checkout_free", return_value=True))
         self.hold = self.enterContext(mock.patch.object(dt, "hold_checkout", return_value=43))
         self.close = self.enterContext(mock.patch.object(dt.os, "close"))
         self.git = self.enterContext(mock.patch.object(dt, "git", side_effect=self.git_command))
@@ -179,11 +203,13 @@ class Continuation(unittest.TestCase):
     def git_command(self, *args):
         if args == ("rev-parse", "--show-toplevel"):
             return str(self.worktree)
+        if args == ("rev-parse", "--absolute-git-dir"):
+            return str(self.gitdir)
         return "synthetic commit" if args[0] == "log" else self.commit
 
     def complete(self, command, log, environment, seconds):
         self.assertTrue(self.marker.is_file())
-        self.close.assert_not_called()
+        self.assertNotIn(mock.call(41), self.close.call_args_list)
         child = dt.parse(command[2:])
         folder = Path(child.continue_run[3])
         (folder / "result.json").write_text(json.dumps({
@@ -204,7 +230,7 @@ class Continuation(unittest.TestCase):
     def test_the_parent_runs_the_checked_out_script_once_and_keeps_exclusion_until_reporting(self):
         def record(*args):
             self.assertTrue(self.marker.is_file())
-            self.close.assert_not_called()
+            self.assertNotIn(mock.call(41), self.close.call_args_list)
             return self.record_history(*args)
 
         self.history.side_effect = record
@@ -221,12 +247,13 @@ class Continuation(unittest.TestCase):
         self.assertEqual(log.name, "runner.log")
         self.assertEqual(self.git.call_args_list, [
             mock.call("rev-parse", "--show-toplevel"),
+            mock.call("rev-parse", "--absolute-git-dir"),
             mock.call("fetch", "--quiet", "origin", "main"),
             mock.call("checkout", "--quiet", "--detach", "--force", "origin/main"),
             mock.call("rev-parse", "HEAD"),
         ])
         self.lock.assert_called_once_with()
-        self.close.assert_called_once_with(41)
+        self.assertEqual(self.close.call_args_list, [mock.call(43), mock.call(41)])
         self.assertEqual(self.mark.call_count, 2)
         self.assertTrue(self.mark.call_args.args[0].endswith(f"{self.step.call_args.args[1].parent.name}\n"))
         self.assertFalse(self.marker.exists())
@@ -275,12 +302,30 @@ class Continuation(unittest.TestCase):
         self.lock.assert_not_called()
         self.assertEqual((self.github.statuses, self.github.tracked), ([], []))
 
-    def test_a_folder_install_did_not_mark_is_refused_before_git_runs_in_it(self):
-        (self.worktree.parent / dt.RUNNER_MARK).unlink()
+    def test_a_worktree_install_did_not_mark_is_refused_before_locking(self):
+        (self.gitdir / dt.RUNNER_MARK).unlink()
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(dt.run(self.args), 2)
-        self.git.assert_not_called()
+        self.assertEqual(self.git.call_args_list, [
+            mock.call("rev-parse", "--show-toplevel"), mock.call("rev-parse", "--absolute-git-dir"),
+        ])
         self.lock.assert_not_called()
+
+    def test_the_parent_holds_the_checkout_until_it_has_moved_it_and_frees_it_for_the_child(self):
+        seen = {}
+
+        def git_command(*args):
+            if args[0] == "checkout":
+                seen["checkout"] = mock.call(43) in self.close.call_args_list
+            return self.git_command(*args)
+
+        def complete(*args):
+            seen["child"] = mock.call(43) in self.close.call_args_list
+            return self.complete(*args)
+
+        self.git.side_effect, self.step.side_effect = git_command, complete
+        self.assertEqual(dt.run(self.args), 0)
+        self.assertEqual(seen, {"checkout": False, "child": True})
 
     def test_running_is_written_before_fetch_and_replaced_by_the_final_report(self):
         latest = self.reports / "latest.md"
@@ -429,7 +474,7 @@ class Continuation(unittest.TestCase):
         self.assertEqual((folder / "report.md").read_text(), report)
         prune.assert_called_once_with(self.history.call_args.args[0])
         self.assertFalse(self.marker.exists())
-        self.close.assert_called_once_with(41)
+        self.assertEqual(self.close.call_args_list, [mock.call(43), mock.call(41)])
 
     def test_a_latest_report_failure_still_writes_the_run_report_and_prunes(self):
         def write_report(heading, lines):

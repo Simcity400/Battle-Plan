@@ -5,10 +5,10 @@
 
 `--ci-dir` (or BATTLE_PLAN_CI) names the runner's own folder: its worktree is main there, the
 acceptance app is built into e2e-app and the reports and locks are kept in reports. `install`
-makes that worktree of origin/main and marks the folder RUNNER_MARK, or moves the worktree of a
-marked folder to origin/main, and registers the Windows task that runs it daily at `--at`, or as
-soon as it can after a missed start. Both refuse, before touching it, a folder that is not marked
-or whose worktree git does not see as its own. `run` moves that worktree to the newest
+makes that worktree of origin/main in an empty or new folder and marks it RUNNER_MARK in the
+worktree's own git folder, or moves a marked worktree of this clone to origin/main, and registers
+the Windows task that runs it daily at `--at`, or as soon as it can after a missed start. Both
+refuse, before touching it, a worktree that is not marked or that git does not see as its own. `run` moves that worktree to the newest
 origin/main and holds TESTS_RUNNING while it runs, in GROUPS, the repository checks, the UI
 typecheck and tests, every Rust test and the acceptance suite (tools/e2e/suite.py: the release
 app, built on Boat, on a copy of the `--fixture` recording). RUST_BUILD says where the Rust tests
@@ -179,15 +179,6 @@ def hold_checkout():
     """The checked-out runner's hold on the worktree for its life, or None while another holds it:
     a runner whose parent died must not see the next run move its checkout."""
     return lock_runner(CHECKOUT_LOCK)
-
-
-def checkout_free():
-    """Whether no checked-out runner holds the worktree."""
-    held = lock_runner(CHECKOUT_LOCK)
-    if held is None:
-        return False
-    os.close(held)
-    return True
 
 
 def duration(seconds):
@@ -856,14 +847,15 @@ def report_unfinished(unfinished, publishing):
 def run(args):
     if args.continue_run is not None:
         return run_checked_out(args)
-    refused = not_the_runner(lambda: git("rev-parse", "--show-toplevel"))
+    refused = not_the_runner(git)
     if refused:
         print(refused, file=sys.stderr)
         return 2
     lock = lock_runner()
     if lock is None:
         return 0
-    if not checkout_free():
+    held = hold_checkout()
+    if held is None:
         os.close(lock)
         return 0
     deadline = time.monotonic() + DEADLINE.total_seconds()
@@ -873,14 +865,17 @@ def run(args):
     earlier = []
     try:
         try:
-            unfinished = unfinished_run()
-            if unfinished:
-                earlier = report_unfinished(unfinished, publishing)
-            write_marker(f"{os.getpid()} {started:%Y-%m-%d %H:%M}\n")
-            write_report("RUNNING", [f"Started {started:%Y-%m-%d %H:%M}. Earlier runs: history.tsv."])
-            git("fetch", "--quiet", "origin", "main")
-            git("checkout", "--quiet", "--detach", "--force", "origin/main")
-            commit = git("rev-parse", "HEAD")
+            try:
+                unfinished = unfinished_run()
+                if unfinished:
+                    earlier = report_unfinished(unfinished, publishing)
+                write_marker(f"{os.getpid()} {started:%Y-%m-%d %H:%M}\n")
+                write_report("RUNNING", [f"Started {started:%Y-%m-%d %H:%M}. Earlier runs: history.tsv."])
+                git("fetch", "--quiet", "origin", "main")
+                git("checkout", "--quiet", "--detach", "--force", "origin/main")
+                commit = git("rev-parse", "HEAD")
+            finally:
+                os.close(held)
             folder = run_folder(started, commit)
             write_marker(f"{os.getpid()} {started:%Y-%m-%d %H:%M} {folder.name}\n")
             publishing.status(commit, STATUS, "pending", f"running since {started:%Y-%m-%d %H:%M}")
@@ -1002,10 +997,13 @@ def install(args):
     at = datetime.datetime.strptime(args.at, "%H:%M").time()
     if WORKTREE.exists():
         refresh_runner()
+    elif WORKTREE.parent.exists() and any(WORKTREE.parent.iterdir()):
+        sys.exit(f"{WORKTREE.parent} holds an earlier runner's files: remove it or name another --ci-dir")
     else:
         git_at(ROOT, "fetch", "--quiet", "origin", "main")
         git_at(ROOT, "worktree", "add", "--detach", str(WORKTREE), "origin/main")
-        (WORKTREE.parent / RUNNER_MARK).write_text(f"{ROOT}\n", encoding="utf-8")
+        mark = Path(git_at(WORKTREE, "rev-parse", "--absolute-git-dir")) / RUNNER_MARK
+        mark.write_text(f"{ROOT}\n", encoding="utf-8")
     script = WORKTREE / "tools" / "daily_tests.py"
     if not script.is_file():
         sys.exit(f"{script} is missing: the runner must be on origin/main first")
@@ -1038,17 +1036,18 @@ def git_at(folder, *args):
     ).stdout.strip()
 
 
-def not_the_runner(top_level):
-    """Why WORKTREE must not be moved, or None: its folder carries install's RUNNER_MARK and git
-    sees the worktree as its own, so it is never a developer's checkout or one enclosing it."""
-    if not (WORKTREE.parent / RUNNER_MARK).is_file():
-        return f"{WORKTREE.parent} is not a runner folder made by install: name another --ci-dir"
+def not_the_runner(git_in_worktree):
+    """Why WORKTREE must not be moved, or None: git sees it as its own worktree, and that worktree's
+    own git folder carries install's RUNNER_MARK, which removing the worktree removes with it."""
     try:
-        owner = Path(top_level()).resolve()
+        owner = Path(git_in_worktree("rev-parse", "--show-toplevel")).resolve()
+        if owner != WORKTREE.resolve():
+            return f"{WORKTREE} is not a git worktree of its own: install a runner in another --ci-dir"
+        marked = (Path(git_in_worktree("rev-parse", "--absolute-git-dir")) / RUNNER_MARK).is_file()
     except (OSError, RuntimeError, subprocess.CalledProcessError):
-        owner = None
-    if owner != WORKTREE.resolve():
-        return f"{WORKTREE} is not a git worktree of its own: install a runner in another --ci-dir"
+        return f"{WORKTREE} is not a git worktree: install a runner in another --ci-dir"
+    if not marked:
+        return f"{WORKTREE} is not a runner install made: name another --ci-dir"
     return None
 
 
@@ -1058,7 +1057,7 @@ def refresh_runner():
     def common(folder):
         return Path(git_at(folder, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
 
-    refused = not_the_runner(lambda: git_at(WORKTREE, "rev-parse", "--show-toplevel"))
+    refused = not_the_runner(lambda *args: git_at(WORKTREE, *args))
     if refused is None and common(WORKTREE) != common(ROOT):
         refused = f"{WORKTREE} is a worktree of another clone: install from that clone or name another --ci-dir"
     if refused:

@@ -407,7 +407,7 @@ if (sweep) {
   if (!existsSync(path.join(head, 'manifest.json'))) visualRows.push({ pass: false, cells: ['–', '–', verdict(false), 'no captures were taken', ''] });
   else if (accepted && JSON.stringify(accepted.fixture ?? null) !== JSON.stringify(run.fixture ?? null))
     visualRows.push({ pass: false, cells: ['–', '–', verdict(false), `the accepted baseline is of another fixture (${accepted.fixture?.name ?? 'unknown'}), not ${run.fixture?.name}: review visual/ and accept a new one`, ''] });
-  else if (!accepted) visualRows.push({ pass: false, cells: ['–', '–', verdict(false), `no accepted baseline: review visual/ and accept it with \`python tools/e2e/suite.py accept --run ${files.out} --reason "…"\``, ''] });
+  else if (!accepted) visualRows.push({ pass: false, cells: ['–', '–', verdict(false), `no accepted baseline: review visual/ and accept it with \`python tools/e2e/suite.py accept --run "${files.out}"${files.baseline ? ` --state "${path.dirname(files.baseline)}"` : ''} --reason "…"\``, ''] });
   else {
     const comparison = await compareCaptures(files.baseline, head, { diffDirectory: path.join(head, 'diff') });
     visualNote = `Baseline accepted ${accepted.acceptedAt} from main ${String(accepted.commit ?? '?').slice(0, 10)} (${accepted.run}): ${accepted.reason}. ${comparison.counts.PASS} same, ${comparison.counts.DIFF} different, ${comparison.counts.ERROR} errors.`;
