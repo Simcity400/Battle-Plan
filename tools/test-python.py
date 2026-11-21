@@ -4,6 +4,8 @@ usage: python tools/test-python.py [FILE...]
 
 Runs every `tools/**/*_test.py`, or the named files, each in a process of its own and all at
 once, printing the output of those that fail and a line per file. Exits 1 when any fails.
+The tests need the packages pinned in tools/python-requirements.txt:
+`python -m pip install -r tools/python-requirements.txt`.
 """
 import argparse
 import os

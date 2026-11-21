@@ -534,7 +534,9 @@ class ReviewOfFourteen(unittest.TestCase):
         job = next(job for job in pipeline.jobs if job.name == "tool-tests")
         command = ci.expand(pipeline.toolchains[job.toolchain].version, {"python": sys.executable})
         said = ci.subprocess.run(command, capture_output=True, text=True).stdout
-        for package in ("pyyaml", "tree-sitter", "tree-sitter-language-pack"):
+        required = [line.split("==")[0].lower() for line in (ROOT / "tools" / "python-requirements.txt").read_text(encoding="utf-8").splitlines()
+                    if line and not line.startswith("-r")]
+        for package in ("tree-sitter", "tree-sitter-language-pack", *required):
             self.assertIn(package, said)
 
     def test_the_pipeline_implementation_keys_every_job(self):

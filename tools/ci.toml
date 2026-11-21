@@ -30,8 +30,8 @@ version = ["{python}", "-c", "import yaml; print(yaml.__version__)"]
 probes = ["actionlint"]
 
 [toolchain.tools]
-version = ["{python}", "-c", "import importlib.metadata as m, sys\nprint(sys.version)\nfor p in ('pyyaml', 'tree-sitter', 'tree-sitter-language-pack'):\n    try:\n        print(p, m.version(p))\n    except m.PackageNotFoundError:\n        print(p, 'absent')"]
-files = ["tools/comment-lint-requirements.txt"]
+version = ["{python}", "-c", "import importlib.metadata as m, sys\nprint(sys.version)\nfor p in ('pyyaml', 'tree-sitter', 'tree-sitter-language-pack', 'cryptography', 'capstone', 'numpy'):\n    try:\n        print(p, m.version(p))\n    except m.PackageNotFoundError:\n        print(p, 'absent')"]
+files = ["tools/python-requirements.txt", "tools/comment-lint-requirements.txt"]
 
 [toolchain.rust]
 tools = ["cargo"]

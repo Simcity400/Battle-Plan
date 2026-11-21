@@ -1,0 +1,5 @@
+-r comment-lint-requirements.txt
+pyyaml==6.0.3
+cryptography==50.0.2
+capstone==5.0.9
+numpy==2.4.6
