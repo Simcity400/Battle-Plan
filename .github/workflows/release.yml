@@ -160,22 +160,42 @@ jobs:
     if: ${{ !cancelled() && needs.publish.result == 'success' && inputs.channel == 'stable' && !inputs.draft }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: release-stable
     permissions:
-      contents: write
-      pull-requests: write
-      actions: write
+      contents: read
     steps:
+      - name: Check the release App's settings
+        env:
+          APP_ID: ${{ vars.RELEASE_APP_ID }}
+          HAS_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+        run: |
+          if [[ -z "$APP_ID" || "$HAS_KEY" != true ]]; then
+            echo "::error::The release is published, but main's workspace version was not set: the RELEASE_APP_ID variable or the RELEASE_APP_PRIVATE_KEY secret of release-stable is missing. Set them and re-run this job."
+            exit 1
+          fi
+
+      - id: token
+        name: Mint the release App's token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          ref: main
           fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - name: Commit the version through a pull request
+      - name: Push the version to main
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          APP_SLUG: ${{ steps.token.outputs.app-slug }}
         run: python tools/release.py finalize --version "${{ needs.resolve.outputs.version }}"

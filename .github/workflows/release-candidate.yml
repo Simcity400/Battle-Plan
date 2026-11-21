@@ -92,7 +92,8 @@ jobs:
         with:
           workspaces: ". -> .cargo-target"
           shared-key: candidate-${{ env.PROFILE }}
-          save-if: ${{ github.event_name == 'push' }}
+          cache-workspace-crates: true
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
       - name: Name the version
         id: version
@@ -105,9 +106,6 @@ jobs:
           fi
           python tools/release.py version --channel "$CHANNEL" --sha HEAD ${VERSION:+--version "$VERSION"} --github-output
 
-      - name: Stamp the version into both apps
-        run: python tools/release.py stamp "${{ steps.version.outputs.version }}"
-
       - name: Install UI dependencies
         run: npm ci
 
@@ -115,9 +113,11 @@ jobs:
         shell: powershell
         env:
           FEED: ${{ (inputs.channel || 'nightly') != 'preview' && format('https://github.com/{0}/releases', github.repository) || '' }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:FEED) { $env:BATTLE_PLAN_RELEASES = $env:FEED }
+          $env:BATTLE_PLAN_VERSION = $env:VERSION
           $userHome = $env:USERPROFILE
           $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $userHome '.cargo' }
           $rustupHome = if ($env:RUSTUP_HOME) { $env:RUSTUP_HOME } else { Join-Path $userHome '.rustup' }

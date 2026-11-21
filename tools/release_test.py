@@ -270,23 +270,33 @@ class Resolve(unittest.TestCase):
 
 
 class Finalize(unittest.TestCase):
-    def test_an_older_release_never_sets_mains_workspace_version_back(self):
-        main = '[workspace.package]\nversion = "1.4.4"\n'
-        for released in ("1.4.3", "1.4.4"):
-            with mock.patch.multiple(release, repository=mock.Mock(return_value="owner/repo"),
-                                     git=mock.Mock(side_effect=lambda *args: main if args[0] == "show" else ""),
-                                     bump_pulls=mock.Mock(return_value=[]), build_candidate_for=mock.DEFAULT,
-                                     run=mock.DEFAULT, stamp=mock.DEFAULT):
-                self.assertEqual(release.finalize(argparse.Namespace(version=released)), 0)
-                release.run.assert_not_called()
-                release.stamp.assert_not_called()
+    def finalize(self, main, pushes):
+        calls = []
 
-    def test_only_the_repositorys_own_bump_branch_counts(self):
-        found = json.dumps([{"url": "fork", "headRepository": {"name": "repo"}, "headRepositoryOwner": {"login": "someone"}},
-                            {"url": "own", "headRepository": {"name": "repo"}, "headRepositoryOwner": {"login": "Owner"}}])
-        with mock.patch.object(release, "run", answers(found)):
-            self.assertEqual([pull["url"] for pull in release.bump_pulls("owner/repo", "release/v1.4.3-workspace-version", "open")],
-                             ["own"])
+        def run(command, **_):
+            calls.append(command)
+            if command[:2] == ["gh", "api"]:
+                return mock.Mock(stdout="41898282\n", returncode=0)
+            return mock.Mock(returncode=pushes.pop(0))
+
+        with mock.patch.dict(os.environ, {"APP_SLUG": "battle-plan-release"}), \
+                mock.patch.multiple(release, git=mock.Mock(side_effect=lambda *args, **_: main if args[0] == "show" else "c" * 40),
+                                    run=run, stamp=mock.DEFAULT):
+            result = release.finalize(argparse.Namespace(version="1.4.4"))
+            return result, calls, release.stamp.call_count
+
+    def test_an_older_release_never_sets_mains_workspace_version_back(self):
+        for current in ("1.4.4", "1.4.5"):
+            result, calls, stamped = self.finalize(f'[workspace.package]\nversion = "{current}"\n', [])
+            self.assertEqual((result, calls, stamped), (0, [], 0))
+
+    def test_the_app_pushes_the_bump_to_main_stamping_again_when_main_moved_first(self):
+        result, calls, stamped = self.finalize('[workspace.package]\nversion = "1.4.3"\n', [1, 0])
+        pushes = [command for command in calls if command[:2] == ["git", "push"]]
+        self.assertEqual((result, len(pushes), stamped), (0, 2, 2))
+        self.assertEqual(pushes[0][-2:], ["origin", "HEAD:main"])
+        with self.assertRaisesRegex(release.Refused, "Main moved during each of 5 attempts"):
+            self.finalize('[workspace.package]\nversion = "1.4.3"\n', [1] * 5)
 
 
 class TakenUp(unittest.TestCase):

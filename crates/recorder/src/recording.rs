@@ -705,7 +705,13 @@ pub struct CaptureOutcome {
 pub type AdmitLoad<'a> = dyn Fn(&str, bool) -> Result<(), Refusal> + 'a;
 
 use crate::replay_io::write_json;
+
 pub use crate::replay_io::{Omission, Refusal};
+
+pub(crate) const RECORDER_VERSION: &str = match option_env!("BATTLE_PLAN_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 static CONSOLE: Control = Control::new();
 unsafe extern "system" fn console_control(kind: u32) -> i32 {
@@ -1912,7 +1918,7 @@ pub(crate) fn capture(
         .map_err(|e| e.to_string())?
         .with_file_name("collector.dll");
     let build = Build {
-        recorder_version: env!("CARGO_PKG_VERSION"),
+        recorder_version: RECORDER_VERSION,
         collector_hash: hash_executable(
             File::open(&collector_source).map_err(|e| failure_text(&collector_source, e))?,
         )
@@ -2067,7 +2073,7 @@ pub(crate) fn capture(
                     game_version,
                     exe.sha256,
                     exe.size,
-                    env!("CARGO_PKG_VERSION").into(),
+                    RECORDER_VERSION.into(),
                     dll_hash,
                 )
                 .map_err(|e| e.to_string())?;

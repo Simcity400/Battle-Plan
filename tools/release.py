@@ -5,7 +5,6 @@ release candidate per commit (.github/workflows/release-candidate.yml). The rele
 (.github/workflows/release.yml) verifies, signs, smoke-tests and publishes one, without compiling.
 
   version   --channel stable|nightly|preview [--sha SHA] [--version V] [--github-output]
-  stamp     VERSION
   candidate --installer FILE --channel C --version V --commit SHA --output FILE
   resolve   --channel C [--sha SHA] [--version V] [--scheduled] [--draft] [--prepare] [--github-output]
   publish   --channel C --candidate DIR --commit SHA [--version V] [--draft] [--public-key FILE]
@@ -16,8 +15,10 @@ release candidate per commit (.github/workflows/release-candidate.yml). The rele
 The workspace version in Cargo.toml is the last stable release. Nightly and preview candidates are
 its next patch with `-<channel>.<yyyymmdd>.<n>`: the UTC date of the build and the commit's position
 on main's first-parent line, so candidates built in main's order sort in it. Stable is that next
-patch, or `--version` for a larger step. `finalize` then makes it main's workspace version, through
-a pull request. The version is compiled in, so a candidate belongs to one channel.
+patch, or `--version` for a larger step. The build passes the version as BATTLE_PLAN_VERSION, which
+only app-update, the recorder and Tauri's bundle read, so a new version recompiles only them. It is
+compiled in, so a candidate belongs to one channel. After a stable release, `finalize` pushes it to main
+as the workspace version, with the release App's token (APP_SLUG names the App).
 
 `resolve` decides whether a release is due and from what. A nightly is due when main has changed
 since the nightly feed's commit and main's CI is green on it, unless PAUSE_NIGHTLY is true. A stable
@@ -70,6 +71,7 @@ ASSET_LIMIT = 2 * GB
 INSTALLER = "battle-plan-{version}-x64-setup.exe"
 CANDIDATE_WORKFLOW = "release-candidate.yml"
 RELEASE_WORKFLOW = "release.yml"
+PUSH_ATTEMPTS = 5
 SIGNED = re.compile(r"Signed installer SHA-256: ([0-9a-f]{64})\.")
 SETTLED = ("success", "skipped", "neutral")
 RELEASE_VERSION = re.compile(r"\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?")
@@ -531,12 +533,6 @@ def version(args):
     return 0
 
 
-def stamp_command(args):
-    stamp(ROOT, args.version)
-    say(f"Stamped {args.version} into Cargo.toml and Cargo.lock.")
-    return 0
-
-
 def candidate(args):
     """The manifest a candidate's artifact carries: what it is, and the key its apps verify updates with."""
     installer = Path(args.installer)
@@ -548,6 +544,7 @@ def candidate(args):
         "updater_key": PUBLIC_KEY.read_text(encoding="utf-8"),
         "installer": {"name": installer.name, "sha256": sha256(installer), "size": installer.stat().st_size},
         "shipped": release_smoke.shipped_binaries(),
+        "notices": release_smoke.shipped_notices(),
     }
     Path(args.output).write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
     say(f"Candidate {args.version} of {args.commit[:12]}: {installer.name}, SHA-256 {document['installer']['sha256']}.")
@@ -828,7 +825,7 @@ def publish(args):
             signature = sign_for_updates(shipped, version)
     with clock.step("Smoke of the signed installer"):
         say(f"Verified: signed by key {verify_signature(shipped, signature, version, public_key)} for version {version}.")
-        release_smoke.installed_layout(shipped, work / "smoke", chosen["shipped"])
+        release_smoke.installed_layout(shipped, work / "smoke", chosen["shipped"], chosen["notices"])
         (dist / "SHA256SUMS").write_text(f"{sha256(shipped)}  {shipped.name}\n", encoding="utf-8", newline="\n")
     url = f"https://github.com/{repo}/releases/download/{tag}/{shipped.name}"
     with clock.step("Notes and feed"):
@@ -890,59 +887,35 @@ def feed_check(repo, channel, version):
                       f"{newest}, not both {version}.")
 
 
-def bump_pulls(repo, branch, state):
-    """This repository's own pull requests from `branch` into main, in `state`."""
-    owner, name = repo.split("/")
-    found = json.loads(run(["gh", "pr", "list", "--repo", repo, "--head", branch, "--base", "main", "--state", state,
-                            "--json", "url,headRepository,headRepositoryOwner,headRefOid,mergeCommit"]).stdout)
-    return [pull for pull in found if (pull.get("headRepositoryOwner") or {}).get("login", "").lower() == owner.lower()
-            and (pull.get("headRepository") or {}).get("name", "").lower() == name.lower()]
-
-
-def build_candidate_for(repo, commit):
-    """Asks main's CI for the nightly candidate of `commit` unless one is kept or building."""
-    built, why = find_candidate(repo, artifact_name("nightly", commit), "nightly")
-    if built or "still going" in (why or ""):
-        return
-    run(["gh", "workflow", "run", CANDIDATE_WORKFLOW, "--repo", repo, "--ref", "main", "-f", f"commit={commit}"])
-    say(f"Main's CI is building the candidate of {commit[:12]}.")
-
-
 def finalize(args):
-    """After a stable release, main's workspace version becomes it, through a pull request merged at
-    once, because main takes changes only through pull requests. A merge made with the workflow's
-    token starts no workflow, so it then asks main's CI for the merge commit's candidate."""
-    repo = repository()
-    branch = f"release/v{args.version}-workspace-version"
-    git("fetch", "--quiet", "origin", "main")
-    current = workspace_version(git("show", "origin/main:Cargo.toml"))
-    if precedence(current) >= precedence(args.version):
-        merged = [pull for pull in bump_pulls(repo, branch, "merged") if pull.get("mergeCommit")]
-        if merged:
-            build_candidate_for(repo, merged[0]["mergeCommit"]["oid"])
-        say(f"Main's workspace version is {current}, which {args.version} does not follow.")
-        return 0
-    pulls = bump_pulls(repo, branch, "open")
-    if pulls:
-        pull, head = pulls[0]["url"], pulls[0]["headRefOid"]
-    else:
-        git("switch", "--quiet", "--force-create", branch, "origin/main")
+    """After a stable release, main's workspace version becomes it: the release App's token pushes
+    the bump straight to main, which its ruleset lets the App bypass, refetching main and stamping
+    again whenever main moved first. A push made with the App's token starts main's CI, so the bump
+    gets its candidate as any commit does. An older release never sets the version back."""
+    author = email = None
+    for attempt in range(1, PUSH_ATTEMPTS + 1):
+        git("fetch", "--quiet", "origin", "main")
+        current = workspace_version(git("show", "origin/main:Cargo.toml"))
+        if precedence(current) >= precedence(args.version):
+            say(f"Main's workspace version is {current}, which {args.version} does not follow.")
+            return 0
+        if author is None:
+            slug = os.environ.get("APP_SLUG", "")
+            if not slug:
+                raise Refused("APP_SLUG names no release App, whose token pushes the version.")
+            author = f"{slug}[bot]"
+            user = run(["gh", "api", f"users/{slug}%5Bbot%5D", "--jq", ".id"]).stdout.strip()
+            email = f"{user}+{author}@users.noreply.github.com"
+        git("checkout", "--quiet", "--force", "--detach", "origin/main")
         stamp(ROOT, args.version)
-        git("-c", "user.name=github-actions[bot]", "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
-            "commit", "--quiet", "--all", "--message", f"Release: v{args.version} is the workspace version")
-        git("push", "--quiet", "--force", "origin", f"HEAD:refs/heads/{branch}")
-        head = git("rev-parse", "HEAD")
-        pull = run(["gh", "pr", "create", "--repo", repo, "--base", "main", "--head", branch,
-                    "--title", f"Release: v{args.version} is the workspace version",
-                    "--body", f"v{args.version} is released, so the nightlies now preview the version after it."]).stdout.strip()
-    merged = run(["gh", "pr", "merge", pull, "--repo", repo, "--squash", "--delete-branch", "--match-head-commit", head], check=False)
-    if merged.returncode != 0:
-        say(f"::warning::{pull} could not be merged ({merged.stderr.strip()}); merge it to finish v{args.version}.")
-        return 1
-    commit = run(["gh", "pr", "view", pull, "--repo", repo, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"]).stdout.strip()
-    build_candidate_for(repo, commit)
-    say(f"Main's workspace version is now {args.version}: {pull}.")
-    return 0
+        git("-c", f"user.name={author}", "-c", f"user.email={email}", "commit", "--quiet", "--all",
+            "--message", f"Release: v{args.version} is the workspace version")
+        if run(["git", "push", "--quiet", "origin", "HEAD:main"], check=False).returncode == 0:
+            say(f"Main's workspace version is now {args.version}, at {git('rev-parse', 'HEAD')[:12]}.")
+            return 0
+        say(f"Main moved while its version was set (attempt {attempt}); trying again on its new head.")
+    raise Refused(f"Main moved during each of {PUSH_ATTEMPTS} attempts to set its version to {args.version}; "
+                  "re-run the finalize job.")
 
 
 def verify(args):
@@ -968,9 +941,6 @@ def main():
     command.add_argument("--version")
     command.add_argument("--github-output", action="store_true")
     command.set_defaults(handler=version)
-    command = commands.add_parser("stamp")
-    command.add_argument("version")
-    command.set_defaults(handler=stamp_command)
     command = commands.add_parser("candidate")
     for name in ("installer", "version", "commit", "output"):
         command.add_argument(f"--{name}", required=True)

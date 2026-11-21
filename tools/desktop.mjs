@@ -97,6 +97,8 @@ const forwardedRunnerArgs = appSeparator < 0 ? forwardedCargoArgs : [...forwarde
 
 try {
   const notices = mode === "build" ? await thirdPartyNotices(path.join(root, "LICENSES"), SHIPPED.notices.components) : null;
+  const releaseVersion = mode === "build" ? process.env.BATTLE_PLAN_VERSION || undefined : undefined;
+  if (releaseVersion) process.env.TAURI_CONFIG = JSON.stringify({ version: releaseVersion });
   if (mode === "build") {
     if (!process.env.npm_execpath) throw new Error("Run the build through npm: npm run build:desktop");
     await run(process.execPath, [process.env.npm_execpath, "run", "build:ui"]);
@@ -136,8 +138,8 @@ try {
     resources[`${STAGE}/${SHIPPED.notices.file}`] = SHIPPED.notices.file;
     const desktop = metadata.packages.find((member) => path.relative(path.join(root, "crates", "desktop"), path.dirname(member.manifest_path)) === "");
     if (!desktop) throw new Error("Cargo metadata names no package in crates/desktop.");
-    const nightly = desktop.version.includes("-nightly.");
-    config = { build: { beforeBuildCommand: null }, bundle: { resources,
+    const nightly = (releaseVersion ?? desktop.version).includes("-nightly.");
+    config = { ...(releaseVersion ? { version: releaseVersion } : {}), build: { beforeBuildCommand: null }, bundle: { resources,
       ...(nightly ? { icon: ["icons/nightly.ico", "icons/nightly.png"], windows: { nsis: { installerIcon: "icons/nightly.ico" } } } : {}) } };
   }
   const args = mode === "build"
