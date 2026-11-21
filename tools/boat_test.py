@@ -43,9 +43,12 @@ class FakeBoat:
         self.starting = {}
         self.hydrating = {}
         self.too_small = set()
+        self.single = []
 
-    def boat(self, *args, check=True, idempotent=None, shielded=False):
+    def boat(self, *args, check=True, idempotent=None, shielded=False, retry=True):
         self.calls.append(args)
+        if not retry:
+            self.single.append(args[0])
         command = args[0]
         if command == "list":
             return OK, [{"sandboxes": [dict(vm) for vm in self.vms.values()]}]
@@ -833,6 +836,7 @@ class Wake(Harness):
             self.assertEqual(bt.wake(self.state, "lane", "large", rebuilds), ("c", "resuming"))
         resume = next(call for call in fake.calls if call[0] == "resume")
         self.assertEqual(resume[:4], ("resume", "c", "--ttl", str(bt.LEASE_SECONDS)))
+        self.assertEqual(fake.single, ["resume"])
         self.assertIn("--no-wait", resume)
         self.assertNotIn("info", [call[0] for call in fake.calls])
         self.assertEqual(fake.remote_calls, [])
@@ -881,16 +885,31 @@ class Wake(Harness):
 
     def test_a_wake_whose_worktree_ran_since_it_began_starts_nothing(self):
         fake = self.use(FakeBoat([vm("a")]))
-        bt.atomic_json(self.state.lanes / "lane.json", {"id": "a"})
-        self.state.update("a", used=2000.0)
+        bt.atomic_json(self.state.lanes / "lane.ended.json", {"at": 2000.0})
+        self.state.update("a", used=5000.0)
         self.assertEqual(bt.wake(self.state, "lane", "large", begun=1000.0), (None, "a run of this worktree ended since the wake began"))
         self.assertEqual(bt.wake(self.state, "lane", "large", begun=3000.0), ("a", "idle"))
         self.assertEqual(fake.ttl_calls("a"), [bt.LEASE_SECONDS])
+        self.assertEqual(fake.single, ["extend"])
 
     def test_a_run_takes_its_marker_from_a_check_holding_it_for_a_moment(self):
         held = bt.Lock(self.state.lanes / "lane.running-t")
         with mock.patch.object(bt.time, "sleep", lambda seconds: held.close()) :
             self.state.running("lane", "t").close()
+
+    def test_a_run_about_to_resume_a_vm_waits_for_its_worktrees_wake(self):
+        fake = self.use(FakeBoat([vm("s", "stopped")]))
+        waking = self.state.waking("lane")
+
+        def finish(seconds):
+            fake.vms["w"] = vm("w", hydrated=False)
+            bt.atomic_json(self.state.pool / "w.json", {"id": "w", "snapshot": bt.SNAPSHOT})
+            waking.close()
+
+        with mock.patch.object(bt.time, "sleep", finish):
+            vmid, _, lock, created = bt.choose(self.state, "lane", "large")
+        lock.close()
+        self.assertEqual((vmid, created), ("w", False))
 
     def test_leaves_alone_a_vm_that_already_runs_or_starts(self):
         for state in ("idle", "starting"):
@@ -920,6 +939,22 @@ class Wake(Harness):
             del os.environ["BOAT_STATE_DIR"]
         self.assertEqual([call[1] for call in fake.calls if call[0] == "resume"], ["a"])
         self.assertFalse((self.state.logs / "timings.jsonl").exists())
+
+
+class AtomicJson(unittest.TestCase):
+    def test_a_replace_a_reader_blocks_for_a_moment_still_lands(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "entry.json"
+            replace, refusals = Path.replace, [PermissionError(5, "Access is denied")] * 2
+
+            def blocked(self, target):
+                if refusals:
+                    raise refusals.pop()
+                return replace(self, target)
+
+            with mock.patch.object(Path, "replace", blocked), mock.patch.object(bt.time, "sleep") as sleep:
+                bt.atomic_json(path, {"a": 1})
+            self.assertEqual((json.loads(path.read_text()), len(sleep.call_args_list)), ({"a": 1}, 2))
 
 
 class RemoteToolchain(unittest.TestCase):
@@ -956,6 +991,8 @@ class RemoteToolchain(unittest.TestCase):
         self.assertEqual(self.probe("1.96.0", raises=BlockingIOError(11, "Resource temporarily unavailable")), (None, ["1.96.0"]))
         self.assertEqual(self.probe("1.96.0", raises=subprocess.TimeoutExpired("cargo", 60)), (None, ["1.96.0"]))
         self.assertIn("FileNotFoundError", self.probe("1.96.0", raises=FileNotFoundError(2, "No such file", "cargo"))[0])
+        self.assertIn("PermissionError", self.probe("1.96.0", raises=PermissionError(13, "Permission denied", "cargo"))[0])
+        self.assertEqual(self.probe("1.96.0", -9), (None, ["1.96.0"]))
 
     def test_an_exec_reply_without_output_reads_as_empty(self):
         with mock.patch.object(bt, "boat", return_value=(OK, [{"exitCode": 0, "stdout": None}])):

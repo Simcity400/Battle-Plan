@@ -193,11 +193,11 @@ def toolchain_fault(channel):
         return None
     try:
         result = subprocess.run(['cargo', '--version'], cwd=ROOT, env={**os.environ, 'RUSTUP_TOOLCHAIN': channel, 'RUSTUP_AUTO_INSTALL': '0'}, capture_output=True, text=True, timeout=60)
-    except FileNotFoundError as error:
+    except (FileNotFoundError, PermissionError) as error:
         return repr(error)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return ((result.stderr or result.stdout).strip() or f'exit {result.returncode}') if result.returncode else None
+    return ((result.stderr or result.stdout).strip() or f'exit {result.returncode}') if result.returncode > 0 else None
 
 def manifest():
     if MANIFEST.exists():
@@ -384,8 +384,13 @@ elif mode == 'acquire':
     broken = toolchain_fault(sys.argv[3] if len(sys.argv) > 3 else '')
     if broken:
         print(f'The toolchain does not run: {broken}', file=sys.stderr)
-        if CLAIM.exists() and owned(token):
-            shutil.rmtree(CLAIM)
+        with (ROOT / 'running.lock').open('a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                sys.exit(72)
+            if CLAIM.exists() and owned(token):
+                shutil.rmtree(CLAIM)
         sys.exit(72)
     print(json.dumps(manifest()))
 elif mode == 'release':

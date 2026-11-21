@@ -129,6 +129,8 @@ LAUNCH_FAILED = 0xC0000142
 NO_CONSOLE = subprocess.CREATE_NO_WINDOW
 IDEMPOTENT = {"list", "info", "extend", "scp", "push"}
 CHUNK_CHARS = 24000
+REPLACE_TRIES = 50
+REPLACE_PAUSE_SECONDS = 0.02
 UPLOAD_CHUNKS = 32
 UPLOAD_WORKERS = 8
 DOWNLOAD_BYTES = 4 * 1024 * 1024
@@ -148,8 +150,15 @@ def say(text):
 
 
 def atomic_json(path, data):
+    """Replaces `path` with `data` whole; waits out, for up to a second, a reader Windows lets block the replace."""
     temp = path.with_suffix("." + uuid.uuid4().hex + ".tmp")
     temp.write_text(json.dumps(data), encoding="utf-8")
+    for _ in range(REPLACE_TRIES - 1):
+        try:
+            temp.replace(path)
+            return
+        except PermissionError:
+            time.sleep(REPLACE_PAUSE_SECONDS)
     temp.replace(path)
 
 
@@ -230,10 +239,10 @@ class Held:
             raise KeyboardInterrupt from error
 
 
-def boat(*args, check=True, idempotent=None, shielded=False):
+def boat(*args, check=True, idempotent=None, shielded=False, retry=True):
     idempotent = args[0] in IDEMPOTENT if idempotent is None else idempotent
     flags = NO_CONSOLE | (subprocess.CREATE_NEW_PROCESS_GROUP if shielded else 0)
-    for wait in (*RETRY_SECONDS, None):
+    for wait in (*RETRY_SECONDS, None) if retry else (None,):
         result = subprocess.run([boat_exe(), "--json", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=flags)
         events = parse_events(result.stdout)
         if not result.returncode or wait is None or not transient(result, idempotent):
@@ -386,6 +395,20 @@ class State:
     def waking(self, lane, wait=False):
         """Held by a worktree's wake while it starts a VM, so the worktree's run waits for that VM rather than cloning its own."""
         return Lock(self.lanes / (lane + ".waking"), wait)
+
+    def wake_under_way(self, lane):
+        try:
+            self.waking(lane).close()
+            return False
+        except OSError:
+            return True
+
+    def ended(self, lane):
+        """When a run of the worktree last ended, or 0."""
+        try:
+            return json.loads((self.lanes / (lane + ".ended.json")).read_text()).get("at", 0)
+        except (OSError, ValueError):
+            return 0
 
     def running(self, lane, token):
         """Held by each run of a worktree from allocation to its end, so a late wake of the worktree starts nothing."""
@@ -690,6 +713,8 @@ def choose(state, lane, size, passed=(), rebuilds=lambda vmid: (0, 0)):
         now = time.time()
         registered = [vmid for vmid in state.registered() if vmid not in passed]
         for vmid in rank(registered, states, state.lane_vm(lane), size, lambda vmid: state.cooling(vmid, now), lambda vmid: state.entry(vmid).get("used", 0), rebuilds):
+            if states[vmid]["state"] == "stopped" and state.wake_under_way(lane):
+                break
             try:
                 return vmid, states[vmid], state.lock(vmid), False
             except OSError:
@@ -697,6 +722,8 @@ def choose(state, lane, size, passed=(), rebuilds=lambda vmid: (0, 0)):
         try:
             waking = state.waking(lane)
         except OSError:
+            waking = None
+        if waking is None:
             allocator.close()
             say("Waiting for the VM this worktree's wake is starting")
             state.waking(lane, wait=True).close()
@@ -750,8 +777,7 @@ def wake(state, lane, size, rebuilds=lambda vmid: (0, 0), begun=None):
         allocator = state.allocator()
         if state.run_active(lane):
             return None, "a run of this worktree is under way"
-        served = state.lane_vm(lane)
-        if begun is not None and served and state.entry(served).get("used", 0) > begun:
+        if begun is not None and state.ended(lane) > begun:
             return None, "a run of this worktree ended since the wake began"
         states = listing()
         now = time.time()
@@ -762,10 +788,10 @@ def wake(state, lane, size, rebuilds=lambda vmid: (0, 0), begun=None):
                 continue
             vm = states[vmid]
             if vm["state"] != "stopped":
-                boat("extend", vmid, "--ttl", str(LEASE_SECONDS), idempotent=False)
+                boat("extend", vmid, "--ttl", str(LEASE_SECONDS), retry=False)
                 return vmid, vm["state"]
             grow = resume_type(vm.get("type"), size)
-            boat("resume", vmid, "--ttl", str(LEASE_SECONDS), "--no-wait", *(["--type", grow] if grow else []))
+            boat("resume", vmid, "--ttl", str(LEASE_SECONDS), "--no-wait", *(["--type", grow] if grow else []), retry=False)
             state.update(vmid, woken=now)
             return vmid, "resuming"
         vmid, lock, _ = clone(state, lane, size, allocator)
@@ -1564,6 +1590,7 @@ def run(argv):
         if stage:
             remove_stage(state, stage)
         if active:
+            atomic_json(state.lanes / (lane + ".ended.json"), {"at": time.time()})
             active.close()
             try:
                 (state.lanes / f"{lane}.running-{token}").unlink(missing_ok=True)
