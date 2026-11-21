@@ -40,8 +40,11 @@ class Plan(unittest.TestCase):
         steps, _ = plan(["crates/a/Cargo.toml"])
         self.assertEqual(
             names(steps)[3:],
-            ["Build dependencies", "Content dependencies", "Feature unification", "Rust check"],
+            ["Build dependencies", "Content dependencies", "Feature unification", "Nextest config", "Rust check"],
         )
+        for name in ("Cargo.toml", ".config/nextest.toml"):
+            self.assertIn("Nextest config", names(plan([name])[0]), name)
+        self.assertNotIn("Nextest config", names(plan(["crates/a/src/lib.rs"])[0]))
 
     def test_the_ui_runs_for_ui_files_and_its_manifests(self):
         for name in ("ui/src/a.ts", "package.json", "tools/test-ui.mjs"):

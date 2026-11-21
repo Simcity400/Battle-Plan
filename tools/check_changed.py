@@ -7,6 +7,7 @@ REF (default origin/main) and runs, from inside your worktree:
 - always: the machine-path check, agent-context budget and comment ratchet;
 - Rust changed: the suppression-reason check and the citation scan;
 - a Cargo manifest changed: the three dependency checks;
+- a Cargo manifest or the nextest config changed: the nextest package-selector check;
 - crates changed: `tools/boat.py check --all-targets -p <those crates>`, never their dependents
   and never the workspace;
 - the UI changed: `npm run check:ui`.
@@ -26,13 +27,14 @@ ROOT = Path(__file__).resolve().parents[1]
 BOAT_FAILED = 75
 WORKSPACE_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml")
 UI_FILES = ("package.json", "package-lock.json", "tools/test-ui.mjs")
+NEXTEST_CONFIG = ".config/nextest.toml"
 DEPENDENCY_CHECKS = ("check-build-dependencies", "check-content-dependencies", "check-feature-unification")
 
 
 def classify(files, package_of):
-    """What the changed files touch: crates to check, whether Rust, manifests or the UI changed,
-    and notes on changes this command cannot check by crate. `package_of` maps a crate folder to
-    its package name, or None when it has no manifest."""
+    """What the changed files touch: crates to check, whether Rust, manifests, the nextest filters'
+    packages or the UI changed, and notes on changes this command cannot check by crate.
+    `package_of` maps a crate folder to its package name, or None when it has no manifest."""
     crates, notes = set(), []
     rust = manifests = ui = False
     for name in files:
@@ -52,12 +54,13 @@ def classify(files, package_of):
             manifests = manifests or name == "Cargo.toml"
         elif parts[0] == "ui" or name in UI_FILES:
             ui = True
-    return sorted(crates), rust, manifests, ui, notes
+    nextest = manifests or NEXTEST_CONFIG in files
+    return sorted(crates), rust, manifests, nextest, ui, notes
 
 
 def plan(files, base, package_of, python, npm):
     """The steps to run, each `(name, command)`, and the notes."""
-    crates, rust, manifests, ui, notes = classify(files, package_of)
+    crates, rust, manifests, nextest, ui, notes = classify(files, package_of)
     tool = lambda script, *args: [python, f"tools/{script}", *args]
     steps = [
         ("Machine paths", tool("check-machine-paths.py")),
@@ -70,6 +73,8 @@ def plan(files, base, package_of, python, npm):
     if manifests:
         steps += [(script.removeprefix("check-").replace("-", " ").capitalize(), tool(f"{script}.py"))
                   for script in DEPENDENCY_CHECKS]
+    if nextest:
+        steps.append(("Nextest config", tool("check-nextest-config.py")))
     if crates:
         packages = [argument for crate in crates for argument in ("-p", crate)]
         steps.append(("Rust check", tool("boat.py", "check", "--all-targets", *packages)))
