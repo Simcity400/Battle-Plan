@@ -59,6 +59,16 @@ test('the drawn card uses the dated slot identity, progress and countdown', () =
   assert.equal(later.get('0:bar'), '0.625');
 });
 
+test('a slot without a usable progress or estimate says so, an idle slot says what it saved, and a reading becoming usable redraws the row', () => {
+  const unknown: ResearchSlotNow = { index: 0, state: state('radar', day(0)),
+    progress: { firstHour: day(96), lastHour: day(96), entryFirstObservedHour: day(0), baseDaysRaw: '10000000', progressRaw: '-1' } };
+  const numbers = slotNumbers(unknown, day(100));
+  assert.deepEqual([numbers.fraction, numbers.percent, numbers.days], [null, 'Not recorded', 'Not recorded']);
+  assert.equal(slotNumbers({ index: 1, state: state(null, null), progress: null }, day(100)).saved, '0 days saved');
+  const usable = { ...unknown, progress: { ...unknown.progress!, progressRaw: '5000000' } };
+  assert.notEqual(slotsStructure(reply(day(100), [unknown])), slotsStructure(reply(day(100), [usable])));
+});
+
 test('at an hour without a read, slots open at the last read are unavailable rather than guessed', () => {
   const history: ResearchHistory = { coverage: [{ firstHour: day(0), lastHour: day(50) }, { firstHour: day(80), lastHour: day(100) }], slots: [
     { index: 0, availability: [{ firstHour: day(0), lastHour: day(50) }, { firstHour: day(80), lastHour: day(100) }], entries: [], states: [], progress: [] },

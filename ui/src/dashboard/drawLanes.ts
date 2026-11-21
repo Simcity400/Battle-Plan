@@ -11,8 +11,9 @@ const PAGE_WIDE = new Set<FromWorker['type']>(['displayRate', 'structure', 'stru
 function painted(message: ToWorker): number {
   if (message.type === 'surface') return Math.max(1, message.model.cells?.length ?? 0);
   if (message.type === 'table') {
-    const { columns, height, settings } = message.model;
-    const rows = Math.ceil((height ?? 0) / (ROW_HEIGHT[settings?.density] ?? ROW_HEIGHT.comfortable));
+    const { columns, height, settings, rows: built } = message.model;
+    const room = Math.ceil((height ?? 0) / (ROW_HEIGHT[settings?.density] ?? ROW_HEIGHT.comfortable));
+    const rows = built?.length ? Math.min(room, built.length) : room;
     return Math.max(1, (columns?.filter(column => column.shown).length ?? 0) * rows);
   }
   if (message.type === 'race') return Math.max(1, (message.model.slots ?? 0) * 3);

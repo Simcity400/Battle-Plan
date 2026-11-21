@@ -5,7 +5,7 @@ import type { ResearchSlotsReply } from '../../generated/dashboard';
 
 export function slotsStructure(reply: ResearchSlotsReply): string {
   return JSON.stringify([reply.missing, reply.slots.map(slot => [slot.index, slot.state.token, slot.state.entryFirstObservedHour,
-    slot.progress?.baseDaysRaw != null, slot.state.details?.remainingDays != null, BigInt(slot.state.bankedDaysRaw) > 0n])]);
+    readFraction(slot) !== null, slot.state.details?.remainingDays != null, BigInt(slot.state.bankedDaysRaw) > 0n])]);
 }
 
 export interface SlotNumbers {
@@ -29,9 +29,9 @@ export function slotNumbers(read: ResearchSlotNow, hour: number, progress?: numb
   const remaining = read.state.details?.remainingDays ?? null;
   const left = remaining === null ? null : Math.max(0, remaining - Math.floor((hour - read.state.firstHour) / 24));
   const banked = BigInt(read.state.bankedDaysRaw);
-  return { fraction, percent: fraction === null ? '' : `${Math.round(fraction * 100)}%`, left,
-    days: left === null ? 'Researching' : `${left} ${left === 1 ? 'day' : 'days'} left`,
-    saved: banked > 0n ? `${researchNumber(banked)} days saved` : '' };
+  return { fraction, percent: fraction === null ? 'Not recorded' : `${Math.round(fraction * 100)}%`, left,
+    days: left === null ? 'Not recorded' : `${left} ${left === 1 ? 'day' : 'days'} left`,
+    saved: banked > 0n || read.state.token === null ? `${researchNumber(banked)} days saved` : '' };
 }
 
 export function slotValues(reply: ResearchSlotsReply, hour: number, progress?: (slot: number) => number | undefined): Map<string, string> {
