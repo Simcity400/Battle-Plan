@@ -3,8 +3,7 @@ use crate::parser::Operator;
 
 #[test]
 fn custom_tooltip_bindings_read_localisation_before_conditions() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"t = { trigger = { custom_trigger_tooltip = { \
             tooltip = { localization_key = POSITIVE \
@@ -32,8 +31,7 @@ fn custom_tooltip_bindings_read_localisation_before_conditions() {
 
 #[test]
 fn a_localisation_key_block_keeps_its_parse_boundary() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"t = { trigger = { custom_trigger_tooltip = { \
             tooltip = { @threshold = 2 localization_key = { argument = KEY } \
@@ -58,8 +56,7 @@ fn a_localisation_key_block_keeps_its_parse_boundary() {
 
 #[test]
 fn a_key_without_an_operator_goes_to_its_trigger_reader() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"t = { trigger = { Or { is_attacker = yes } } attacker = 0.1 }",
         &KeyNames::default(),
@@ -82,8 +79,7 @@ fn a_key_without_an_operator_goes_to_its_trigger_reader() {
 
 #[test]
 fn ids_follow_every_named_non_phase_entry_in_source_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"phases={ opening breakthrough }\n\
           tactic_alpha={ active=yes }\n\
@@ -120,8 +116,7 @@ fn ids_follow_every_named_non_phase_entry_in_source_order() {
 
 #[test]
 fn a_single_value_tactic_reads_the_rest_of_the_file() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"phases = { opening }\n\
           first = { active = { is_attacker = yes } unknown = { x = 1 } }\n\
@@ -159,8 +154,7 @@ fn a_single_value_tactic_reads_the_rest_of_the_file() {
 
 #[test]
 fn phases_and_no_match_their_exact_text_while_keys_fold() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"phases = { NO opening }\n\
           PHASES = { }\n\
@@ -190,8 +184,7 @@ fn phases_and_no_match_their_exact_text_while_keys_fold() {
 
 #[test]
 fn unreadable_entries_are_named_and_mark_later_ids_unproven() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"first = { }\n\
           @\xe9 = 2\n\
@@ -230,8 +223,7 @@ fn unreadable_entries_are_named_and_mark_later_ids_unproven() {
 
 #[test]
 fn file_variables_take_no_id_and_resolve_in_fields() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"@weight = 4\n\
           tactic_example = { base = { factor = @weight } @inner = 2 limit = @inner }\n\
@@ -281,8 +273,7 @@ fn file_variables_take_no_id_and_resolve_in_fields() {
 
 #[test]
 fn phase_lists_resolve_file_variables() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"@p = breakthrough
           phases = { opening @p }
@@ -300,8 +291,7 @@ fn phase_lists_resolve_file_variables() {
 
 #[test]
 fn phase_fields_resolve_in_read_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"phases = { opening no }\n\
           early = { phase = opening display_phase = later }\n\
@@ -327,8 +317,7 @@ fn phase_fields_resolve_in_read_order() {
 
 #[test]
 fn phase_keys_fold_and_triggers_resolve_in_read_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"phases = { opening }\n\
           early = { PHASE = opening DISPLAY_PHASE = opening \
@@ -371,8 +360,7 @@ fn phase_keys_fold_and_triggers_resolve_in_read_order() {
 
 #[test]
 fn raw_name_bytes_and_nested_fields_survive_parsing() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"tactic_\xe9={ allowed={ scripted=value } active=no }",
         &KeyNames::default(),
@@ -386,8 +374,7 @@ fn raw_name_bytes_and_nested_fields_survive_parsing() {
 
 #[test]
 fn effects_follow_each_fields_reader() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         br#"@bonus = 0.25
             tactic_a = { ATTACKER = @bonus Combat_Width = 0.1 attacker_movement_speed = 010 }
@@ -416,8 +403,7 @@ fn effects_follow_each_fields_reader() {
 
 #[test]
 fn an_unscannable_movement_value_keeps_the_previous_one() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"t = { attacker_movement_speed = 0.5 ATTACKER_MOVEMENT_SPEED = fast }",
         &KeyNames::default(),
@@ -433,8 +419,7 @@ fn an_unscannable_movement_value_keeps_the_previous_one() {
 
 #[test]
 fn tactic_variables_follow_the_game_reader() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         br#"@w = 0.1
             @W = 0.2
@@ -463,8 +448,7 @@ fn tactic_variables_follow_the_game_reader() {
 
 #[test]
 fn definitions_inside_trigger_and_base_register() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"t = { attacker = @late trigger = { OR = { @late = 0.1 always = yes } phase = no } \
           base = { factor = 1 modifier = { @weight = 0.2 factor = 2 } } unknown = { @skipped = 1 x = 1 } } \
@@ -504,8 +488,7 @@ fn definitions_inside_trigger_and_base_register() {
 
 #[test]
 fn a_key_without_an_operator_is_read_as_what_it_names() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let text = b"s = { attacker = 0.1 } t = { trigger = { x @y = 1 } } u = { attacker = @y }";
     let database = parse(text, &KeyNames::default());
     assert!(
@@ -535,8 +518,7 @@ fn a_key_without_an_operator_is_read_as_what_it_names() {
 
 #[test]
 fn missing_operators_dispatch_scopes_classes_and_invalid_keys_in_both_readers() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let names = KeyNames {
         countries: [b"ABC".to_vec()].into(),
         ..KeyNames::default()
@@ -601,8 +583,7 @@ fn missing_operators_dispatch_scopes_classes_and_invalid_keys_in_both_readers() 
 
 #[test]
 fn collection_filters_keep_names_in_tactics_and_scripted_triggers() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let condition = "collection_size = { input = { input = collection:territories operators = { limit = { CONTROLLER = { always = yes } } } name = filtered } value = 0 }";
     let names = KeyNames::default();
     let tactics = parse(
@@ -622,8 +603,7 @@ fn collection_filters_keep_names_in_tactics_and_scripted_triggers() {
 
 #[test]
 fn nested_readers_follow_their_own_consumption() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     for text in [
         &b"s = { } a = { base = { factor = { factor = 2 } } } b = { }"[..],
         b"s = { } a = { BASE = { Mystery = { x = 1 } } } b = { }",
@@ -663,8 +643,7 @@ fn nested_readers_follow_their_own_consumption() {
 
 #[test]
 fn a_modifier_factor_block_ends_the_modifier() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"a = { base = { modifier = { FACTOR = { is_attacker = yes } skill > 2 } attacker = 0.1 }\n\
           b = { base = { modifier = { add = { has_reserves = yes } } }\n", &KeyNames::default(),
@@ -699,8 +678,7 @@ fn a_modifier_factor_block_ends_the_modifier() {
 
 #[test]
 fn a_scalar_trigger_is_a_local_error() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"a = { trigger = { always = yes } Trigger = yes attacker = 0.1 \
                 base = { modifier = yes factor = 2 note = 1 } } \
@@ -742,8 +720,7 @@ fn a_scalar_trigger_is_a_local_error() {
 
 #[test]
 fn consumed_definitions_are_no_conditions_and_comparisons_resolve() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"phases = { 99 opening }\n\
           t = { trigger = { @x = yes is_attacker = @x OR = { @y = 1 phase>99 } } \
@@ -781,8 +758,7 @@ fn consumed_definitions_are_no_conditions_and_comparisons_resolve() {
 
 #[test]
 fn meta_text_is_raw_and_an_invalid_key_skips_its_block() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"t = { trigger = { meta_trigger = { text = { @hidden = 1 } x = y } \
                 any_unit = { infantry @skipped = 1 } } attacker = @hidden defender = @skipped }",
@@ -800,8 +776,7 @@ fn meta_text_is_raw_and_an_invalid_key_skips_its_block() {
 
 #[test]
 fn scalar_groups_are_the_empty_groups_the_game_keeps() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"t = { trigger = { AND = yes OR = { or = no } Not = yes CUSTOM_TRIGGER_TOOLTIP = x \"and\" = yes } \
                 base = { modifier = { or = no } } }", &KeyNames::default(),
@@ -834,8 +809,7 @@ fn scalar_groups_are_the_empty_groups_the_game_keeps() {
 
 #[test]
 fn phase_names_keep_first_nul_text_and_line_feed_fallback() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let database = parse(
         b"phases = { open\x00ing \"line\nfeed\" }",
         &KeyNames::default(),

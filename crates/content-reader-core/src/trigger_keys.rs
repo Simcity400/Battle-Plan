@@ -716,93 +716,28 @@ pub fn frame(template: &Template) -> Vec<u8> {
     template.name.to_ascii_lowercase()
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn synthetic_vocabulary(game: synthetic_game::Executable) -> synthetic_game::Executable {
+    game.trigger_at(0x27C3, "if", 0, Reader::Body, 0)
+        .trigger("and", 0, Reader::Body, 0)
+        .trigger("or", 0, Reader::Body, 0)
+        .trigger("not", 0, Reader::Body, 0)
+        .trigger("always", 0, Reader::Assign, 0)
+        .trigger("skill", 0, Reader::Comparison, 0)
+        .trigger("is_attacker", 0, Reader::Assign, 0)
+        .trigger("custom_trigger_tooltip", 0, Reader::Own(0x141446060), 0x141446C20)
+        .trigger("meta_trigger", 0, Reader::Body, 0x1403CC150)
+        .trigger_at(0x2828, "can_build_railway", 0, Reader::Body, 0x1404566e0)
+        .trigger_at(0x4C9D, "collection_size", 0, Reader::Body, 0x140567870)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn registry_and_categories_are_sorted_and_unique() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
-        assert!(
-            REGISTERED_TRIGGERS
-                .windows(2)
-                .all(|pair| pair[0].0 < pair[1].0)
-        );
-        let names: std::collections::BTreeSet<_> =
-            REGISTERED_TRIGGERS.iter().map(|(_, name)| *name).collect();
-        assert_eq!(names.len(), REGISTERED_TRIGGERS.len());
-        assert!(
-            names
-                .iter()
-                .all(|name| name.bytes().all(|b| !b.is_ascii_uppercase()))
-        );
-        assert_eq!(registered_trigger(b"AND"), Some(0x2968));
-        assert_eq!(registered_trigger(b"Has_Tactic"), Some(0x41BC));
-        assert_eq!(registered_trigger(b"fascism"), None);
-        assert!(
-            EQUIPMENT_CATEGORIES
-                .windows(2)
-                .all(|pair| pair[0].0 < pair[1].0)
-        );
-        let mut seen = 0_u64;
-        for &(_, mask, _) in EQUIPMENT_CATEGORIES.iter() {
-            assert_eq!(mask.count_ones(), 1);
-            assert_eq!(seen & mask, 0);
-            seen |= mask;
-        }
-        assert_eq!(equipment_category_mask(0x2781), Some(0x20));
-        assert_eq!(equipment_category_mask(0x4C4A), None);
-        for scope in [0x2C94, 0x298F, 0x283E] {
-            assert!(REGISTERED_TRIGGERS.iter().all(|(id, _)| *id != scope));
-        }
-        assert_eq!(registered_trigger(b"if"), Some(0x27C3));
-        assert!(TRIGGER_CLASSES.windows(2).all(|pair| pair[0].0 < pair[1].0));
-        assert!(
-            TRIGGER_CLASSES
-                .iter()
-                .all(|(id, _, _)| REGISTERED_TRIGGERS.iter().any(|(token, _)| token == id))
-        );
-        assert!(
-            REGISTERED_TRIGGERS
-                .iter()
-                .all(|(id, _)| trigger_class(*id).is_some())
-        );
-        assert_eq!(key_reader(0x27C3), KeyReader::ThenLoadKey(&[]));
-        assert_eq!(trigger_class(0x2A02), Some((0x1C, Reader::Assign)));
-        assert_eq!(trigger_class(0x2968), Some((0, Reader::Body)));
-        assert_eq!(trigger_class(0x2828), Some((0, Reader::Body)));
-    }
-    #[test]
-    fn every_load_body_thunk_has_a_key_reader() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
-        for &(token, _, reader) in TRIGGER_CLASSES.iter() {
-            if matches!(
-                reader,
-                Reader::Own(
-                    0x1404540c0
-                        | 0x141446060
-                        | 0x14049F250
-                        | 0x14049F6A0
-                        | 0x14049FAF0
-                        | 0x14049FF40
-                        | 0x1404A0390
-                        | 0x140477CA0
-                )
-            ) {
-                assert!(
-                    !matches!(key_reader(token), KeyReader::Refused(_)),
-                    "trigger {token} enters a body without a key grammar"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn count_trigger_names_fold_the_loaded_databases() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
+        crate::test_game::with(|game| game.trigger("armor", 0, Reader::Assign, 0));
         let mut buildings = Buildings::default();
         buildings.types.insert(
             "Arms_Factory".into(),

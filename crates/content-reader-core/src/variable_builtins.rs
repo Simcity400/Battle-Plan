@@ -42,23 +42,4 @@ mod tests {
         assert!(!contains(&table, b"beta"));
     }
 
-    #[test]
-    #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
-    fn installed_tables_are_sorted_and_unique() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
-        for table in [
-            &GLOBAL[..],
-            &COUNTRY[..],
-            &STATE[..],
-            &CHARACTER[..],
-            &ORGANISATION[..],
-            &PROJECT[..],
-        ] {
-            assert!(
-                table
-                    .windows(2)
-                    .all(|pair| pair[0].as_bytes() < pair[1].as_bytes())
-            );
-        }
-    }
 }

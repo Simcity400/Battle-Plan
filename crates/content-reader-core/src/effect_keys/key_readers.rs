@@ -83,6 +83,15 @@ enum KeyReader {
 
 mod ai_strategy;
 mod grammar;
+#[cfg(any(test, feature = "test-support"))]
+pub(super) use grammar::SYNTHETIC_EFFECTS;
+#[cfg(any(test, feature = "test-support"))]
+pub(super) const SYNTHETIC_VALUES: &[(&str, u64)] = &[
+    ("strategic_state_location", STRATEGIC_LOCATION_VALUE),
+    ("strategic_province_location", STRATEGIC_LOCATION_VALUE),
+];
+#[cfg(any(test, feature = "test-support"))]
+pub(super) const SYNTHETIC_TOKENS: &[(&str, u32)] = &[("set_political_party", POLITICAL_PARTY_TOKEN)];
 mod registries;
 mod unit_bonus;
 use grammar::Helper;

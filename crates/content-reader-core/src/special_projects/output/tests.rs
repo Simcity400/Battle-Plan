@@ -2,8 +2,7 @@ use crate::special_projects::Catalog;
 
 #[test]
 fn project_integer_constants_merge_normalize_and_keep_output() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let root =
         std::env::temp_dir().join(format!("content-reader-project-output-{}", std::process::id()));
     let folder = root.join("common/special_projects/projects");

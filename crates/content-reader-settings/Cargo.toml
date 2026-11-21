@@ -30,6 +30,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphic
 [target.'cfg(all())'.dev-dependencies]
 content-reader-settings = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
+engine-executable = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-bitflags-2 = { workspace = true }

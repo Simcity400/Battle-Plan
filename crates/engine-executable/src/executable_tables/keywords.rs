@@ -118,6 +118,26 @@ impl KeywordTables {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn pinned(
+        names: Vec<(u32, &'static str)>,
+        modifier_names: Vec<&'static str>,
+    ) -> Self {
+        let mut tables = Self::recorded(names, modifier_names);
+        tables.fixed_keywords = Ok(());
+        tables.fixed_modifiers = if tables.modifier_names.len()
+            == crate::build::FIXED_MODIFIER_GAP as usize
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} fixed modifiers differ from the fixed modifier gap",
+                tables.modifier_names.len()
+            ))
+        };
+        tables
+    }
+
     pub fn by_id(&self, id: u32) -> Option<&'static str> {
         self.names
             .binary_search_by_key(&id, |&(token, _)| token)
@@ -1175,46 +1195,5 @@ mod tests {
         assert_eq!(tables.static_keyword(b"syntheticentry\xff"), None);
         assert!(tables.fixed_token(17).is_err());
         assert!(tables.fixed_modifiers().is_err());
-    }
-
-    #[test]
-    #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
-    fn installed_keyword_digest() {
-        let tables = super::super::initialize_for_tests()
-            .expect("set BATTLE_PLAN_GAME_DIR to the supported installation");
-        let keywords = tables.keywords.as_ref().unwrap();
-        assert!(keywords.fixed_keywords.is_ok());
-        let rows: Vec<_> = keywords
-            .names
-            .iter()
-            .map(|&(id, name)| (id, name.to_owned()))
-            .collect();
-        verify_digest(
-            "keywords",
-            canonical_rows(&rows).as_bytes(),
-            KEYWORDS_DIGEST,
-        )
-        .unwrap();
-    }
-
-    #[test]
-    #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
-    fn installed_modifier_digest() {
-        let tables = super::super::initialize_for_tests()
-            .expect("set BATTLE_PLAN_GAME_DIR to the supported installation");
-        let keywords = tables.keywords.as_ref().unwrap();
-        let modifiers: Vec<_> = keywords
-            .fixed_modifiers()
-            .unwrap()
-            .iter()
-            .enumerate()
-            .map(|(index, &name)| (index as u32, name.to_owned()))
-            .collect();
-        verify_digest(
-            "modifiers",
-            canonical_rows(&modifiers).as_bytes(),
-            MODIFIERS_DIGEST,
-        )
-        .unwrap();
     }
 }

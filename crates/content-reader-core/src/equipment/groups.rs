@@ -218,8 +218,7 @@ mod tests {
 
     #[test]
     fn inclusive_expansion_keeps_group_names() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut groups = Groups::default();
         groups.read_file(
             b"outer = { equipment_type = { inner plain_type } }

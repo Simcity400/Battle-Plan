@@ -214,3 +214,55 @@ pub fn shape(names: Option<&KeyNames>, field: &Field<'_>) -> Shape<()> {
     }
     Shape::Skip
 }
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn synthetic_vocabulary(game: synthetic_game::Executable) -> synthetic_game::Executable {
+    let mut game = game;
+    for (index, &(name, keys, class)) in key_readers::SYNTHETIC_EFFECTS.iter().enumerate() {
+        let class = if class == 0 {
+            0x2_0000_0000 + index as u64 * 0x10
+        } else {
+            class
+        };
+        let value = key_readers::SYNTHETIC_VALUES
+            .iter()
+            .find(|&&(kept, _)| kept == name)
+            .map_or(READ_SCRIPT, |&(_, value)| value);
+        if value_readers::SYNTHETIC_EFFECTS.iter().any(|&(kept, _, _)| kept == name) {
+            continue;
+        }
+        let token = key_readers::SYNTHETIC_TOKENS
+            .iter()
+            .find(|&&(kept, _)| kept == name)
+            .map(|&(_, token)| token)
+            .or((name == "if").then_some(IF_TOKEN));
+        game = match token {
+            Some(token) => game.effect_at(token, name, value, keys, class),
+            None => game.effect(name, value, keys, class),
+        };
+    }
+    for (index, &(name, value, keys)) in value_readers::SYNTHETIC_EFFECTS.iter().enumerate() {
+        game = game.effect(name, value, keys, 0x3_0000_0000 + index as u64 * 0x10);
+    }
+    for (index, name) in ["hidden_effect", "effect_tooltip"].into_iter().enumerate() {
+        game = game.effect(name, READ_SCRIPT, READ_EFFECT, 0x4_0000_0000 + index as u64 * 0x10);
+    }
+    for (index, name) in [
+        "add_political_power",
+        "add_stability",
+        "add_war_support",
+        "add_manpower",
+        "inherit_technology",
+        "set_faction_research_unlocked",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        game = game.effect(name, READ_VALUE, 0, 0x5_0000_0000 + index as u64 * 0x10);
+    }
+    for (index, name) in ["free_operative", "ai_message"].into_iter().enumerate() {
+        let unsupported = 0x6_0000_0000 + index as u64 * 0x10;
+        game = game.effect(name, unsupported, 0, unsupported);
+    }
+    game
+}

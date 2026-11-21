@@ -332,8 +332,7 @@ mod tests {
 
     #[test]
     fn lookups_distinguish_undefined_from_textureless() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let registry = registry(&[
             (
                 "interface/a.gfx",
@@ -379,8 +378,7 @@ mod tests {
 
     #[test]
     fn refusals_include_the_fonts() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let registry = registry(&[(
             "interface/fonts.gfx",
             b"bitmapfonts = { bitmapfont = { name = \"f\" path = \"gfx/fonts/f\" \
@@ -393,8 +391,7 @@ mod tests {
 
     #[test]
     fn mod_textures_decode_in_the_native_order() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let rgba = [1, 2, 3, 4, 5, 6, 7, 8];
         let png = crate::image::native::tests_support::png_rgba(2, 1, &rgba);
         let jpeg =
@@ -461,8 +458,7 @@ mod tests {
 
     #[test]
     fn frames_have_an_integer_extent_and_a_floating_geometry() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let read = read_sprites(
             b"spriteTypes = { spriteType = { name = \"h\" noOfFrames = 3 } \
               spriteType = { name = \"v\" noOfFrames = 3 framedirectiony = yes } \

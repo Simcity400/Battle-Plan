@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn scorer_entries_keep_target_arrays_filters_and_scores() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let mut database = Database::default();
     database.read_file(b"sample={targets={target_array=global.sample targets={AAA BBB} country=CCC target_root_trigger={always=yes} target_trigger={FROM={exists=yes}} targets_dynamic=yes targets_dynamic=no target_non_existing=yes score={base=2 modifier={always=yes add=3}} score={base=4}} targets={targets={AAA}}}", &KeyNames::default());
     let entries = database.get(b"SAMPLE").unwrap().unwrap();
@@ -25,8 +24,7 @@ fn scorer_entries_keep_target_arrays_filters_and_scores() {
 
 #[test]
 fn duplicate_scorer_is_skipped_and_unknown_fields_are_named() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let mut database = Database::default();
     database.read_file(
         b"sample={targets={targets={AAA}}} SAMPLE={targets={targets={BBB}}}",

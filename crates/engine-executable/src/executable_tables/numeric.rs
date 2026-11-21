@@ -596,31 +596,200 @@ mod tests {
         assert!(!descriptor_copy(&different[0], &different[1]));
     }
 
-    #[test]
-    fn installed_numeric_properties_cover_every_scope_and_callback() {
-        let tables = super::super::initialize_for_tests().expect(
-            "numeric property parity requires BATTLE_PLAN_GAME_DIR with the supported installation",
+    use crate::executable_tables::synthetic_image::{Code, RDATA, SyntheticImage, TEXT};
+
+    const COUNT_LOOKUP: u32 = TEXT;
+    const OTHER_LOOKUP: u32 = TEXT + 0x20;
+    const HANDLER: u32 = TEXT + 0x40;
+    const OTHER_HANDLER: u32 = TEXT + 0x50;
+    const DISPATCHER: u32 = TEXT + 0x100;
+    const INITIALIZER: u32 = TEXT + 0x200;
+    const CONSTRUCTORS: u32 = TEXT + 0x300;
+    const CALLBACKS: u32 = TEXT + 0x400;
+    const READER: u32 = TEXT + 0x500;
+    const ROWS: u32 = RDATA;
+    const OTHER_ROWS: u32 = RDATA + 0x100;
+    const DESCRIPTORS: u32 = RDATA + 0x200;
+    const NAMES: u32 = RDATA + 0x400;
+    const VTABLES: u32 = RDATA + 0x600;
+
+    fn lookup_at(image: &mut SyntheticImage, at: u32, count: u32, rows: u32) {
+        let code = Code::at(at)
+            .raw(&[0xc7, 0x01])
+            .raw(&count.to_le_bytes())
+            .rip(&[0x48, 0x8d, 0x05], rows)
+            .ret();
+        image.function(code);
+    }
+
+    fn dispatching_image() -> SyntheticImage {
+        let mut image = SyntheticImage::new();
+        lookup_at(&mut image, COUNT_LOOKUP, 2, ROWS);
+        lookup_at(&mut image, OTHER_LOOKUP, 1, OTHER_ROWS);
+        image.function(Code::at(HANDLER).ret());
+        image.function(Code::at(OTHER_HANDLER).ret());
+        image.function(
+            Code::at(DISPATCHER)
+                .call(COUNT_LOOKUP)
+                .raw(&[0x89, 0x44, 0x24, 0x20])
+                .call(OTHER_LOOKUP)
+                .raw(&[0x89, 0x44, 0x24, 0x24])
+                .raw(&[0x44, 0x8b, 0x44, 0x24, 0x20])
+                .raw(&[0x48, 0x8d, 0x54, 0x24, 0x30])
+                .call(HANDLER)
+                .raw(&[0x8b, 0x44, 0x24, 0x24])
+                .raw(&[0x41, 0x89, 0xc0])
+                .raw(&[0x48, 0x8d, 0x54, 0x24, 0x30])
+                .call(OTHER_HANDLER)
+                .ret(),
         );
-        let properties = &tables.numeric.as_ref().unwrap().properties;
-        assert_eq!(properties.len(), 94);
+        image
+    }
+
+    fn registering_image(ordinals: &[u32]) -> SyntheticImage {
+        let mut image = SyntheticImage::new();
+        let mut initializer = Code::at(INITIALIZER);
+        for (index, &ordinal) in ordinals.iter().enumerate() {
+            let index = index as u32;
+            let constructor = CONSTRUCTORS + index * 0x20;
+            let descriptor = DESCRIPTORS + index * 0x10;
+            let name = NAMES + index * 0x20;
+            initializer = initializer
+                .rip(&[0x48, 0x8d, 0x15], ROWS + index * PROPERTY_ROW_WIDTH)
+                .raw(&[0x48, 0x8d, 0x4c, 0x24, 0x20])
+                .call(constructor);
+            image.function(
+                Code::at(constructor)
+                    .raw(&[0x48, 0x89, 0xd3])
+                    .rip(&[0x0f, 0x10, 0x05], descriptor)
+                    .raw(&[0x0f, 0x11, 0x03])
+                    .ret(),
+            );
+            image
+                .text(name, &format!("synthetic_property_{index}"))
+                .pointer(descriptor, name)
+                .put(descriptor + 8, &u64::from(ordinal).to_le_bytes());
+        }
+        image.function(initializer.ret());
+        image
+    }
+
+    fn registry(count: u32) -> Registry {
+        Registry {
+            count,
+            table: ROWS,
+            handlers: BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn a_lookup_is_a_count_store_then_its_row_table() {
+        let mut image = SyntheticImage::new();
+        lookup_at(&mut image, COUNT_LOOKUP, 7, ROWS);
+        image.function(
+            Code::at(OTHER_LOOKUP)
+                .raw(&[0xc7, 0x02, 7, 0, 0, 0])
+                .rip(&[0x48, 0x8d, 0x05], ROWS)
+                .ret(),
+        );
+        let image = image.image();
+        assert_eq!(lookup(&image, COUNT_LOOKUP), Some((7, ROWS)));
+        assert_eq!(lookup(&image, OTHER_LOOKUP), None);
+    }
+
+    #[test]
+    fn each_registry_takes_the_handler_whose_index_comes_from_its_slot() {
+        let image = dispatching_image().image();
+        let found = registries(&image, vec![DISPATCHER + 5]).unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .map(|registry| (registry.count, registry.table, registry.handlers.clone()))
+                .collect::<Vec<_>>(),
+            [
+                (2, ROWS, BTreeSet::from([HANDLER])),
+                (1, OTHER_ROWS, BTreeSet::from([OTHER_HANDLER])),
+            ]
+        );
+        assert!(registries(&image, Vec::new()).is_err());
+        assert!(registries(&image, vec![DISPATCHER, HANDLER]).is_err());
+    }
+
+    #[test]
+    fn registrations_read_each_rows_name_and_ordinal_from_its_constructor() {
+        let image = registering_image(&[3, 5]).image();
+        let (scope, rows) = decode_registry(&image, &registry(2), INITIALIZER).unwrap();
+        assert_eq!(scope, None);
+        assert_eq!(
+            rows,
+            [
+                ("synthetic_property_0".to_owned(), 3),
+                ("synthetic_property_1".to_owned(), 5),
+            ]
+        );
+        assert!(decode_registry(&image, &registry(3), INITIALIZER).is_err());
+        let repeated = registering_image(&[4, 4]).image();
+        let error = decode_registry(&repeated, &registry(2), INITIALIZER).unwrap_err();
+        assert!(error.to_string().contains("repeats a handler ordinal"), "{error}");
+    }
+
+    #[test]
+    fn a_constructor_that_loses_its_receiver_is_refused() {
+        let mut image = registering_image(&[1]);
+        image.put(CONSTRUCTORS, &[0x48, 0x89, 0xc3]);
+        let error = decode_row(&image.image(), CONSTRUCTORS).unwrap_err();
+        assert!(error.to_string().contains("ambiguous receiver"), "{error}");
+        let image = registering_image(&[1]).image();
+        assert!(decode_row(&image, CONSTRUCTORS + 3).is_err());
+    }
+
+    fn callback_image(named: bool) -> SyntheticImage {
+        let mut image = SyntheticImage::new();
+        image.function(Code::at(READER).ret());
+        let mut code = Code::at(CALLBACKS);
+        for index in 0..2 {
+            let vtable = VTABLES + index * 0x40;
+            let name = NAMES + 1 + index * 0x20;
+            image
+                .text(name, &format!("synthetic_callback_{index}"))
+                .pointer(vtable + CALLBACK_VALUE_READER, READER)
+                .pointer(vtable + CALLBACK_INPUT_READER, READER);
+            if named || index == 0 {
+                code = code.rip(&[0x0f, 0x10, 0x05], name);
+            }
+            code = code.rip(&[0x48, 0x8d, 0x05], vtable);
+        }
+        image.function(code.ret());
+        image
+    }
+
+    #[test]
+    fn callbacks_pair_each_name_with_the_next_callback_vtable() {
+        let image = callback_image(true).image();
+        let vtables = [VTABLES, VTABLES + 0x40];
+        let (start, end) = image.function(CALLBACKS).unwrap();
+        let mut properties = Vec::new();
+        decode_callbacks(&image, start, end, &vtables, &mut properties).unwrap();
         assert_eq!(
             properties
                 .iter()
-                .map(|property| property.name)
-                .collect::<BTreeSet<_>>()
-                .len(),
-            73
+                .map(|property| (property.name, property.identity))
+                .collect::<Vec<_>>(),
+            [0, 1].map(|index| (
+                ["synthetic_callback_0", "synthetic_callback_1"][index],
+                NumericIdentity::Callback {
+                    vtable_rva: vtables[index],
+                    value_reader_rva: READER,
+                    input_reader_rva: READER,
+                }
+            ))
         );
-        for scope in NumericScope::ALL {
-            assert!(properties.iter().any(|property| matches!(
-                property.identity,
-                NumericIdentity::Scope { scope: found, .. } if found == scope
-            )));
-        }
-        assert!(
-            properties
-                .iter()
-                .any(|property| matches!(property.identity, NumericIdentity::Callback { .. }))
-        );
+        let error = decode_callbacks(&image, start, end, &vtables[..1], &mut Vec::new())
+            .unwrap_err();
+        assert!(error.to_string().contains("not one callback type"), "{error}");
+        let unnamed = callback_image(false).image();
+        let error = decode_callbacks(&unnamed, start, end, &vtables, &mut Vec::new())
+            .unwrap_err();
+        assert!(error.to_string().contains("has no name"), "{error}");
     }
 }

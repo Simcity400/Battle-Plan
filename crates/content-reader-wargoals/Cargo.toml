@@ -25,6 +25,7 @@ test-support = ["content-reader-core/test-support"]
 [target.'cfg(all())'.dev-dependencies]
 content-reader-wargoals = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
+engine-executable = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-bitflags-2 = { workspace = true }

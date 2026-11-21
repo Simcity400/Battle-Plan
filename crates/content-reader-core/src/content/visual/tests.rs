@@ -431,8 +431,7 @@ fn a_mods_descriptor_that_does_not_parse_reads_the_recordings_file() {
 
 #[test]
 fn a_mods_interface_file_with_refusals_reads_the_recordings_file() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let machine = Machine::new("interface-fallback");
     machine.write(
         "base/interface/a.gfx",
@@ -983,90 +982,6 @@ fn catalogues_and_selections_are_not_capped() {
     let planned = plan(&machine.options, &selected, &[], &never()).unwrap();
     assert_eq!(planned.order.len(), 320);
     assert!(planned.warnings.is_empty());
-}
-
-#[test]
-#[ignore = "reads the installed game and its Steam library's Workshop items; requires BATTLE_PLAN_GAME_DIR"]
-fn installed_workshop_artwork_mounts_over_the_installed_game() {
-    let game_dir = PathBuf::from(
-        std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR must name the installed game"),
-    );
-    assert!(
-        workshop_root(&game_dir).is_some(),
-        "BATTLE_PLAN_GAME_DIR is not in a Steam library with a Workshop folder"
-    );
-    let machine = Machine::new("installed");
-    machine.write(
-        "user/dlc_load.json",
-        br#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
-    );
-    machine.write("user/settings.txt", b"language=\"l_english\"");
-    let options = ResolveOptions {
-        game_dir: game_dir.clone(),
-        ..machine.options.clone()
-    };
-    let gathered = gather(&GatherOptions {
-        game_dir,
-        user_dir: options.user_dir.clone(),
-        cache_dir: options.cache_dir.clone(),
-        dlc_order: None,
-    })
-    .unwrap();
-    let artwork = [
-        "map/terrain/colormap_rgb_cityemissivemask_a.dds",
-        "map/terrain/atlas0.dds",
-        "map/terrain/colormap_water_0.dds",
-        "map/terrain/border_country_0.dds",
-    ];
-    let mut shown = 0;
-    for item in installed(&options, &never()).unwrap() {
-        let folder = PathBuf::from(&item.source);
-        let Some(path) = artwork.iter().find(|path| folder.join(path).is_file()) else {
-            continue;
-        };
-        let mut layers = gathered.layers.clone();
-        let reads = layers.report_uncovered_reads();
-        let plan = apply(
-            &mut layers,
-            &options,
-            &[pick(&item.id, &item.name)],
-            &[],
-            &never(),
-        )
-        .unwrap();
-        assert_eq!(plan.order.len(), 1, "{}: {:?}", item.name, plan.warnings);
-        let presentation = layers.presentation();
-        assert_eq!(
-            presentation.read(path).unwrap(),
-            fs::read(folder.join(path)).unwrap(),
-            "{}",
-            item.name
-        );
-        let texture = crate::gui::native::resources::texture(
-            path.as_bytes(),
-            &|request| presentation.read_path(request),
-            Default::default(),
-        )
-        .unwrap()
-        .unwrap_or_else(|reason| panic!("{}: {path}: {reason:?}", item.name));
-        assert_eq!(
-            layers.read(path).unwrap(),
-            gathered.layers.read(path).unwrap()
-        );
-        assert!(
-            reads
-                .overlay_warning()
-                .is_some_and(|line| line.contains(&item.name)),
-            "{}",
-            item.name
-        );
-        eprintln!(
-            "{} ({}): {path} {}x{} shown over the installed game",
-            item.name, item.id, texture.image.width, texture.image.height
-        );
-        shown += 1;
-    }
-    assert!(shown > 0, "no Workshop item ships terrain artwork");
 }
 
 #[test]

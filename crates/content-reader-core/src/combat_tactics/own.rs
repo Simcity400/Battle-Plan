@@ -38,12 +38,28 @@ mod tests {
     use crate::{
         key_names::KeyNames,
         parser::native::{self, Shape},
+        trigger_keys::Reader,
     };
+
+    fn own(rows: &[(&str, u64, u64)]) {
+        crate::test_game::with(|game| {
+            rows.iter().fold(game, |game, &(name, address, key)| {
+                game.trigger(name, 0, Reader::Own(address), key)
+            })
+        });
+    }
 
     #[test]
     fn non_damaged_building_level_rejects_provincial_buildings() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::with(|game| {
+            game.trigger_at(
+                0x3BE4,
+                "non_damaged_building_level",
+                0,
+                Reader::Own(0x1404540c0),
+                0x140491A40,
+            )
+        });
         let mut names = KeyNames::default();
         for (name, provincial) in [(b"factory".as_slice(), false), (b"port".as_slice(), true)] {
             names.counts.buildings.insert(name.to_vec());
@@ -75,8 +91,7 @@ mod tests {
 
     #[test]
     fn completed_mio_trait_count_reads_its_assignment_body() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        own(&[("has_mio_number_of_completed_traits", 0x140477CA0, 0x140477D70)]);
         let result = crate::triggers::read(
             b"has_mio_number_of_completed_traits = { @kept = 2 value > 3 } always = @kept",
             &KeyNames::default(),
@@ -92,8 +107,11 @@ mod tests {
 
     #[test]
     fn mio_trait_leaves_read_a_scalar_or_their_block_keys() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        own(&[
+            ("has_mio_trait", 0x140477CC0, 0x140319F20),
+            ("is_mio_trait_completed", 0x140477CC0, 0x140319F20),
+            ("is_mio_trait_available", 0x140477CC0, 0x140477D90),
+        ]);
         for (text, keys) in [
             (
                 "has_mio_trait = { trait = a show_modifiers = yes }",
@@ -148,34 +166,20 @@ mod tests {
 
     #[test]
     fn own_key_loops_skip_unknown_blocks_without_registering_definitions() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        for (class, key) in [
-            ("has_dynamic_modifier", "modifier"),
-            ("has_naval_invasion_against_state", "state"),
-            ("has_wargoal_against", "target"),
-            ("has_war_with_wargoal_against", "type"),
-            ("has_country_flag", "flag"),
-            ("has_state_flag", "flag"),
-            ("has_global_flag", "flag"),
-            ("has_unit_leader_flag", "flag"),
-            ("has_character_flag", "flag"),
-            ("decryption_progress", "target"),
-            ("has_collaboration", "target"),
-            ("network_national_coverage", "target"),
-            ("is_running_operation", "operation"),
-            ("is_preparing_operation", "operation"),
-            ("advisor_can_be_fired", "character"),
-            ("is_leading_army_in_province", "province"),
-            ("get_highest_scored_country_temp", "var"),
-            ("get_sorted_scored_countries_temp", "array"),
-            ("get_supply_vehicles_temp", "var"),
-            ("set_temp_variable_to_random", "min"),
-            ("power_balance_value", "value"),
-            ("power_balance_daily_change", "value"),
-            ("power_balance_weekly_change", "value"),
-            ("non_damaged_building_level", "level"),
-        ] {
+        let rows = [
+            ("synthetic_flag", 0x1414461e0, 0x1405972d0, "flag"),
+            ("synthetic_target_value", 0x1404540c0, 0x141446BF0, "target"),
+            ("synthetic_target_type", 0x140454870, 0x1405972d0, "type"),
+            ("synthetic_scorer", 0x14049F250, 0x1404A0950, "var"),
+            ("synthetic_array_scorer", 0x14049F6A0, 0x1404A0990, "array"),
+            ("synthetic_random", 0x1404A0390, 0x1404A0A40, "min"),
+            ("synthetic_preparation", 0x140454290, 0x1405972d0, "state"),
+            ("synthetic_modifier_scope", 0x140454140, 0x140457B50, "modifier"),
+            ("synthetic_character", 0x14046ACF0, 0x14046AE20, "character"),
+            ("synthetic_province", 0x14046ADF0, 0x14046AE50, "province"),
+        ];
+        own(&rows.map(|(name, address, key, _)| (name, address, key)));
+        for (class, key) in rows.map(|(name, _, _, key)| (name, key)) {
             let text = format!(
                 "body = {{ {class} = {{ {key} = x invalid = {{ @lost = 2 }} @kept = 3 {key} = @kept }} }} lost = @lost kept = @kept"
             );
@@ -196,16 +200,12 @@ mod tests {
 
     #[test]
     fn own_one_value_keys_leave_blocks_in_the_enclosing_loop() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        for class in [
-            "has_country_flag",
-            "core_compliance",
-            "core_resistance",
-            "has_core_occupation_modifier",
-            "num_finished_operations",
-            "modulo_temp_variable",
-        ] {
+        let rows = [
+            ("synthetic_target_value", 0x1404540c0, 0x141446BF0),
+            ("synthetic_flag_value", 0x1414461e0, 0x1405972d0),
+        ];
+        own(&rows);
+        for class in rows.map(|(name, _, _)| name) {
             let result = read(format!("body = {{ {class} = {{ value = {{ @kept = 7 value = @kept }} }} }} kept = @kept").as_bytes());
             assert!(
                 result.unsettled.is_none(),
@@ -223,8 +223,7 @@ mod tests {
 
     #[test]
     fn owns_any_state_of_is_a_raw_list_even_with_a_definition() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        own(&[("owns_any_state_of", 0x140490D60, 0)]);
         let result = read(b"body = { owns_any_state_of = { 1 @lost = 2 } } lost = @lost");
         assert!(result.unsettled.is_none());
         assert_eq!(result.items[1].value.scalar(), Some(&b"@lost"[..]));
@@ -238,8 +237,7 @@ mod tests {
 
     #[test]
     fn custom_override_tooltip_uses_bound_localisation_and_trigger_dispatch() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        own(&[("custom_override_tooltip", 0x141446060, 0x141446C20)]);
         let result = read(b"body = { custom_override_tooltip = { tooltip = { arg = { @kept = 4 localization_key = x } } invalid = { @lost = 2 } always = yes } } kept = @kept lost = @lost");
         assert!(result.unsettled.is_none());
         assert_eq!(result.items[1].value.scalar(), Some(&b"4"[..]));
@@ -248,8 +246,7 @@ mod tests {
 
     #[test]
     fn math_errors_skip_the_tail_without_registering_definitions() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        own(&[("check_expr", 0x14056E240, 0)]);
         let result = read(b"body = { check_expr = { value = { value = 1 @kept = 4 add = @kept } invalid = 0 ignored = { @lost = 2 } @tail = 8 add = 1 } } kept = @kept lost = @lost tail = @tail");
         assert!(result.unsettled.is_none());
         assert_eq!(result.items[1].value.scalar(), Some(&b"4"[..]));
@@ -259,8 +256,7 @@ mod tests {
 
     #[test]
     fn math_fixed_argument_and_conditional_loops_share_the_reader() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        own(&[("check_expr", 0x14056E240, 0)]);
         let result = read(b"body = { check_expr = { value = 1 clamp = { min = { value = 0 @a = 2 add = @a } max = 10 } if = { limit = 1 @b = 3 add = @b } else_if = { limit = 0 add = 4 } else = { @c = 5 add = @c } add = 6 } } a = @a b = @b c = @c");
         assert!(result.unsettled.is_none());
         assert!(result.misreads.is_empty(), "{:?}", result.misreads);

@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn named_collections_flatten_operators_keep_headers_and_guard_cycles() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let mut db = Database::default();
     db.read_file(
         b"base={input=game:all_states name=BASE operators={limit={always=yes}}} \
@@ -46,8 +45,7 @@ fn named_collections_flatten_operators_keep_headers_and_guard_cycles() {
 
 #[test]
 fn source_and_operator_headers_follow_native_collection_kind() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let parse = |text: &str| {
         crate::parser::parse(text.as_bytes())
             .unwrap()
@@ -101,8 +99,7 @@ fn source_and_operator_headers_follow_native_collection_kind() {
 
 #[test]
 fn collection_misreads_are_local_to_their_definition() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let mut db = Database::default();
     db.read_file(
         b"good={input=game:all_states} bad={input=game:scope operators={unknown_operator}}",

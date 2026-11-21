@@ -231,6 +231,7 @@ game-model = { path = "crates/game-model" }
 engine-allocation = { path = "crates/engine-allocation" }
 engine-heap = { path = "crates/engine-heap" }
 engine-executable = { path = "crates/engine-executable" }
+synthetic-game = { path = "crates/synthetic-game" }
 engine-reference-values = { path = "crates/engine-reference-values" }
 content-reader = { path = "crates/content-reader" }
 content-reader-raids = { path = "crates/content-reader-raids" }

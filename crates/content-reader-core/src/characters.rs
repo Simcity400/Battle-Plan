@@ -1505,8 +1505,7 @@ fn visibility_templates(
 mod tests {
     #[test]
     fn hard_character_reads_refuse_the_catalogue_with_or_without_cached_names() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         for cached_names in [false, true] {
             let root = std::env::temp_dir().join(format!(
                 "characters-hard-read-{}-{cached_names}", std::process::id()
@@ -1572,8 +1571,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn advisor_case_aliases_preserve_first_spelling_and_role_identity() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut characters = parse(br#"characters = {
             mod_holder = { advisor = { slot = mod_slot idea_token = Joseph_Votel traits = { mod_Trait } } }
         }"#, &KeyNames::default()).unwrap();
@@ -1619,8 +1617,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn advisor_case_aliases_share_ambiguity_and_coverage() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut characters = parse(br#"characters = {
             mod_holder = {
                 instance = { allowed = { always = yes } advisor = { slot = seat idea_token = mod_Role traits = { first } } }
@@ -1662,8 +1659,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn country_leader_sets_keep_overrides_and_alternative_identity() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let characters = parse(
             br#"characters = {
             single = { country_leader = { ideology = left traits = { old } }
@@ -1702,8 +1698,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn agreeing_template_projection_does_not_prove_startup_presence() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut characters = parse(
             br#"characters = {
                 conditional = { instance = { allowed = { always = no }
@@ -1737,8 +1732,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn effect_role_projections_share_character_role_field_application() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let fields = parser::parse(b"ideology = left traits = { a } traits = { b }")
             .unwrap()
             .items;
@@ -1759,8 +1753,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn repeated_character_alternatives_count_each_problem_once() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (characters, _, _) = parse_file(
             b"characters = { mod_character = { \
             advisor = { modifier = { mod_bonus = invalid } } \
@@ -1799,8 +1792,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn missing_role_identity_stays_in_template() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (mut characters, _, roles) = parse_file(
             b"characters={c={advisor={slot=army_chief} country_leader={desc=only_desc}}}",
             &KeyNames::default(),
@@ -1846,8 +1838,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn advisors_and_leaders_keep_their_roles_and_traits() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let characters = parse(FILE, &KeyNames::default()).unwrap();
         assert!(characters.notes.is_empty(), "{:?}", characters.notes);
         assert_eq!(
@@ -1874,8 +1865,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn a_disagreeing_advisor_role_is_its_built_templates() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let root =
             std::env::temp_dir().join(format!("content-reader-built-advisor-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -1978,8 +1968,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn alternatives_that_disagree_are_ambiguous_and_agreeing_ones_are_kept() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let characters = parse(FILE, &KeyNames::default()).unwrap();
         assert_eq!(characters.advisor("GER_split_idea"), Ok(None));
         assert!(characters.ambiguous_advisor("GER_split_idea"));
@@ -1999,8 +1988,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn portraits_of_one_kind_match_the_full_parse() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (army, stop) = portraits(FILE, &KeyNames::default(), "army", "large").unwrap();
         assert_eq!(stop, None);
         assert_eq!(army["GER_same"], Authored::Asset("GFX_same".into()));
@@ -2009,8 +1997,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn only_agreeing_army_large_alternatives_are_usable() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (characters, stop) = portraits(
             br#"characters = {
                 plain = { portraits = { army = { large = GFX_army small = GFX_small }
@@ -2061,8 +2048,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn instances_require_leading_allowed_and_refuse_unsettled_suffixes() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let characters = parse(
             br#"characters = { late = { name = own instance = { allowed = { always = yes } name = inner } } }"#, &KeyNames::default(),
         )
@@ -2095,8 +2081,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn role_fields_apply_in_order() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let characters = parse(
             br#"@slot = other characters = { c = {
                 advisor = { slot = theorist idea_token = c_idea cost = 10 cost = wide traits = { a } traits = { b }
@@ -2128,8 +2113,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn military_roles_read_as_their_templates_read() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let characters = parse(
             br#"characters = {
                 b = { name = B field_marshal = { skill = 3 traits = { t } visible = { always = yes } } name = B2 }
@@ -2157,8 +2141,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn the_replay_classes_hold_for_characters() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let characters = parse(
             br#"@p = GFX_p characters = {
                 quoted = { "name" = quoted NAME = bare PORTRAITS = { ARMY = { LARGE = @p } } }
@@ -2242,8 +2225,7 @@ add_scientist_role={scientist={
 
     #[test]
     fn leader_templates_follow_the_database_and_its_lines() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let templates = parse_leader_templates(
             &"common/characters/X.txt".into(),
             br#"characters = {

@@ -296,8 +296,7 @@ mod tests {
 
     #[test]
     fn every_top_level_key_is_an_alias() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let aliases = parse(
             &[(
                 "a.txt",
@@ -317,8 +316,7 @@ mod tests {
 
     #[test]
     fn the_key_reader_keeps_each_member() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let aliases = parse(&[
             (
                 "a.txt",
@@ -356,8 +354,7 @@ mod tests {
 
     #[test]
     fn repeated_scores_join_one_mean_time() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let aliases = parse(&[(
             "a.txt",
             b"SOU = { country_score = { base = 1 modifier = { add = 2 exists = yes } } country_score = { base = 3 } }",
@@ -369,8 +366,7 @@ mod tests {
 
     #[test]
     fn an_unsettled_body_refuses_it_and_the_later_ones() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let aliases = parse(&[(
             "a.txt",
             b"EAR = { exists = yes } MID = { OR = { x = { } } always = no } LAT = { exists = yes }",
@@ -385,8 +381,7 @@ mod tests {
 
     #[test]
     fn a_duplicate_body_is_skipped_unread() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let aliases = parse(
             &[
                 (
@@ -408,8 +403,7 @@ mod tests {
 
     #[test]
     fn an_alias_name_that_is_not_text_is_a_gap() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let aliases = parse(
             &[("a.txt", b"SPA = { } \"\xfeA\" = { }")],
             &KeyNames::default(),

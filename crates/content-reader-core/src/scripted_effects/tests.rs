@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn body_pass_uses_readers_and_appends_duplicate_templates() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let names = crate::key_names::KeyNames {
         scripted_effects: [b"one".to_vec()].into(),
         ..Default::default()
@@ -42,8 +41,7 @@ fn name_pass_skips_bodies_and_folds_tokens() {
 
 #[test]
 fn names_resolve_recorded_stack_and_only_directory_files() -> io::Result<()> {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let root = std::env::temp_dir().join(format!("effect-names-{}", std::process::id()));
     let vanilla = root.join("base");
     let modded = root.join("mod");

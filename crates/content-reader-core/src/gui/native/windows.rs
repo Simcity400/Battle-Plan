@@ -241,9 +241,7 @@ mod tests {
 
         #[test]
         fn window_texts_are_the_kept_windows_own_text_keys() {
-            engine_executable::executable_tables::initialize_for_tests().expect(
-                "BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests",
-            );
+            crate::test_game::enter();
             let vanilla = combat_log_gui("COMBAT_LOG_LOSS_REASON_COMBAT", "instantTextBoxType");
             let layers = stack("vanilla", &[&[("interface/combatlogview.gui", &vanilla)]]);
             let (texts, warnings) = texts(&layers);
@@ -261,9 +259,7 @@ mod tests {
 
         #[test]
         fn a_mod_replacing_the_file_or_redeclaring_the_window_names_its_own_keys() {
-            engine_executable::executable_tables::initialize_for_tests().expect(
-                "BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests",
-            );
+            crate::test_game::enter();
             let vanilla = combat_log_gui("COMBAT_LOG_LOSS_REASON_COMBAT", "instantTextBoxType");
             let replaced = combat_log_gui("MOD_LOST_IN_BATTLE", "instantTextBoxType");
             let layers = stack(

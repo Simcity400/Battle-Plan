@@ -662,8 +662,7 @@ fn by_key_blocks_with_values_without_keys() {
 
 #[test]
 fn a_known_trigger_body_is_read_by_key_never_as_a_list() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let body = |text: &[u8]| {
         read(
             text,
@@ -768,8 +767,7 @@ fn a_string_pair_reads_two_tokens_and_skips_to_its_end() {
 
 #[test]
 fn an_untraced_key_without_an_operator_follows_the_stale_value() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let trigger = |text: &[u8]| {
         read(
             text,
@@ -1105,8 +1103,7 @@ fn a_byte_0xff_is_one_end_of_the_stream() {
 
 #[test]
 fn modifiers_keep_scoped_operands_before_trigger_dispatch() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let names = KeyNames::default();
     let read = read(
         b"modifier = { factor = x add = 3 always = yes }",
