@@ -115,6 +115,7 @@ class Install(unittest.TestCase):
         self.runner_script(worktree)
         self.gitdir.mkdir(parents=True)
         (self.gitdir / dt.RUNNER_MARK).touch()
+        (self.gitdir / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")
         self.owner = str(worktree)
         return worktree
 
@@ -184,6 +185,7 @@ class Continuation(unittest.TestCase):
         self.gitdir = root / "gitdir"
         self.gitdir.mkdir()
         (self.gitdir / dt.RUNNER_MARK).touch()
+        (self.gitdir / "gitdir").write_text(f"{self.worktree / '.git'}\n", encoding="utf-8")
         self.lock = self.enterContext(mock.patch.object(dt, "lock_runner", return_value=41))
         self.hold = self.enterContext(mock.patch.object(dt, "hold_checkout", return_value=43))
         self.close = self.enterContext(mock.patch.object(dt.os, "close"))
@@ -310,6 +312,18 @@ class Continuation(unittest.TestCase):
             mock.call("rev-parse", "--show-toplevel"), mock.call("rev-parse", "--absolute-git-dir"),
         ])
         self.lock.assert_not_called()
+
+    def test_a_copy_of_the_runner_is_refused_before_locking(self):
+        (self.gitdir / "gitdir").write_text(f"{self.worktree.parent / 'original' / '.git'}\n", encoding="utf-8")
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(dt.run(self.args), 2)
+        self.lock.assert_not_called()
+
+    def test_a_checkout_lock_that_cannot_be_opened_releases_the_runner_lock(self):
+        self.hold.side_effect = OSError("synthetic lock folder is unreadable")
+        with self.assertRaises(OSError):
+            dt.run(self.args)
+        self.assertEqual(self.close.call_args_list, [mock.call(41)])
 
     def test_the_parent_holds_the_checkout_until_it_has_moved_it_and_frees_it_for_the_child(self):
         seen = {}

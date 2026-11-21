@@ -854,7 +854,11 @@ def run(args):
     lock = lock_runner()
     if lock is None:
         return 0
-    held = hold_checkout()
+    try:
+        held = hold_checkout()
+    except OSError:
+        os.close(lock)
+        raise
     if held is None:
         os.close(lock)
         return 0
@@ -1037,17 +1041,22 @@ def git_at(folder, *args):
 
 
 def not_the_runner(git_in_worktree):
-    """Why WORKTREE must not be moved, or None: git sees it as its own worktree, and that worktree's
-    own git folder carries install's RUNNER_MARK, which removing the worktree removes with it."""
+    """Why WORKTREE must not be moved, or None: git sees it as its own worktree, that worktree's own
+    git folder carries install's RUNNER_MARK, which removing the worktree removes with it, and the
+    git folder points back at WORKTREE, so a copy of the runner elsewhere is not taken for it."""
     try:
         owner = Path(git_in_worktree("rev-parse", "--show-toplevel")).resolve()
         if owner != WORKTREE.resolve():
             return f"{WORKTREE} is not a git worktree of its own: install a runner in another --ci-dir"
-        marked = (Path(git_in_worktree("rev-parse", "--absolute-git-dir")) / RUNNER_MARK).is_file()
+        private = Path(git_in_worktree("rev-parse", "--absolute-git-dir"))
+        marked = (private / RUNNER_MARK).is_file()
+        pointer = Path((private / "gitdir").read_text(encoding="utf-8").strip()).resolve()
     except (OSError, RuntimeError, subprocess.CalledProcessError):
-        return f"{WORKTREE} is not a git worktree: install a runner in another --ci-dir"
+        return f"{WORKTREE} is not a runner install made: name another --ci-dir"
     if not marked:
         return f"{WORKTREE} is not a runner install made: name another --ci-dir"
+    if pointer != (WORKTREE / ".git").resolve():
+        return f"{WORKTREE} is a copy of the runner at {pointer.parent}: name that runner's --ci-dir"
     return None
 
 
