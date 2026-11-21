@@ -272,6 +272,28 @@ def foreign_block(tree):
     return before is not None and before.text == b"extern" and before.prev_sibling is not None and before.prev_sibling.text == b"unsafe"
 
 
+def inside_unsafe(node):
+    """Whether `node` sits in an `unsafe` block, short of an enclosing function or closure."""
+    node = node.parent
+    while node is not None and node.type not in ("function_item", "closure_expression"):
+        if node.type == "unsafe_block":
+            return True
+        node = node.parent
+    return False
+
+
+def pointer_dereference(node):
+    """Whether `node` dereferences an explicit raw-pointer cast, as in `*(p as *const T)`."""
+    if node.type == "unary_expression" and node.child_count == 2 and node.children[0].type == "*":
+        operand = node.children[1]
+        while operand.type == "parenthesized_expression" and operand.named_child_count == 1:
+            operand = operand.named_children[0]
+        if operand.type == "type_cast_expression":
+            target = operand.child_by_field_name("type")
+            return target is not None and target.type == "pointer_type"
+    return any(pointer_dereference(child) for child in node.children)
+
+
 def unsafe_site(node):
     if node.type == "." and node.parent.type == "field_expression":
         call = node.parent.parent
@@ -284,6 +306,8 @@ def unsafe_site(node):
         return False
     if node.type == "impl_item":
         return unsafe_item(node)
+    if node.is_named and not in_macro(node) and inside_unsafe(node) and pointer_dereference(node):
+        return True
     if node.is_named and not in_macro(node):
         return has_unsafe(node)
     if in_macro(node):

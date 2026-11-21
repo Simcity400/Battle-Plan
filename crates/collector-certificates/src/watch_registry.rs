@@ -221,7 +221,8 @@ impl WatchRegistry {
         // `draining`, since a notification that entered after the quiet check may still hold its
         // mark; `retire_drained` retires it only once a later quiet check sees none running.
         // Worker growth retires the old table at once, which its exclusive lease allows because
-        // no notifier runs during the call. A borrow must not outlive the call that made it.
+        // no notifier runs during the call. A `Notification` keeps its mark until it drops and
+        // counts as running until then, so neither path reclaims a table under a live guard.
         unsafe { self.table.load(SeqCst).as_ref() }
     }
 

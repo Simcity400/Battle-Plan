@@ -280,6 +280,15 @@ fn checked(p: *const u32) {
         unsafe { make_vec() },
     );
 }
+unsafe extern "system" fn window_proc(hwnd: usize, message: u32, lparam: isize) -> isize {
+    unsafe {
+        // SAFETY: kept, WM_NCCREATE's lparam is the CREATESTRUCTW the OS passes for the call.
+        let created = &*(lparam as *const CREATESTRUCTW);
+        // SAFETY: refused, reading a local is safe even inside an unsafe block.
+        let copy = message;
+    }
+    0
+}
 macro_rules! fetch {
     ($p:expr) => {{
         // SAFETY: kept, `$p` points at a live byte.
@@ -314,6 +323,7 @@ fn total(cells: &[*const u32]) -> std::io::Result<u32> {
             b"// SAFETY: refused, a visibility parameter before a safe function.",
             b"// SAFETY: refused, a safe function's body is not this comment's code.",
             b"// SAFETY: refused, the empty vector is safe; the unsafe call is the next argument.",
+            b"// SAFETY: refused, reading a local is safe even inside an unsafe block.",
             b"// SAFETY: refused, a comparison is safe; the unsafe read is the next field.",
         ])
 
