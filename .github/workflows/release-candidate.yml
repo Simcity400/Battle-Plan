@@ -3,13 +3,6 @@ name: Release candidate
 on:
   push:
     branches: [main]
-  pull_request:
-    paths:
-      - .github/workflows/release-candidate.yml
-      - tools/release.py
-      - tools/release_smoke.py
-      - tools/desktop.mjs
-      - tools/shipped.json
   workflow_dispatch:
     inputs:
       channel:
@@ -46,9 +39,9 @@ on:
         required: true
 
 concurrency:
-  group: candidate-${{ github.event_name == 'pull_request' && github.ref || format('{0}-{1}', inputs.channel || 'nightly', inputs.commit || github.sha) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
+  group: candidate-${{ inputs.channel || 'nightly' }}-${{ inputs.commit || github.sha }}
+  cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
@@ -56,7 +49,6 @@ permissions:
 jobs:
   windows:
     name: Windows x64 installer
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: windows-latest
     timeout-minutes: 240
     env:
