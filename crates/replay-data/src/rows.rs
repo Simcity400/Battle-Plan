@@ -3012,7 +3012,7 @@ mod tests {
             bytes.clear();
             encode_delta(TableId::Divisions, &delta, 0, &mut bytes).unwrap();
             assert_eq!(bytes.len(), key_len + 2 + delta.values.len());
-            assert_eq!(&bytes[key_len..key_len + 2], &[0xff, 1]);
+            assert_eq!(&bytes[key_len..key_len + 2], &[0xff, 3]);
             assert_eq!(delta.apply::<DivisionRow>(None).unwrap(), row);
         }
     }

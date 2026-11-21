@@ -60,6 +60,10 @@ fn every_packet_host_is_hourly_never_carried_and_readable_at_the_stamped_format(
                 (ChangeKind::AppendedOnly, EXPERIENCE_FORMAT)
             }
             TableId::SimulationFeatures => (ChangeKind::AppendedOnly, SCRIPTED_MAP_FORMAT),
+            TableId::RailwayGunCounterInputs => (
+                ChangeKind::AppendedOnly,
+                replay_data::rows::compatibility::CAPTURE_ADDITIONS_FORMAT,
+            ),
             _ => (ChangeKind::AppendedOnly, PACKET_HOUR_FORMAT),
         };
         assert_eq!(change.kind, kind, "{host:?}");

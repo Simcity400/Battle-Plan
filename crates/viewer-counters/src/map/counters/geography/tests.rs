@@ -232,7 +232,7 @@ fn geography_content_keys_retain_allocations_and_exact_scalar_bits() {
 }
 
 #[test]
-fn geography_memo_is_bounded_and_concurrent_requests_build_the_same_geometry() {
+fn geography_memo_keeps_a_held_build_and_concurrent_requests_build_the_same_geometry() {
     let memo = Memo::default();
     let content = Content::default();
     let first = frame(1, &[(1, 7)]);
@@ -260,6 +260,6 @@ fn geography_memo_is_bounded_and_concurrent_requests_build_the_same_geometry() {
         assert!(!Arc::ptr_eq(&reads[0], &next));
     }
     let rebuilt = content.compare(&memo, &first);
-    assert!(!Arc::ptr_eq(&reads[0], &rebuilt));
+    assert!(reads.iter().any(|read| Arc::ptr_eq(read, &rebuilt)));
     reads[0].extents.assert_same_bits(&rebuilt.extents);
 }

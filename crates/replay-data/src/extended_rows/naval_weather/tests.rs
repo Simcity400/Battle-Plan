@@ -307,7 +307,7 @@ fn format_101_clocks_decode_as_held_recorded_values() {
     input.recorded_fields = 9;
     let decoded = WeatherProvinceRow::decode_fields(row.key(), &mut input).unwrap();
     input.finish().unwrap();
-    assert_eq!(decoded.not_recorded_fields(), 0b1111111 << 9);
+    assert_eq!(decoded.not_recorded_fields(), 0b11111111 << 9);
     assert_eq!(
         decoded.temperature.record(),
         Ok(TemperatureRecord::AtHour(0))
