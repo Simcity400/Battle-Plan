@@ -51,22 +51,31 @@ PixelShader = {
         float4 c = Base_Texture.Sample(Base_Sampler, v.uv);
 #ifdef ANIMATED
         c = lerp(c, Frame_Texture.Sample(Frame_Sampler, v.uv),
-                 Mask_Texture.Sample(Mask_Sampler, v.uv).r * records[3].y);
+                 Mask_Texture.Sample(Mask_Sampler, v.uv).r * records[3].z * 0.25);
 #ifdef NUM_ANIMATIONS_2
         c = lerp(c, NextFrame_Texture.Sample(NextFrame_Sampler, v.uv),
-                 NextMask_Texture.Sample(NextMask_Sampler, v.uv).r * records[8].y);
+                 NextMask_Texture.Sample(NextMask_Sampler, v.uv).r * records[8].z * 0.25);
 #endif
 #endif
 #ifdef MASKING
         c.a *= Clip_Texture.Sample(Clip_Sampler, v.uv).r;
 #endif
+#ifdef DOWN_STATE
+        c.r *= 0.5;
+#endif
+#ifdef OVER_STATE
+        c.g *= 0.5;
+#endif
+#ifdef DISABLED_STATE
+        c.b *= 0.5;
+#endif
         return c * tint;
     } ]]
 }
 Effect Up { VertexShader = V PixelShader = P }
-Effect Down { VertexShader = V PixelShader = P }
-Effect Over { VertexShader = V PixelShader = P }
-Effect Disable { VertexShader = V PixelShader = P }
+Effect Down { VertexShader = V PixelShader = P Defines = { DOWN_STATE } }
+Effect Over { VertexShader = V PixelShader = P Defines = { OVER_STATE } }
+Effect Disable { VertexShader = V PixelShader = P Defines = { DISABLED_STATE } }
 "#;
 
 const CIRCULAR: &str = r#"

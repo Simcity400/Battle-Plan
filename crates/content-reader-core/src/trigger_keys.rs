@@ -723,7 +723,6 @@ pub(crate) fn synthetic_vocabulary(game: synthetic_game::Executable) -> syntheti
         .trigger("or", 0, Reader::Body, 0)
         .trigger("not", 0, Reader::Body, 0)
         .trigger("always", 0, Reader::Assign, 0)
-        .trigger("check_variable", 0, Reader::Body, 0)
         .trigger("date", 0, Reader::Comparison, 0)
         .trigger("has_country_flag", crate::scope::ScopeKind::Country.bit(), Reader::Assign, 0)
         .trigger("has_dlc", 0, Reader::Assign, 0)

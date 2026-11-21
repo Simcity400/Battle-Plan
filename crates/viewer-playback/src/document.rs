@@ -5610,4 +5610,76 @@ mod tests {
         assert_eq!(warnings.len(), 2);
     }
 
+    #[test]
+    #[ignore = "requires an authored game, user folder, and recording.battleplan in BATTLE_PLAN_VIEWER_TEST_FIXTURES/coverage-2 and coverage-3"]
+    fn historical_coverage_document_load_keeps_uncovered_read_notes() {
+        let fixtures = PathBuf::from(
+            std::env::var_os("BATTLE_PLAN_VIEWER_TEST_FIXTURES")
+                .expect("choose the authored viewer fixtures folder"),
+        );
+        let scratch = synthetic_game::Installation::new("historical-coverage").build();
+        for policy in [2, 3] {
+            let fixture = fixtures.join(format!("coverage-{policy}"));
+            let game_dir = fixture.join("game");
+            assert_eq!(
+                fs::read(game_dir.join("hoi4.exe")).unwrap(),
+                synthetic_game::DEFAULT_EXECUTABLE,
+                "the historical fixture uses the synthetic game's executable"
+            );
+            let options = ResolveOptions {
+                game_dir,
+                user_dir: fixture.join("user"),
+                cache_dir: scratch.cache_dir.join(policy.to_string()),
+            };
+            let path = fixture.join("recording.battleplan");
+            let replay = Arc::new(Replay::open(fs::read(&path).unwrap()).unwrap());
+            assert_eq!(replay.identity.coverage_policy, policy);
+            let initial = replay.index.first().expect("the fixture records an hour");
+            let source = dashboard_base::Source::from_replay(
+                dashboard_base::SourceKey {
+                    source_id: path.to_string_lossy().into_owned(),
+                    revision: dashboard_core::protocol::replay_revision(&path).unwrap(),
+                },
+                path.clone(),
+                Arc::clone(&replay),
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap();
+            let document = Document::load_shared(
+                &path,
+                &options,
+                false,
+                &InitialHour {
+                    branch: Some(initial.branch),
+                    hour: Some(initial.first_hour),
+                    hour_fraction: 0.0,
+                },
+                Arc::clone(&replay),
+                &source,
+                None,
+                0,
+                None,
+                LoadTarget::Content,
+            )
+            .unwrap();
+            let mut warnings = document.warnings.clone();
+            document.uncovered_reads.append_to(&mut warnings);
+            let notes: Vec<_> = warnings
+                .iter()
+                .filter(|note| note.starts_with("Content: "))
+                .collect();
+            assert_eq!(notes.len(), 1, "policy {policy}: {notes:?}");
+            assert!(notes[0].contains("gfx/posteffect_volumes.txt"));
+            assert!(notes[0].contains(&format!("coverage policy {policy};")));
+            assert!(notes[0].contains("these bytes are not hash-verified"));
+            for family in ["source/include file(s)", "font file(s)"] {
+                assert!(
+                    document.warnings.iter().any(|note| {
+                        note.contains(family) && note.contains("not hash-verified")
+                    }),
+                    "policy {policy}: missing {family} uncovered-read note"
+                );
+            }
+        }
+    }
 }
