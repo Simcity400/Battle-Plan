@@ -215,9 +215,13 @@ pub fn settings() -> Settings {
     Settings { step_threads: 2, fetch_threads: 1, ring: 8, ahead: 4, rate: step_rate(), entering: Some(entered), ..Settings::default() }
 }
 
-fn entered(_: playhead::Thread) {
+fn entered(thread: playhead::Thread) {
     use viewer_foundation::worker_priority::{Class, enter};
-    enter(Class::Playback);
+    enter(match thread {
+        playhead::Thread::Stepper => Class::Playback,
+        playhead::Thread::Step | playhead::Thread::Seeking => Class::Kept,
+        playhead::Thread::Fetch => Class::Worker,
+    });
 }
 
 static REGISTERED: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
