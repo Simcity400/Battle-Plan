@@ -15,7 +15,7 @@ test('a failure shows its plain sentence and keeps the technical reason as detai
 });
 
 test('a failure leads with the raw head only when that head is a product sentence; otherwise the action names it', () => {
-  const pathLed = 'C:\Users\me\Recordings\Germany 1936.battleplan: Access is denied. (os error 5)';
+  const pathLed = 'D:/Recordings/Germany 1936.battleplan: Access is denied. (os error 5)';
   assert.deepEqual(plainFailure(pathLed), { text: pathLed }, 'a path is never the sentence');
   assert.deepEqual(actionFailure('Couldn’t save the recording', pathLed), { text: 'Couldn’t save the recording.', detail: pathLed });
   assert.deepEqual(actionFailure('Couldn’t open the recording.', 'Germany 1936.battleplan: in use'), { text: 'Couldn’t open the recording.', detail: 'Germany 1936.battleplan: in use' });
