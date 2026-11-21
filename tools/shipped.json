@@ -28,11 +28,6 @@
         "files": ["SDL-LICENSE.txt"]
       },
       {
-        "name": "libpng 1.6.16",
-        "use": "Notice kept from the texture reader's earlier libpng adaptation.",
-        "files": ["libpng-LICENSE.txt"]
-      },
-      {
         "name": "image (Rust library)",
         "use": "Decodes BMP, ICO, PNG and fallback Targa textures.",
         "files": ["image-LICENSE-MIT.txt"]
