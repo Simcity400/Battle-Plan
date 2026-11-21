@@ -599,7 +599,7 @@ impl PowerLedger {
                 .collect();
             for raw in open {
                 if inputs::holds_no_costs(hour, raw)? {
-                    self.publish(hour, own, witnesses, pending, run_first, &inputs::Publication { country: raw, costs: Vec::new() })?;
+                    self.publish(hour, own, witnesses, pending, run_first, &inputs::Publication { country: raw, costs: Vec::new(), deleted_only: true })?;
                 }
             }
         }
@@ -660,6 +660,9 @@ impl PowerLedger {
             applications.entry((cost.epoch, cost.day_hour, cost.pp_sequence)).or_default().push(cost);
         }
         for ((epoch, day_hour, sequence), costs) in applications {
+            if publication.deleted_only && midnight(day_hour) != today {
+                continue;
+            }
             let matched = daily.as_ref().is_some_and(|daily| daily.epoch == epoch && daily.day_hour == day_hour && daily.pp_sequence == Some(sequence));
             let seen = pending.costs.entry(holder).or_default();
             for cost in costs.iter().filter(|cost| cost.cost_raw != 0) {

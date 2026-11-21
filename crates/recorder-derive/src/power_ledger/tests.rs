@@ -83,6 +83,8 @@ const EMPTIED: i32 = 52;
 const RESTORED: i32 = 53;
 const REMOVED: i32 = 54;
 const ZEROED: i32 = 55;
+const LATER_DAY: i32 = 73;
+const CLOSED_DELETED: i32 = 97;
 const NO_CHANGES: i32 = 26;
 
 fn edit(store: &mut Store, hour: i32) {
@@ -164,6 +166,12 @@ fn edit(store: &mut Store, hour: i32) {
         RESTORED => testing::put(store, TableId::CountryPowerDailyCosts, &cost(48, 0, PowerDailyCostKind::Relation, Q / 2, 80), TEXTS).unwrap(),
         REMOVED => testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32).unwrap(),
         ZEROED => testing::put(store, TableId::CountryPowerDaily, &daily(48, 2 * Q, 0, 80), TEXTS).unwrap(),
+        LATER_DAY => {
+            testing::put(store, TableId::CountryPowerDaily, &daily(72, 3 * Q, Q / 2 + Q / 10, 90), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(72, 0, PowerDailyCostKind::Relation, Q / 2, 90), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(72, 1, PowerDailyCostKind::MioResearch, Q / 10, 90), TEXTS).unwrap();
+        }
+        CLOSED_DELETED => testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap(),
         _ => {}
     }
 }
@@ -358,6 +366,12 @@ fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_
     assert_eq!(spend(&next, 10, POLITICAL, costs[1], "days"), Some(1), "day 48 settles without the withdrawn cost");
     assert_eq!(spend(&next, 10, POLITICAL, costs[1], "day_charge"), Some(Q / 10));
     assert_eq!(spend(&next, 10, POLITICAL, costs[0], "days"), Some(1), "day 48's relation was withdrawn by its zero-cost application");
+    let (settled, _) = through(0..=CLOSED_DELETED - 1);
+    let (deleted, _) = through(0..=CLOSED_DELETED);
+    for name in ["day_payments", "day_charge", "days"] {
+        assert_eq!(spend(&deleted, 10, POLITICAL, costs[0], name), spend(&settled, 10, POLITICAL, costs[0], name), "a deletion from a closed day settles none of its costs again ({name})");
+    }
+    assert_eq!(spend(&settled, 10, POLITICAL, costs[0], "days"), Some(2), "day 72's relation settled at its midnight");
 }
 
 #[test]

@@ -1402,6 +1402,7 @@ impl Part {
                                 last = 0;
                                 Event::Unrecorded
                             }
+                            code if code & 1 == 1 => return Err(invalid("A track's event code is reserved")),
                             code => {
                                 let number = unzig((code >> 1) as u64);
                                 match opened.model {
