@@ -198,6 +198,11 @@ impl Forwarding {
             unsafe { ((*receiver).enabled)(self.capability(withdrawn)) };
         }
     }
+    /// # Safety
+    /// `variant` is the object the notification concerns: a writer's receiver, either operand of a
+    /// move, or zero when it names none. It must stay valid for whatever the registered handler
+    /// reads in `Phase::Before`; after the native call it is an identity only, since a writer such
+    /// as `Destroy` may have freed it.
     unsafe fn begin(&self, writer: Writer, variant: usize) -> Option<Invocation<'_>> {
         if self.receiver.load(Ordering::SeqCst).is_null() {
             return None;
@@ -229,6 +234,9 @@ pub(super) struct Invocation<'a> {
     completed: bool,
 }
 impl Invocation<'_> {
+    /// # Safety
+    /// Delivers the successful terminal phase (`Phase::After`) to the registered handler, for which
+    /// the object is an identity only, as [`Forwarding::begin`] says.
     pub(super) unsafe fn finish(mut self) {
         self.completed = true;
         unsafe { (self.receiver.call)(self.writer, self.variant, Phase::After) };
@@ -279,9 +287,13 @@ fn writer(site: usize) -> Option<Writer> {
         },
     }
 }
+/// # Safety
+/// As [`Forwarding::begin`], with `site` a design writer site.
 pub(super) unsafe fn begin(site: usize, variant: usize) -> Option<Invocation<'static>> {
     unsafe { FORWARDING.begin(writer(site)?, variant) }
 }
+/// # Safety
+/// As [`Forwarding::begin`], with `receiver` the invalidating call's live receiver.
 pub(super) unsafe fn invalidation(provider: bool, receiver: usize) -> Option<Invocation<'static>> {
     unsafe {
         FORWARDING.begin(
@@ -294,12 +306,18 @@ pub(super) unsafe fn invalidation(provider: bool, receiver: usize) -> Option<Inv
         )
     }
 }
+/// # Safety
+/// As [`Forwarding::begin`], with `receiver` the invalidating call's live country.
 pub(super) unsafe fn country_invalidation(receiver: usize) -> Option<Invocation<'static>> {
     unsafe { FORWARDING.begin(Writer::CountryInvalidation, receiver) }
 }
+/// # Safety
+/// As [`Forwarding::begin`], with `receiver` the invalidating call's live receiver.
 pub(super) unsafe fn idea_invalidation(receiver: usize) -> Option<Invocation<'static>> {
     unsafe { FORWARDING.begin(Writer::IdeaInvalidation, receiver) }
 }
+/// # Safety
+/// As [`Forwarding::begin`], for a content invalidation, which names no receiver.
 pub(super) unsafe fn content_invalidation() -> Option<Invocation<'static>> {
     unsafe { FORWARDING.begin(Writer::ContentInvalidation, 0) }
 }

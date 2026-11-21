@@ -74,7 +74,7 @@ All Rust is in `crates/`; names group by prefix.
 
 - Desktop app: `npm.cmd ci`, then `npm.cmd run dev` (add `-- -- -- "<replay>"` to open one). Release build: `npm.cmd run build:desktop`.
 - Command-line recorder: `python tools/boat.py build --out <dir> --release -p recorder -p collector`.
-- Only Rust compiles go to Boat, never this machine. The one exception is the self-hosted GitHub Actions runner (`tools/release-runner.ps1`): it alone compiles here, for release builds. Run `tools/boat.py` from inside your worktree; don't drive `boat` by hand or pass `-j`. Exit 75 means Boat itself failed: run it again.
+- Only Rust compiles go to Boat, never this machine; release builds run in GitHub Actions (ADR 0001). Run `tools/boat.py` from inside your worktree; don't drive `boat` by hand or pass `-j`. Exit 75 means Boat itself failed: run it again.
   - Check: `python tools/boat.py check --all-targets -p <crate>...` for the crates you changed only. Never the whole workspace, never their dependents. `tools/check_changed.py` works out those crates for you.
   - Build: `python tools/boat.py build --out <dir> --release -p <crate> --bin <name>`, only when you need to run that binary.
 - Everything else runs here: `npm.cmd run check:ui` for the UI, and Python checks and scripts directly.
@@ -94,7 +94,7 @@ All Rust is in `crates/`; names group by prefix.
 
 - Design every part, new or changed, as the best solution built from scratch, not a patch on what is there, and make it as fast and efficient as it can be.
 - Design for 1,500 countries. No caps we made up.
-- New source comments fail the ratchet. Put decisions in `docs/adr/`. Licence notices stay.
+- New comments fail the ratchet bar `// SAFETY:` and `# Safety` at unsafe code. Use ADRs.
 - A lint suppression (`#[allow]`, `#[expect]`) gives `reason = "..."`. `tools/check-suppressions.py` fails a change that adds one without.
 
 ## Pull requests

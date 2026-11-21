@@ -1820,6 +1820,7 @@ fn run_with_memory(
             let context = request.context;
             let begin = sampling::qpc();
             crate::read_accounting::with_table(replay_data::rows::TableId::VariantChanges, || {
+                // SAFETY: the lanes' dispatch drains every part before returning, also on failure.
                 unsafe {
                     request.changes.capture_partitioned(
                         context.base,
@@ -2505,6 +2506,8 @@ impl Pool {
             move |job: &mut Job| {
                 #[cfg(feature = "worker_sampler")]
                 let _sampler_job = crate::worker_sampler::job(job.role());
+                // SAFETY: submit's callback lease remains admitted until every
+                // accepted request is collected, including on callback unwind.
                 let memory = unsafe { LiveMemory::new() };
                 #[cfg(any(test, feature = "acquisition_profile"))]
                 let memory = CountedMemory::new(memory);
@@ -2526,9 +2529,12 @@ impl Pool {
             worker_count: worker_count.max(1),
         })
     }
-    #[doc = " # Safety"]
-    #[doc = " Every accepted request must finish before the foreign-world callback"]
-    #[doc = " lease ends. Use Batch to retain that barrier on an unwinding callback."]
+    /// # Safety
+    /// Keep the foreign-world callback lease until every accepted ticket is
+    /// collected, active publishers have settled and every successor they
+    /// admitted has drained: a parent publishes before its continuation runs, so
+    /// collecting the last known ticket is not enough. Use Batch, which keeps
+    /// that barrier on success and on an unwinding callback.
     pub(crate) unsafe fn submit(
         &self,
         request: &mut Option<Job>,
@@ -2576,8 +2582,8 @@ impl Pool {
     pub(crate) fn unpark(&self, ticket: Ticket) -> Option<Job> {
         self.executor.unpark(ticket)
     }
-    #[doc = " # Safety"]
-    #[doc = " The admitted callback lease must remain valid throughout this call."]
+    /// # Safety
+    /// The admitted callback lease must remain valid throughout this call.
     #[inline(never)]
     pub(crate) unsafe fn run_inline(&self, mut request: Job) -> Completion<Job, Report> {
         assert!(!request.worker_only(), "acquisition requires a worker");
@@ -2763,9 +2769,9 @@ impl<'a> Batch<'a> {
     pub(crate) fn stop_for_contained_panic(&self, role: Role) {
         self.pool.stop_for_contained_panic(role);
     }
-    #[doc = " # Safety"]
-    #[doc = " The callback must own the live-read lease until this guard is"]
-    #[doc = " dropped. No lock held across finish/Drop may be needed by a queued job."]
+    /// # Safety
+    /// The callback must own the live-read lease until this guard is
+    /// dropped. No lock held across finish/Drop may be needed by a queued job.
     pub(crate) unsafe fn submit(
         &mut self,
         request: &mut Option<Job>,
@@ -2782,6 +2788,7 @@ impl<'a> Batch<'a> {
             }
             return Err(SubmitError::Full);
         };
+        // SAFETY: this guard drains every ticket before releasing its lease.
         let ticket = unsafe { self.pool.submit(request, !self.held) }?;
         *slot = Some(ticket);
         self.held_jobs += usize::from(self.held);
@@ -2848,8 +2855,8 @@ impl<'a> Batch<'a> {
             .zip(&self.parked)
             .position(|(candidate, &held)| held == parked && *candidate == Some(ticket))
     }
-    #[doc = " # Safety"]
-    #[doc = " Same live-read lease as submit; only a retained rejected job may run here."]
+    /// # Safety
+    /// Same live-read lease as submit; only a retained rejected job may run here.
     pub(crate) unsafe fn run_inline(&self, request: Job) -> Completion<Job, Report> {
         unsafe { self.pool.run_inline(request) }
     }

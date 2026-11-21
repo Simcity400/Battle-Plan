@@ -1159,11 +1159,11 @@ pub struct Hooks {
     publication_attempted: bool,
 }
 impl Hooks {
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         let sites: [Rva; SITES] = [
             native::BEGIN,

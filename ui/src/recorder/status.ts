@@ -17,7 +17,6 @@ export interface Snapshot {
   firstHour: number | null;
   savedBytes: number | null;
   spoolBytes: number | null;
-  progress: number | null;
   startedAt: number | null;
   stopping: boolean;
   problem: Problem | null;
@@ -60,7 +59,8 @@ export interface UnsavedRecording {
   flag: FlagImage | null;
 }
 
-export type CompressJob = { state: 'queued' } | { state: 'compressing'; units: number; total: number } | { state: 'kept'; reason: string };
+export type CompressJob = { state: 'queued' } | { state: 'compressing'; units: number; total: number } | { state: 'kept'; reason: string }
+  | { state: 'unconfirmed'; reason: string };
 
 export interface SavedRecording {
   path: string;
@@ -75,20 +75,21 @@ export interface SavedRecording {
 export const COMPRESSED_LEVEL = 19;
 
 export function compressOffered(settings: Pick<RecorderSettings, 'liveCompression'> | null, row: SavedRecording): boolean {
-  return settings?.liveCompression === 'low' && row.level !== COMPRESSED_LEVEL && (row.job == null || row.job.state === 'kept');
+  return settings?.liveCompression === 'low' && row.level !== COMPRESSED_LEVEL && (row.job == null || row.job.state === 'kept' || row.job.state === 'unconfirmed');
 }
 
 export function compressText(job: CompressJob | null): string | null {
   if (!job) return null;
   if (job.state === 'queued') return 'Waiting to compress';
   if (job.state === 'compressing') return `Compressing ${Math.floor(job.units * 100 / Math.max(job.total, 1))}%`;
+  if (job.state === 'unconfirmed') return `Compression not confirmed: ${keptClause(job.reason).replace(/\.$/u, '')}`;
   return `Kept as recorded: ${keptClause(job.reason).replace(/\.$/u, '')}`;
 }
 
 const keptClause = (reason: string) => reason.split(': ', 1)[0];
 
 export function compressDetail(job: CompressJob | null): string | undefined {
-  return job?.state === 'kept' && keptClause(job.reason) !== job.reason ? job.reason : undefined;
+  return (job?.state === 'kept' || job?.state === 'unconfirmed') && keptClause(job.reason) !== job.reason ? job.reason : undefined;
 }
 
 export interface Recordings { unsaved: UnsavedRecording[]; saved: SavedRecording[]; unreadable?: { whole: boolean; detail: string } | null }
@@ -107,7 +108,7 @@ export interface Head {
   sizes?: string | null;
   action: HeadAction | null;
   campaign: boolean;
-  bar?: number | null;
+  busy?: boolean;
   problem?: Problem;
 }
 
@@ -196,7 +197,7 @@ export function head(snapshot: Snapshot): Head {
       return { ...plain, glyph: !named, dot: 'red', label: 'Recording', detail: dateText(snapshot.hour),
         sizes: joined([spoolText(snapshot.spoolBytes), savedText(snapshot.savedBytes)]), action: snapshot.stopping ? null : 'stop', campaign: snapshot.campaign != null };
     case 'saving':
-      return { ...plain, glyph: !named, dot: 'spin', label: 'Saving recording…', bar: snapshot.progress };
+      return { ...plain, glyph: !named, dot: 'spin', label: 'Saving recording…', busy: true };
     case 'saved':
       return { ...plain, glyph: !named, dot: 'green', label: 'Saved', detail: omitted ?? joined([spanText(snapshot.firstHour, snapshot.hour), sizeText(snapshot.savedBytes)]),
         action: snapshot.recording ? 'open' : null };

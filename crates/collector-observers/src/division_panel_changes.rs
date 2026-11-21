@@ -185,8 +185,9 @@ pub fn active() -> usize {
         .saturating_add(STATES.active())
         .saturating_add(VARIANT_ACTIVE.load(Ordering::SeqCst))
 }
-#[doc = " # Safety"]
-#[doc = " Both patch owners must be quiescent."]
+/// # Safety
+/// Both patch owners must be quiescent, and the acquisition pool, which reads these registries,
+/// must have stopped.
 pub unsafe fn release() {
     unsafe {
         OPERANDS.release();

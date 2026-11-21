@@ -18,8 +18,8 @@ use windows_sys::Win32::{
         Diagnostics::{
             Debug::{
                 CONTEXT, CONTEXT_CONTROL_AMD64, FlushInstructionCache, GetThreadContext,
-                IMAGE_RUNTIME_FUNCTION_ENTRY, IMAGE_RUNTIME_FUNCTION_ENTRY_0, RtlAddFunctionTable,
-                RtlDeleteFunctionTable,
+                IMAGE_RUNTIME_FUNCTION_ENTRY, IMAGE_RUNTIME_FUNCTION_ENTRY_0, ReadProcessMemory,
+                RtlAddFunctionTable, RtlDeleteFunctionTable,
             },
             ToolHelp::*,
         },
@@ -85,19 +85,21 @@ pub struct Hook {
 }
 
 impl Hook {
-    #[doc = " # Safety"]
-    #[doc = " Caller verified the executable, all 16 sentinel bytes, and that no"]
-    #[doc = " native CALL return address falls in the five patched bytes: unwind"]
-    #[doc = " epilogue decoding must never see our jump at a caller's return PC."]
+    /// # Safety
+    /// Caller verified the executable, all 16 sentinel bytes, and that no
+    /// native CALL return address falls in the five patched bytes: unwind
+    /// epilogue decoding must never see our jump at a caller's return PC.
+    /// `callback` is code with the hooked function's ABI and entry state, and
+    /// stays mapped until the hook is removed and its calls have drained.
     pub unsafe fn new(site: usize, callback: usize, original: [u8; 16]) -> Result<Self, String> {
         unsafe { Self::new_span(site, callback, original, original.len()) }
     }
 
-    #[doc = " Bind the native flight counter and complete callback range before publication."]
-    #[doc = " The owner must retain both on native escape and quiesce the DLL before unload."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The requirements of [`Self::new`] apply. Retain the flight counter and stub until native calls have quiesced before unloading the DLL."]
+    /// Bind the native flight counter and complete callback range before publication.
+    /// The owner must retain both on native escape and quiesce the DLL before unload.
+    ///
+    /// # Safety
+    /// The requirements of [`Self::new`] apply. Retain the flight counter and stub until native calls have quiesced before unloading the DLL.
     pub unsafe fn new_with_safety(
         site: usize,
         callback: usize,
@@ -114,6 +116,9 @@ impl Hook {
         })
     }
 
+    /// # Safety
+    /// The requirements of [`Self::new`] apply, with the first `sentinel_len` bytes of `original` the
+    /// span verified before each publication; the detour relocates the instructions it overwrites.
     unsafe fn new_span(
         site: usize,
         callback: usize,
@@ -194,13 +199,13 @@ impl Hook {
         })
     }
 
-    #[doc = " Relocate PUSH RBX; PUSH R15; SUB RSP,imm8 with partial-prologue unwind records."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " Authenticate the full sentinel and exclude incoming branches and return PCs"]
-    #[doc = " inside the eight-byte prologue. The following instruction must reload RAX"]
-    #[doc = " from [RDX]. The callback must tail-jump to the trampoline"]
-    #[doc = " with the native entry stack and registers restored; quiesce before dropping."]
+    /// Relocate PUSH RBX; PUSH R15; SUB RSP,imm8 with partial-prologue unwind records.
+    ///
+    /// # Safety
+    /// Authenticate the full sentinel and exclude incoming branches and return PCs
+    /// inside the eight-byte prologue. The following instruction must reload RAX
+    /// from [RDX]. The callback must tail-jump to the trampoline
+    /// with the native entry stack and registers restored; quiesce before dropping.
     pub unsafe fn new_push_frame(
         site: usize,
         callback: usize,
@@ -320,13 +325,13 @@ impl Hook {
         }
     }
 
-    #[doc = " Replace one verified five-byte CALL with a CALL to the relay. The callback invokes the"]
-    #[doc = " original call target itself, then returns to return point after the five-byte CALL. Its"]
-    #[doc = " native caller's frame and unwind information stay intact. The relocation trampoline is"]
-    #[doc = " retained for ownership, never invoked."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " Authenticate the executable and sentinel, provide a callback with the native call ABI, and retain its code until restoration and quiescence complete."]
+    /// Replace one verified five-byte CALL with a CALL to the relay. The callback invokes the
+    /// original call target itself, then returns to return point after the five-byte CALL. Its
+    /// native caller's frame and unwind information stay intact. The relocation trampoline is
+    /// retained for ownership, never invoked.
+    ///
+    /// # Safety
+    /// Authenticate the executable and sentinel, provide a callback with the native call ABI, and retain its code until restoration and quiescence complete.
     pub unsafe fn new_call(
         site: usize,
         callback: usize,
@@ -335,11 +340,11 @@ impl Hook {
         unsafe { Self::new_call_span(site, callback, original, original.len()) }
     }
 
-    #[doc = " Verify only the owned span: the two naval CALLs need 16 / 13 bytes;"]
-    #[doc = " the latter ends at the next native function."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The requirements of [`Self::new_call`] apply to the complete owned sentinel span."]
+    /// Verify only the owned span: the two naval CALLs need 16 / 13 bytes;
+    /// the latter ends at the next native function.
+    ///
+    /// # Safety
+    /// The requirements of [`Self::new_call`] apply to the complete owned sentinel span.
     pub unsafe fn new_call_span(
         site: usize,
         callback: usize,
@@ -356,10 +361,10 @@ impl Hook {
         })
     }
 
-    #[doc = " Keep a counted native CALL's entry, original and exit alive through restore."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The requirements of [`Self::new_call`] apply. The supplied counter and stub must cover every native entry, target call, return and unwind until quiescence."]
+    /// Keep a counted native CALL's entry, original and exit alive through restore.
+    ///
+    /// # Safety
+    /// The requirements of [`Self::new_call`] apply. The supplied counter and stub must cover every native entry, target call, return and unwind until quiescence.
     pub unsafe fn new_call_with_safety(
         site: usize,
         callback: usize,
@@ -376,16 +381,16 @@ impl Hook {
         })
     }
 
-    #[doc = " Replace the leader-action indirect CALLs, FF 90 disp32, with CALL relay; NOP. The counted"]
-    #[doc = " stub forwards the live RAX-based target and native arguments, then returns to the return"]
-    #[doc = " point after the five-byte CALL. Their caller has no unwind handler/chain; the five- and"]
-    #[doc = " six-byte return points share the same body unwind state, after its ten-byte prologue. Its"]
-    #[doc = " counter must cover the target until its return PC is no longer in use, including unwind."]
-    #[doc = " Rust cleanup must not clear it before Windows finishes traversing the stub. The stub range"]
-    #[doc = " covers uncounted entry/exit instructions."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " Authenticate the executable and sentinel and verify the documented unwind state. The callback must preserve the native call ABI and the counter and stub must remain valid through every native return or unwind."]
+    /// Replace the leader-action indirect CALLs, FF 90 disp32, with CALL relay; NOP. The counted
+    /// stub forwards the live RAX-based target and native arguments, then returns to the return
+    /// point after the five-byte CALL. Their caller has no unwind handler/chain; the five- and
+    /// six-byte return points share the same body unwind state, after its ten-byte prologue. Its
+    /// counter must cover the target until its return PC is no longer in use, including unwind.
+    /// Rust cleanup must not clear it before Windows finishes traversing the stub. The stub range
+    /// covers uncounted entry/exit instructions.
+    ///
+    /// # Safety
+    /// Authenticate the executable and sentinel and verify the documented unwind state. The callback must preserve the native call ABI and the counter and stub must remain valid through every native return or unwind.
     pub unsafe fn new_indirect_call(
         site: usize,
         callback: usize,
@@ -1064,6 +1069,7 @@ fn live_stack_holds(sp: usize, mut holds: impl FnMut(&[usize]) -> bool) -> Optio
         | PAGE_EXECUTE_WRITECOPY;
     let mut at = sp.checked_next_multiple_of(WORD)?;
     let mut allocation = None;
+    let mut bytes = [0_u8; 512 * WORD];
     let mut buffer = [0_usize; 512];
     loop {
         let mut region: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
@@ -1092,8 +1098,24 @@ fn live_stack_holds(sp: usize, mut holds: impl FnMut(&[usize]) -> bool) -> Optio
             if count == 0 {
                 return None;
             }
-            for (index, word) in buffer[..count].iter_mut().enumerate() {
-                *word = unsafe { ptr::read_volatile((at as *const usize).add(index)) };
+            let copied = &mut bytes[..count * WORD];
+            let mut read = 0;
+            // SAFETY: the system copies the range into this function's own buffer and reports a
+            // range it cannot read instead of raising an exception while other threads are held.
+            let ok = unsafe {
+                ReadProcessMemory(
+                    GetCurrentProcess(),
+                    at as *const c_void,
+                    copied.as_mut_ptr().cast(),
+                    copied.len(),
+                    &mut read,
+                )
+            };
+            if ok == 0 || read != copied.len() {
+                return None;
+            }
+            for (word, chunk) in buffer.iter_mut().zip(copied.chunks_exact(WORD)) {
+                *word = <[u8; WORD]>::try_from(chunk).map_or(0, usize::from_ne_bytes);
             }
             if holds(&buffer[..count]) {
                 return Some(true);

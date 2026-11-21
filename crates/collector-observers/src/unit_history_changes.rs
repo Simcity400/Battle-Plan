@@ -81,8 +81,9 @@ pub fn carried() {
 pub fn refused() {
     REFUSED.fetch_add(1, Ordering::Relaxed);
 }
-#[doc = " # Safety"]
-#[doc = " All owning and forwarding hooks must be disabled and quiescent."]
+/// # Safety
+/// All owning and forwarding hooks must be disabled and quiescent, and the acquisition pool, which
+/// reads these registries, must have stopped.
 pub unsafe fn release() {
     unsafe {
         WATCHES.release();

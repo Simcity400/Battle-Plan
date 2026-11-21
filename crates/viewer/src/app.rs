@@ -2579,6 +2579,7 @@ impl Viewer {
         let ctx = ctx.clone();
         let startup_content = self.startup_content.take();
         job_priority::spawn(move || {
+            viewer_foundation::worker_priority::background_priority();
             let _stage = viewer_foundation::load_record::stage("load");
             let _generation = startup_content.as_ref().map_or_else(
                 content_reader_core::content::Generation::enter,

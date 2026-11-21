@@ -92,12 +92,12 @@ fn a_recording_compressed_again_reads_as_it_did_and_is_smaller() {
         true
     })
     .unwrap();
-    let Outcome::Replaced { before: length, after } = outcome else { panic!("{outcome:?}") };
+    let Outcome::Replaced { before: length, after, unflushed: None } = outcome else { panic!("{outcome:?}") };
     assert_eq!(length, bytes.len() as u64);
     assert!(after < length, "{after} bytes against {length}");
     assert_eq!(fs::metadata(&path).unwrap().len(), after);
     assert_eq!(level_of(&path).unwrap(), Some(19));
-    assert!(!partial_path(&path).exists());
+    assert!(partials(&path).unwrap().is_empty());
     let last = told.last().unwrap();
     assert_eq!(last.units, last.total);
     assert_eq!(last.total, u64::from(RUNS.iter().map(|run| run.2).sum::<u32>()) * TABLE_COUNT as u64);
@@ -110,12 +110,14 @@ fn a_recompress_stopped_midway_leaves_the_recording_whole_and_its_partial_unlist
     let folder = Folder::new("stopped");
     let bytes = fixtures::restored(7, &RUNS[1..]);
     let path = folder.recording(&bytes);
-    let partial = partial_path(&path);
+    let staged = Staged::beside(&path).unwrap();
+    let partial = staged.path.clone();
+    staged.keep();
     let mut units = 0;
-    let stopped = write_partial(&path, &partial, 19, false, |progress| {
+    let stopped = write_paced(&path, || Ok(File::create(&partial).unwrap()), 19, false, |progress| {
         units = progress.units;
         progress.units < 3
-    });
+    }, Pace::here());
     assert!(matches!(stopped, Err(Kept::Stopped)), "{stopped:?}");
     assert_eq!(units, 3);
     assert!(fs::metadata(&partial).unwrap().len() > 0, "the stopped write is left as a killed process leaves it");
@@ -126,8 +128,44 @@ fn a_recompress_stopped_midway_leaves_the_recording_whole_and_its_partial_unlist
     let before = folder.0.join("before.battleplan");
     fs::write(&before, &bytes).unwrap();
     assert!(matches!(recompress_file(&path, 19, false, |_| true), Ok(Outcome::Replaced { .. })));
-    assert!(!partial.exists());
+    assert!(partials(&path).unwrap().is_empty(), "the retry reclaims what the killed attempt left");
+    let digest = partial.file_name().unwrap().to_string_lossy().split(".recompress.").next().unwrap().to_owned();
+    let legacy = partial.with_file_name(format!("{digest}.recompress.tmp"));
+    let someone_elses = partial.with_file_name(format!("{digest}.recompress.backup.tmp"));
+    fs::write(&legacy, b"left by an older build").unwrap();
+    fs::write(&someone_elses, b"not a recompression").unwrap();
+    assert_eq!(partials(&path).unwrap(), [legacy], "only names a recompression writes are its leftovers");
+    assert!(someone_elses.exists());
     assert_reads_alike(&before, &path);
+}
+
+#[test]
+fn a_finished_partial_belongs_to_its_attempt_until_the_destination_is_checked() {
+    let folder = Folder::new("interleaved");
+    let bytes = fixtures::restored(7, &RUNS[1..]);
+    let path = folder.recording(&bytes);
+    let before = folder.0.join("before.hoi4replay");
+    fs::write(&before, &bytes).unwrap();
+    let Written::Whole(original, first) = write_paced(&path, || Staged::beside(&path), 19, false, |_| true, Pace::here()).unwrap() else { panic!("the first attempt wrote nothing") };
+    let replaced = recompress_file(&path, 3, false, |_| true);
+    assert!(matches!(replaced, Ok(Outcome::Replaced { .. })), "{replaced:?}");
+    assert_eq!(partials(&path).unwrap(), [first.path.clone()], "the second attempt staged apart and left the first's");
+    let published = fs::read(&path).unwrap();
+    let kept = publish(&path, first, original);
+    assert!(matches!(kept, Err(Kept::Changed)), "{kept:?}");
+    assert_eq!(fs::read(&path).unwrap(), published);
+    assert_eq!(level_of(&path).unwrap(), Some(3));
+    assert!(partials(&path).unwrap().is_empty());
+    assert_reads_alike(&before, &path);
+
+    let Written::Whole(original, staged) = write_paced(&path, || Staged::beside(&path), 19, false, |_| true, Pace::here()).unwrap() else { panic!("the attempt wrote nothing") };
+    let mut grown = published.clone();
+    grown.extend_from_slice(&[0; 16]);
+    fs::write(&path, &grown).unwrap();
+    let kept = publish(&path, staged, original);
+    assert!(matches!(kept, Err(Kept::Changed)), "{kept:?}");
+    assert_eq!(fs::read(&path).unwrap(), grown);
+    assert!(partials(&path).unwrap().is_empty());
 }
 
 #[test]
@@ -137,7 +175,7 @@ fn a_recording_already_at_the_level_is_left_alone() {
     let path = folder.recording(&bytes);
     assert_eq!(recompress_file(&path, 19, false, |_| true).unwrap(), Outcome::AlreadyAt(19));
     assert_eq!(fs::read(&path).unwrap(), bytes);
-    assert!(!partial_path(&path).exists());
+    assert!(partials(&path).unwrap().is_empty());
 }
 
 #[test]
@@ -160,7 +198,7 @@ fn a_recording_still_being_written_is_refused_by_name() {
     fs::write(&path, &unsaved).unwrap();
     assert!(matches!(recompress_file(&path, 19, false, |_| true), Err(Kept::Recording)));
     assert_eq!(fs::read(&path).unwrap(), unsaved);
-    assert!(!partial_path(&path).exists());
+    assert!(partials(&path).unwrap().is_empty());
 }
 
 #[test]
@@ -175,7 +213,7 @@ fn a_recording_opened_elsewhere_while_compressed_is_kept_as_it_was() {
     });
     assert!(matches!(kept, Err(Kept::OpenElsewhere)), "{kept:?}");
     assert_eq!(fs::read(&path).unwrap(), bytes);
-    assert!(!partial_path(&path).exists());
+    assert!(partials(&path).unwrap().is_empty());
     drop(reader);
     assert!(matches!(recompress_file(&path, 19, false, |_| true), Ok(Outcome::Replaced { .. })));
 }
@@ -309,8 +347,8 @@ fn a_very_large_unit_keeps_every_worker_busy_and_writes_the_same_bytes() {
     let hold = Arc::new(Hold { above: above as usize, units: later, taken: AtomicBool::new(false), seen: Mutex::new(None) });
     let paced = |name: &str, pace: Pace| {
         let partial = folder.0.join(name);
-        let written = write_paced(&path, &partial, 3, false, |_| true, pace);
-        assert!(matches!(written, Ok(Written::Whole(_))), "{written:?}");
+        let written = write_paced(&path, || Ok(File::create(&partial).unwrap()), 3, false, |_| true, pace);
+        assert!(matches!(written, Ok(Written::Whole(..))), "{written:?}");
         fs::read(&partial).unwrap()
     };
     let held = paced("held.tmp", Pace { workers: 4, window: 2 * units[large].1, hold: Some(Arc::clone(&hold)), parts: None });
@@ -329,8 +367,8 @@ fn a_unit_waits_for_its_part_frames_task_to_say_it_is_done() {
     let hold = Arc::new(PartsHold { taken: AtomicBool::new(false), seen: Mutex::new(None) });
     let paced = |name: &str, pace: Pace| {
         let partial = folder.0.join(name);
-        let written = write_paced(&path, &partial, 3, false, |_| true, pace);
-        assert!(matches!(written, Ok(Written::Whole(_))), "{written:?}");
+        let written = write_paced(&path, || Ok(File::create(&partial).unwrap()), 3, false, |_| true, pace);
+        assert!(matches!(written, Ok(Written::Whole(..))), "{written:?}");
         fs::read(&partial).unwrap()
     };
     let held = paced("held.tmp", Pace { workers: 2, window: 0, hold: None, parts: Some(Arc::clone(&hold)) });

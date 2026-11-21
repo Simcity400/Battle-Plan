@@ -183,6 +183,10 @@ fn run(
 ) {
     let class = wide(CLASS);
     let title = wide("BattlePlan map");
+    // SAFETY: every Win32 call below runs on this thread, which owns the window and its
+    // message loop. WM_NCCREATE adopts the state box and sets `adopted`, and WM_NCDESTROY then
+    // frees it; when creation fails before adoption, this function frees it instead, so the box
+    // is released exactly once.
     unsafe {
         let instance = GetModuleHandleW(std::ptr::null());
         let mut description: WNDCLASSEXW = std::mem::zeroed();
@@ -249,6 +253,7 @@ fn run(
 
 fn monitors() -> Vec<HMONITOR> {
     unsafe extern "system" fn each(monitor: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> i32 {
+        // SAFETY: `data` is the vector passed below, alive for the enumeration.
         unsafe { (*(data as *mut Vec<HMONITOR>)).push(monitor) };
         1
     }
@@ -285,6 +290,7 @@ fn fill(hwnd: HWND, monitor: HMONITOR) {
     let Some((x, y, width, height)) = fitted(work_area(monitor)) else {
         return;
     };
+    // SAFETY: this thread owns `hwnd`; the state pointer is the window's own box.
     unsafe {
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const State;
         if !state.is_null() {
@@ -312,6 +318,7 @@ unsafe extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // SAFETY: WM_NCCREATE stores the state box CreateWindowExW passed; WM_NCDESTROY frees it.
     unsafe {
         if message == WM_NCCREATE {
             let create = &*(lparam as *const CREATESTRUCTW);

@@ -1089,9 +1089,9 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " Caller owns this family and the authenticated process image, and retains"]
-    #[doc = " every patch and callback until restoration and native quiescence."]
+    /// # Safety
+    /// Caller owns this family and the authenticated process image, and retains
+    /// every patch and callback until restoration and native quiescence.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if SITES.iter().all(|s| {

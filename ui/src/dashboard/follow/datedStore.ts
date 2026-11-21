@@ -6,7 +6,7 @@ import type { Release } from './decode';
 export interface Coverage { start: number; through: number }
 interface Picture extends Coverage { panel: FollowedPanel; cells: number[]; seeds: Map<number, CellGroup> }
 interface Reading { entry: FollowEntry; branch: string; offset: number; seek?: number; candidate?: Picture; shown?: Coverage; stream?: Route; lane?: { hour: number }; cells: Map<number, CellGroup>;
-  ends?: number }
+  ends?: number; waiting?: number }
 interface LaneClock { hour: number; limited?: Map<number, number> }
 function coverageClock(clock: LaneClock, id: number) {
   return { get hour() { return clock.limited?.get(id) ?? clock.hour; } };
@@ -122,7 +122,7 @@ export class DatedStore {
     for (const r of this.members.get(branch) ?? []) {
       for (const id of r.candidate?.cells ?? []) this.dependents.delete(id);
       const interval = retainThrough === undefined ? undefined : this.coverage(r.entry);
-      r.candidate = undefined; r.ends = undefined; r.seek = undefined; r.stream = undefined; r.lane = undefined;
+      r.candidate = undefined; r.ends = undefined; r.waiting = undefined; r.seek = undefined; r.stream = undefined; r.lane = undefined;
       if (retainThrough !== undefined && interval && interval.start <= retainThrough && retainThrough <= interval.through) {
         r.shown = interval; r.entry.version++; this.changed(r.entry); continue;
       }
@@ -180,8 +180,10 @@ export class DatedStore {
           if (!r) return;
           r.offset = item.batch.clock;
           if (p.stepped) r.stream = this.byId.get(route);
+          if (p.waiting) { r.waiting ??= p.hour; this.present(r); return; }
           if (!p.panel) {
             if (r.candidate) r.candidate.through = Math.max(r.candidate.through, p.hour);
+            r.waiting = undefined;
           } else {
             if (r.candidate && p.hour < r.candidate.start) return;
             const cells: number[] = [];
@@ -198,7 +200,8 @@ export class DatedStore {
               seeds.set(spec.follow, seeded);
             }
             for (const id of r.candidate?.cells ?? []) if (!cells.includes(id)) this.dropGroup(id, r);
-            if (r.shown) r.ends ??= p.hour - 1;
+            if (r.shown) r.ends ??= Math.min(p.hour, r.waiting ?? Infinity) - 1;
+            r.waiting = undefined;
             r.candidate = { start: p.hour, through: p.hour, panel: p.panel, cells, seeds };
           }
           this.present(r);
@@ -212,8 +215,8 @@ export class DatedStore {
         if (stream) {
           stream.through = completed;
           stream.stepHour = completed - item.batch.clock;
-          for (const r of this.readings.values()) if (r.stream === stream && r.candidate?.cells.length && r.candidate.through < completed) {
-            r.candidate.through = completed;
+          for (const r of this.readings.values()) if (r.stream === stream && r.candidate?.cells.length && r.candidate.through < Math.min(completed, (r.waiting ?? Infinity) - 1)) {
+            r.candidate.through = Math.min(completed, (r.waiting ?? Infinity) - 1);
             this.present(r);
           }
         }
@@ -238,7 +241,7 @@ export class DatedStore {
           for (const [id, g] of this.groups) if (g.route === route) this.groups.delete(id);
           for (const r of this.readings.values()) if (this.reading(r.entry.id, route)) {
             for (const id of r.candidate?.cells ?? []) this.dependents.delete(id);
-            r.candidate = undefined; r.ends = undefined; r.seek = undefined; r.stream = undefined; r.lane = undefined;
+            r.candidate = undefined; r.ends = undefined; r.waiting = r.shown && r.shown.through + 1; r.seek = undefined; r.stream = undefined; r.lane = undefined;
           }
         }
         stream.lane.limited = message.limited;
@@ -263,7 +266,7 @@ export class DatedStore {
             if (r) {
               r.offset = message.clock;
               r.entry.answer = answer; r.entry.hour = start; r.entry.through = through;
-              r.seek = stamp; r.lane = lane; r.shown = { start, through: r.entry.through };
+              r.seek = stamp; r.lane = lane; r.shown = { start, through: r.entry.through }; r.waiting = undefined;
               r.entry.version++; this.changed(r.entry);
             }
           }
@@ -317,6 +320,12 @@ export class DatedStore {
   coverage(entry: FollowEntry) {
     const r = this.readings.get(entry.id);
     if (!r?.shown) return null;
+    const covered = this.covered(r as Reading & { shown: Coverage });
+    if (!covered || r.waiting === undefined) return covered;
+    return { start: covered.start, through: Math.max(r.shown.through, Math.min(covered.through, r.waiting - 1)) };
+  }
+
+  private covered(r: Reading & { shown: Coverage }) {
     if (r.lane) return { start: r.shown.start, through: Math.max(r.shown.through, r.lane.hour) };
     if (r.candidate && r.candidate.panel !== r.entry.panel) {
       let through = Math.min(r.ends ?? r.candidate.start - 1, r.stream?.through ?? r.shown.through);

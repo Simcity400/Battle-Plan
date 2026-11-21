@@ -316,7 +316,7 @@ impl Default for Projection {
     }
 }
 pub struct Frame {
-    pub store_bytes: usize,
+    pub store_bytes: Option<usize>,
     pending_heap: usize,
     pending: Pending,
     projection: Option<a::SharedBox<SharedProjection>>,
@@ -327,7 +327,7 @@ pub struct Frame {
 impl Default for Frame {
     fn default() -> Self {
         Self {
-            store_bytes: 0,
+            store_bytes: None,
             pending_heap: 0,
             pending: Pending::default(),
             projection: None,
@@ -354,6 +354,7 @@ impl Frame {
                 * std::mem::size_of::<Action<DoctrineEquipmentBonusRow>>()
     }
     pub fn reset(&mut self) {
+        self.store_bytes = None;
         self.projection = None;
         self.rows = None;
         self.counts = [0; N];
@@ -642,7 +643,7 @@ impl Store {
             self.grants.rows.len(),
             self.equipment.rows.len(),
         ];
-        frame.store_bytes = self.allocated_bytes();
+        frame.store_bytes = Some(self.allocated_bytes());
         self.failed = false;
         Ok(())
     }
@@ -1140,9 +1141,9 @@ impl Store {
     }
 }
 
-#[doc = " The host retains this mutex until native callbacks have quiesced."]
-#[doc = " # Safety"]
-#[doc = " `context` is the registered live mutex, owned for the entire observer lifetime."]
+/// The host retains this mutex until native callbacks have quiesced.
+/// # Safety
+/// `context` is the registered live mutex, owned for the entire observer lifetime.
 pub unsafe fn observe(context: usize, domain: Domain, pointer: usize) {
     if domain == Domain::GrantExpiry {
         changes::defer_expiry(pointer);
@@ -1169,14 +1170,14 @@ pub unsafe fn observe(context: usize, domain: Domain, pointer: usize) {
     }
 }
 
-#[doc = " # Safety"]
-#[doc = " Uses the retained context and quiescence contract of `observe`."]
+/// # Safety
+/// Uses the retained context and quiescence contract of `observe`.
 pub unsafe fn observe_cost_consumption(_context: usize, pointer: usize, _folder: usize) {
     changes::mark(Domain::Costs, pointer);
 }
 
-#[doc = " # Safety"]
-#[doc = " The context follows the same lifetime contract as `observe`."]
+/// # Safety
+/// The context follows the same lifetime contract as `observe`.
 pub unsafe fn observe_gain(_context: usize, pointer: usize, value: i64) {
     changes::defer_gain(pointer, value);
 }

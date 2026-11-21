@@ -199,14 +199,14 @@ pub(crate) fn publish_preference_lifetime(enabled: bool, installed: usize) {
 }
 
 impl Hooks {
-    #[doc = " The runtime's build gate admitted this family before construction."]
-    #[doc = " A differing sentinel leaves the family uninstalled; WingEquipment then"]
-    #[doc = " reads every wing afresh."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// The runtime's build gate admitted this family before construction.
+    /// A differing sentinel leaves the family uninstalled; WingEquipment then
+    /// reads every wing afresh.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         use engine_mutations::{
             air_wing_equipment_mutations::Receiver,
@@ -299,6 +299,9 @@ impl Hooks {
 impl Drop for Hooks {
     fn drop(&mut self) {
         crate::wing_preferences::lifetime_enabled(false);
+        // SAFETY: like each Hook's relay, the watch tables are dropped only
+        // once the hooks were never enabled, or were removed and drained
+        // after the last capture.
         unsafe { WATCHES.registry.release() };
     }
 }

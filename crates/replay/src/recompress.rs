@@ -17,7 +17,10 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
 };
-use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
+use windows_sys::Win32::{
+    Foundation::GENERIC_WRITE,
+    Storage::FileSystem::{DELETE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE},
+};
 
 #[cfg(test)]
 mod tests;
@@ -29,7 +32,6 @@ pub enum Kept {
     Recording,
     OpenElsewhere,
     Changed,
-    Busy,
     Stopped,
     Failed(String),
 }
@@ -40,7 +42,6 @@ impl fmt::Display for Kept {
             Self::Recording => formatter.write_str("still being written by BattlePlan Recorder"),
             Self::OpenElsewhere => formatter.write_str("open in the desktop app or another program"),
             Self::Changed => formatter.write_str("it changed while it was being compressed"),
-            Self::Busy => formatter.write_str("another compress of it is running"),
             Self::Stopped => formatter.write_str("stopped before the smaller file was whole"),
             Self::Failed(why) => formatter.write_str(why),
         }
@@ -53,9 +54,9 @@ impl From<io::Error> for Kept {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    Replaced { before: u64, after: u64 },
+    Replaced { before: u64, after: u64, unflushed: Option<String> },
     AlreadyAt(i32),
 }
 
@@ -67,8 +68,89 @@ pub struct Progress {
     pub written: u64,
 }
 
-pub fn partial_path(path: &Path) -> PathBuf {
-    publication::temporary_beside(path, "recompress")
+pub fn partials(path: &Path) -> io::Result<Vec<PathBuf>> {
+    let digest = staging_digest(path);
+    let folder = folder_of(path);
+    Ok(leftovers(folder)?.into_iter().filter(|(_, held)| *held == digest).map(|(staged, _)| staged).collect())
+}
+
+fn folder_of(path: &Path) -> &Path {
+    path.parent().filter(|folder| !folder.as_os_str().is_empty()).unwrap_or(Path::new("."))
+}
+
+pub fn leftovers(folder: &Path) -> io::Result<Vec<(PathBuf, String)>> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(folder)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if let Some(digest) = name.to_str().and_then(staged_name) {
+            found.push((entry.path(), digest.to_owned()));
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+pub fn staging_digest(path: &Path) -> String {
+    let stem = publication::temporary_beside(path, "recompress");
+    let name = stem.file_name().unwrap_or_default().to_string_lossy();
+    name.split('.').next().unwrap_or_default().to_owned()
+}
+
+fn staged_name(name: &str) -> Option<&str> {
+    let (digest, rest) = name.split_once(".recompress.")?;
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    let attempt = rest == "tmp" || rest.strip_suffix(".tmp").and_then(|attempt| attempt.split_once('-')).is_some_and(|(process, attempt)| digits(process) && digits(attempt));
+    (digest.len() == 32 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()) && attempt).then_some(digest)
+}
+
+#[derive(Debug)]
+struct Staged {
+    path: PathBuf,
+    file: Option<File>,
+}
+
+impl Staged {
+    fn beside(path: &Path) -> Result<Self, Kept> {
+        static ATTEMPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        loop {
+            let attempt = ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let staged = publication::temporary_beside(path, &format!("recompress.{}-{attempt}", std::process::id()));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .access_mode(GENERIC_WRITE | DELETE)
+                .share_mode(0)
+                .open(&staged)
+            {
+                Ok(file) => return Ok(Self { path: staged, file: Some(file) }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(Kept::Failed(format!("{}: {error}", staged.display()))),
+            }
+        }
+    }
+
+    fn file(&self) -> &File {
+        self.file.as_ref().expect("a staged file is held until it is published or dropped")
+    }
+
+    fn keep(mut self) {
+        self.file = None;
+    }
+}
+
+impl std::borrow::Borrow<File> for Staged {
+    fn borrow(&self) -> &File {
+        self.file()
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        if self.file.take().is_some() {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 pub fn level_of(path: &Path) -> io::Result<Option<i32>> {
@@ -86,26 +168,31 @@ pub fn recompress_file(
     if below_normal {
         enter_below_normal()?;
     }
-    let partial = partial_path(path);
-    let result = match write_partial(path, &partial, level, below_normal, progress) {
-        Ok(Written::Already(level)) => Ok(Outcome::AlreadyAt(level)),
-        Ok(Written::Whole(original)) => swap(path, &partial, original),
-        Err(kept) => Err(kept),
+    let stage = || {
+        for partial in partials(path)? {
+            let _ = std::fs::remove_file(partial);
+        }
+        Staged::beside(path)
     };
-    if !matches!(result, Ok(Outcome::Replaced { .. })) {
-        let _ = std::fs::remove_file(&partial);
+    match write_paced(path, stage, level, below_normal, progress, Pace::here())? {
+        Written::Already(level) => {
+            for partial in partials(path)? {
+                let _ = std::fs::remove_file(partial);
+            }
+            Ok(Outcome::AlreadyAt(level))
+        }
+        Written::Whole(original, staged) => publish(path, staged, original),
     }
-    result
 }
 
 #[derive(Debug)]
-pub enum Written {
+enum Written<S> {
     Already(i32),
-    Whole(Original),
+    Whole(Original, S),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Original {
+struct Original {
     length: u64,
     footer: [u8; FOOTER_BYTES],
 }
@@ -121,11 +208,7 @@ impl Original {
     }
 }
 
-pub fn write_partial(path: &Path, partial: &Path, level: i32, below_normal: bool, progress: impl FnMut(&Progress) -> bool) -> Result<Written, Kept> {
-    write_paced(path, partial, level, below_normal, progress, Pace::here())
-}
-
-fn write_paced(path: &Path, partial: &Path, level: i32, below_normal: bool, mut progress: impl FnMut(&Progress) -> bool, pace: Pace) -> Result<Written, Kept> {
+fn write_paced<S: std::borrow::Borrow<File>>(path: &Path, stage: impl FnOnce() -> Result<S, Kept>, level: i32, below_normal: bool, mut progress: impl FnMut(&Progress) -> bool, pace: Pace) -> Result<Written<S>, Kept> {
     refuse_writer(path)?;
     let file = shared(path)?;
     let original = Original::of(&file)?;
@@ -138,17 +221,8 @@ fn write_paced(path: &Path, partial: &Path, level: i32, below_normal: bool, mut 
         return Ok(Written::Already(level));
     }
     let source = Source { file: &file, length: through };
-    let out = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .share_mode(0)
-        .open(partial)
-        .map_err(|error| match error.raw_os_error() {
-            Some(32) => Kept::Busy,
-            _ => Kept::Failed(format!("{}: {error}", partial.display())),
-        })?;
-    let tracked = Tracked { file: BufWriter::with_capacity(1 << 20, out), at: 0 };
+    let staged = stage()?;
+    let tracked = Tracked { file: BufWriter::with_capacity(1 << 20, std::borrow::Borrow::<File>::borrow(&staged)), at: 0 };
     let mut writer = ContainerWriter::create_after(tracked, root.identity.clone(), level, root.revision, None)?;
     for section in &root.sections {
         writer.section(section.key, section.version)?;
@@ -157,20 +231,25 @@ fn write_paced(path: &Path, partial: &Path, level: i32, below_normal: bool, mut 
     rewrite_sections(&source, &root, &mut writer, level)?;
     writer.commit(None, true, Tracked::sync)?;
     writer.into_inner().finish()?;
-    Ok(Written::Whole(original))
+    Ok(Written::Whole(original, staged))
 }
 
-fn swap(path: &Path, partial: &Path, original: Original) -> Result<Outcome, Kept> {
+fn publish(path: &Path, staged: Staged, original: Original) -> Result<Outcome, Kept> {
+    let folder = folder_of(path);
+    let _names = crate::recording_files::NamesLock::wait(folder)?;
     refuse_writer(path)?;
-    if Original::of(&exclusive(path)?)? != original {
+    let held = exclusive(path)?;
+    if Original::of(&held)? != original {
         return Err(Kept::Changed);
     }
-    if let Err(error) = publication::replace_unopened(partial, path) {
-        exclusive(path)?;
-        return Err(Kept::Failed(format!("{}: {error}", path.display())));
-    }
-    let after = std::fs::metadata(path)?.len();
-    Ok(Outcome::Replaced { before: original.length, after })
+    let after = staged.file().metadata()?.len();
+    let unflushed = match publication::replace_held(staged.file(), path, held) {
+        Ok(()) => None,
+        Err(publication::ReplaceError::Unflushed(error)) => Some(error.to_string()),
+        Err(publication::ReplaceError::Unrenamed(error)) => return Err(Kept::Failed(format!("{}: {error}", path.display()))),
+    };
+    staged.keep();
+    Ok(Outcome::Replaced { before: original.length, after, unflushed })
 }
 
 fn refuse_writer(path: &Path) -> Result<(), Kept> {
@@ -189,7 +268,7 @@ fn refuse_writer(path: &Path) -> Result<(), Kept> {
 fn exclusive(path: &Path) -> Result<File, Kept> {
     OpenOptions::new()
         .read(true)
-        .share_mode(0)
+        .share_mode(FILE_SHARE_DELETE)
         .open(path)
         .map_err(|error| match error.raw_os_error() {
             Some(32) => Kept::OpenElsewhere,
@@ -225,12 +304,12 @@ pub fn priority() -> (u32, i32) {
     unsafe { (GetPriorityClass(GetCurrentProcess()), GetThreadPriority(GetCurrentThread())) }
 }
 
-struct Tracked {
-    file: BufWriter<File>,
+struct Tracked<'f> {
+    file: BufWriter<&'f File>,
     at: u64,
 }
 
-impl Write for Tracked {
+impl Write for Tracked<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let written = self.file.write(bytes)?;
         self.at += written as u64;
@@ -242,7 +321,7 @@ impl Write for Tracked {
     }
 }
 
-impl Seek for Tracked {
+impl Seek for Tracked<'_> {
     fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
         match to {
             SeekFrom::Current(0) => Ok(self.at),
@@ -252,7 +331,7 @@ impl Seek for Tracked {
     }
 }
 
-impl Tracked {
+impl Tracked<'_> {
     fn sync(&mut self) -> io::Result<()> {
         self.file.flush()?;
         self.file.get_ref().sync_data()

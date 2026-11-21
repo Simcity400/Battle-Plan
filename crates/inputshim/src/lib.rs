@@ -7,7 +7,12 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::*,
-    System::{LibraryLoader::*, Memory::*, Threading::GetCurrentProcessId},
+    System::{
+        Diagnostics::Debug::ReadProcessMemory,
+        LibraryLoader::*,
+        Memory::*,
+        Threading::{GetCurrentProcess, GetCurrentProcessId},
+    },
     UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 
@@ -128,29 +133,59 @@ struct Slot {
     hook: usize,
 }
 
+fn copy(base: *mut u8, at: usize, out: &mut [u8]) -> Option<()> {
+    let mut read = 0;
+    let source = base.wrapping_add(at);
+    // SAFETY: the system copies into `out`, which this owns, and reports a range it cannot read
+    // instead of faulting.
+    let copied = unsafe {
+        ReadProcessMemory(
+            GetCurrentProcess(),
+            source.cast(),
+            out.as_mut_ptr().cast(),
+            out.len(),
+            &mut read,
+        )
+    };
+    (copied != 0 && read == out.len()).then_some(())
+}
+
+/// # Safety
+/// The process's main module stays loaded while this runs.
 unsafe fn imports() -> Option<Vec<Slot>> {
     let base = unsafe { GetModuleHandleW(ptr::null()) } as *mut u8;
-    if base.is_null() || unsafe { base.cast::<u16>().read_unaligned() } != 0x5a4d {
+    if base.is_null() {
         return None;
     }
-    let nt = unsafe { base.add(0x3c).cast::<u32>().read_unaligned() } as usize;
-    if nt > 0x1000
-        || unsafe { base.add(nt).cast::<u32>().read_unaligned() } != 0x4550
-        || unsafe { base.add(nt + 24).cast::<u16>().read_unaligned() } != 0x20b
-    {
-        return None;
-    }
-    let size = unsafe { base.add(nt + 80).cast::<u32>().read_unaligned() } as usize;
-    let bytes = unsafe { std::slice::from_raw_parts(base, size) };
-    let u32_at = |at: usize| {
-        Some(u32::from_le_bytes(
-            bytes.get(at..at.checked_add(4)?)?.try_into().ok()?,
-        ))
+    let bytes = |at: usize, limit: usize, out: &mut [u8]| {
+        if at.checked_add(out.len())? > limit {
+            return None;
+        }
+        copy(base, at, out)
     };
+    let word = |at: usize, limit: usize| {
+        let mut out = [0; 4];
+        bytes(at, limit, &mut out).map(|()| u32::from_le_bytes(out))
+    };
+    let mut magic = [0; 2];
+    bytes(0, usize::MAX, &mut magic)?;
+    if u16::from_le_bytes(magic) != 0x5a4d {
+        return None;
+    }
+    let nt = word(0x3c, usize::MAX)? as usize;
+    let mut optional = [0; 2];
+    if nt > 0x1000 || word(nt, usize::MAX)? != 0x4550 {
+        return None;
+    }
+    bytes(nt + 24, usize::MAX, &mut optional)?;
+    if u16::from_le_bytes(optional) != 0x20b {
+        return None;
+    }
+    let size = word(nt + 80, usize::MAX)? as usize;
+    let u32_at = |at: usize| word(at, size);
     let u64_at = |at: usize| {
-        Some(u64::from_le_bytes(
-            bytes.get(at..at.checked_add(8)?)?.try_into().ok()?,
-        ))
+        let mut out = [0; 8];
+        bytes(at, size, &mut out).map(|()| u64::from_le_bytes(out))
     };
     let names: [&[u8]; 7] = [
         b"GetCursorPos",
@@ -161,6 +196,7 @@ unsafe fn imports() -> Option<Vec<Slot>> {
         b"GetActiveWindow",
         b"GetFocus",
     ];
+    let longest = names.iter().map(|name| name.len()).max().unwrap_or(0);
     let replacements = [
         cursor as *const () as usize,
         asynchronous as *const () as usize,
@@ -176,6 +212,8 @@ unsafe fn imports() -> Option<Vec<Slot>> {
         return None;
     }
     let mut slots = Vec::new();
+    let mut buffer = [0_u8; 32];
+    let name = buffer.get_mut(..longest + 1)?;
     for descriptor in (directory..end).step_by(20) {
         let lookup = u32_at(descriptor)? as usize;
         let table = u32_at(descriptor + 16)? as usize;
@@ -193,9 +231,25 @@ unsafe fn imports() -> Option<Vec<Slot>> {
             }
             if imported >> 63 == 0 {
                 let start = (imported as usize).checked_add(2)?;
-                let tail = bytes.get(start..)?;
-                let length = tail.iter().position(|&byte| byte == 0)?;
-                if let Some(hook) = names.iter().position(|&name| name == &tail[..length]) {
+                let available = size.checked_sub(start)?.min(name.len());
+                let mut read = 0;
+                let mut length = None;
+                while length.is_none() && read < available {
+                    let address = (base as usize).wrapping_add(start + read);
+                    let chunk = (0x1000 - address % 0x1000).min(available - read);
+                    bytes(start + read, size, &mut name[read..read + chunk])?;
+                    length = name[read..read + chunk]
+                        .iter()
+                        .position(|&byte| byte == 0)
+                        .map(|end| read + end);
+                    read += chunk;
+                }
+                if length.is_none() && available < name.len() {
+                    return None;
+                }
+                let found = length
+                    .and_then(|length| names.iter().position(|&wanted| wanted == &name[..length]));
+                if let Some(hook) = found {
                     let address = table.checked_add(index)?;
                     u64_at(address)?;
                     if address % 8 != 0 {
@@ -214,6 +268,8 @@ unsafe fn imports() -> Option<Vec<Slot>> {
     (!slots.is_empty()).then_some(slots)
 }
 
+/// # Safety
+/// Only `DllMain` calls this, once, at process attach. The requirements of [`imports`] apply.
 unsafe fn install() -> bool {
     let Some(slots) = (unsafe { imports() }) else {
         return false;
@@ -294,6 +350,8 @@ unsafe fn install() -> bool {
     true
 }
 
+/// # Safety
+/// Only the Windows loader calls this, with its own arguments.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllMain(
     _module: HINSTANCE,

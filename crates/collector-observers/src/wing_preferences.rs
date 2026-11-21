@@ -244,6 +244,9 @@ pub(crate) struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub(crate) unsafe fn new(base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         let callbacks = [deploy as *const () as usize, setting as *const () as usize];

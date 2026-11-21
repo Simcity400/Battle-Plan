@@ -25,7 +25,10 @@ impl Bits {
     }
 }
 
-#[doc = " Frees a bitmap no writer or consumer can reach any more."]
+/// Frees a bitmap.
+///
+/// # Safety
+/// `bits` is null or came from `Box::into_raw`, and no writer or consumer can reach it any more.
 unsafe fn free(bits: *mut Bits) {
     if !bits.is_null() {
         drop(unsafe { Box::from_raw(bits) });
@@ -89,6 +92,9 @@ impl DirtySet {
 
     #[inline]
     fn installed(&self) -> Option<&Bits> {
+        // SAFETY: during capture a bitmap is freed only after a boundary replaced it and saw no
+        // writer running, and consumers run only after the boundary; teardown (`release`) frees
+        // the installed bitmap once callbacks and acquisition readers have quiesced.
         unsafe { self.bits.load(SeqCst).as_ref() }
     }
 
@@ -196,6 +202,7 @@ impl DirtySet {
             return false;
         }
         let next = self.offered.swap(ptr::null_mut(), SeqCst);
+        // SAFETY: an offered bitmap is owned here once swapped out.
         let Some(ids) = unsafe { next.as_ref() }.map(Bits::ids) else {
             return false;
         };
@@ -243,19 +250,21 @@ impl DirtySet {
         };
         self.requested.store(words * BITS, SeqCst);
         let previous = self.offered.swap(Box::into_raw(bits), SeqCst);
+        // SAFETY: an offered bitmap was never installed; the swap owns it.
         unsafe { free(previous) };
     }
 
     pub fn collect(&self) {
         let retired = self.retired.swap(ptr::null_mut(), SeqCst);
+        // SAFETY: only a drained bitmap is retired, and the swap owns it.
         unsafe { free(retired) };
     }
 
-    #[doc = " Free every bitmap."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " No writer or consumer may run: the hooks are removed and drained, and"]
-    #[doc = " the acquisition pool has stopped."]
+    /// Free every bitmap.
+    ///
+    /// # Safety
+    /// No writer or consumer may run: the hooks are removed and drained, and
+    /// the acquisition pool has stopped.
     pub unsafe fn release(&self) {
         for bits in [&self.bits, &self.offered, &self.draining, &self.retired] {
             unsafe { free(bits.swap(ptr::null_mut(), SeqCst)) };
@@ -290,6 +299,7 @@ impl DirtySet {
 
 impl Drop for DirtySet {
     fn drop(&mut self) {
+        // SAFETY: exclusive access; nothing else can reach the bitmaps.
         unsafe { self.release() };
     }
 }

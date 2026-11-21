@@ -151,6 +151,13 @@ impl Follow {
         *lock(&self.shared.products) = Some(hook);
     }
 
+    pub(crate) fn rehooker(&self) -> crate::panel::Wake {
+        let shared = Arc::downgrade(&self.shared);
+        Arc::new(move || {
+            if let Some(shared) = shared.upgrade() { let _ = redeclare(&mut lock(&shared.control), false); }
+        })
+    }
+
     pub(crate) fn product_lanes(&self, id: u32, lanes: Vec<Declared>) -> io::Result<()> {
         let mut control = lock(&self.shared.control);
         if lanes.is_empty() { control.products.remove(&id); } else { control.products.insert(id, lanes); }

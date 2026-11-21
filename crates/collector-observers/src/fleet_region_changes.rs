@@ -110,12 +110,12 @@ impl Hooks {
     pub const fn disabled() -> Self {
         Self { hooks: Vec::new() }
     }
-    #[doc = " Prepare the complete writer family without publishing any patch."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The enclosing runtime authenticated this executable, owns this family"]
-    #[doc = " exclusively and restores its patches and drains native calls before"]
-    #[doc = " releasing its storage or unloading."]
+    /// Prepare the complete writer family without publishing any patch.
+    ///
+    /// # Safety
+    /// The enclosing runtime authenticated this executable, owns this family
+    /// exclusively and restores its patches and drains native calls before
+    /// releasing its storage or unloading.
     pub unsafe fn prepare(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         for site in SITES {
             engine_sites::hook(base, site.rva)
@@ -143,10 +143,10 @@ impl Hooks {
         Ok(Self { hooks })
     }
 
-    #[doc = " Alias matching the other writer families' construction API."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The requirements of [`Self::prepare`] apply."]
+    /// Alias matching the other writer families' construction API.
+    ///
+    /// # Safety
+    /// The requirements of [`Self::prepare`] apply.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
         unsafe { Self::prepare(memory, base) }
     }
@@ -184,6 +184,7 @@ impl Drop for Hooks {
         CONFIGURED.store(false, Ordering::Release);
         ENABLED.store(false, Ordering::SeqCst);
         WATCHES.set_enabled(false);
+        // SAFETY: the runtime removes and drains patches before release.
         unsafe { WATCHES.release() };
     }
 }
@@ -210,6 +211,10 @@ macro_rules! writer {
     };
 }
 
+/// # Safety
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the reads its site makes; one the
+/// original destroys is an identity only once it returns.
 unsafe fn invoke(
     watches: &WatchRegistry,
     trampoline: &AtomicUsize,
@@ -234,7 +239,11 @@ unsafe fn invoke(
     result
 }
 
+/// # Safety
+/// `fleet` is the receiver of the authenticated native method running on this thread.
 unsafe fn region_count(fleet: usize) -> Option<i32> {
+    // SAFETY: the authenticated native method owns its live receiver for
+    // this call. The guarded copy contains no allocation or game call.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     engine_native::read(
         &memory,

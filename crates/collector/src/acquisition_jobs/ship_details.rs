@@ -116,6 +116,7 @@ impl acquisition::Publication for ShipDetailsDispatch {
             let Some(request) = request else { continue };
             let mut job = Some(Job::ShipModelDetails(request));
             let role = Role::ShipModelDetails;
+            // SAFETY: Batch drains this ledger after its census and all publishers settle.
             let result =
                 unsafe { executor.submit_with_priority(&mut job, role.priority(), true, false) };
             note_dispatch(&self.calibration.roles[role as usize], result.is_ok());

@@ -1244,6 +1244,9 @@ pub struct Hooks {
 }
 
 impl Hooks {
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
         let result = (|| -> Result<Vec<Tap>, Cow<'static, str>> {
             let mut located = [(0, [0; 16]); native::SITES.len()];

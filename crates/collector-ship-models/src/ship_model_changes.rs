@@ -214,6 +214,7 @@ fn variant_capability_is_current(stamp: u64) -> bool {
     if stamp == 0 || validator == 0 || VARIANT_AVAILABILITY.load(Ordering::SeqCst) != stamp {
         return false;
     }
+    // SAFETY: only `variant_availability` stores this, from a `fn(u64) -> bool`.
     let validate: fn(u64) -> bool = unsafe { std::mem::transmute(validator) };
     validate(stamp) && VARIANT_AVAILABILITY.load(Ordering::SeqCst) == stamp
 }
@@ -350,14 +351,14 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    #[doc = " The runtime's build gate admitted this family before construction."]
-    #[doc = " A site that cannot be located leaves the family uninstalled; ShipModels then"]
-    #[doc = " reads every ship afresh."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// The runtime's build gate admitted this family before construction.
+    /// A site that cannot be located leaves the family uninstalled; ShipModels then
+    /// reads every ship afresh.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if CARRY && MUTATIONS.iter().all(|site| located(base, site.rva).is_ok()) {
@@ -414,12 +415,19 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
+        // SAFETY: like each Hook's relay, the watch tables are dropped only
+        // once the hooks were never enabled, or were removed and drained
+        // after the last capture. The variant table stays: the design
+        // family's forwarder notifies it.
         unsafe { WATCHES.registry.release() };
     }
 }
 
-#[doc = " Notify `site`'s receiver, then run the original with RCX..R9 and return"]
-#[doc = " its RAX. None of the writers takes a stack argument."]
+/// Notify `site`'s receiver, then run the original with RCX..R9 and return its RAX.
+///
+/// # Safety
+/// Only `site`'s detour calls this, on the native thread running the hooked call, with its four
+/// register arguments. None of the writers takes a stack argument.
 unsafe fn forward(site: usize, arguments: [usize; 4]) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::ShipModelChanges);
     let _notification = WATCHES.notify(arguments[RECEIVER_ARGUMENT[site]], site);

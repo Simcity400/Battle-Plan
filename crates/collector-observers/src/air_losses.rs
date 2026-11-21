@@ -388,13 +388,13 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    #[doc = " Only the two supported loss CALLs are patched. Their native"]
-    #[doc = " continuation frames and unwind metadata remain untouched."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// Only the two supported loss CALLs are patched. Their native
+    /// continuation frames and unwind metadata remain untouched.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, Ordering::Relaxed);
         let install = || -> Result<Vec<Hook>, &'static str> {

@@ -22,6 +22,8 @@ pub(crate) fn map_device(window: Option<&Window>) -> Result<(egui_wgpu::RenderSt
     let surface = match window {
         Some(window) => {
             let handle = std::num::NonZeroIsize::new(window.hwnd() as isize).ok_or("The map’s window has no handle")?;
+            // SAFETY: the window outlives the surface: a close asks the map's thread to stop, and the
+            // window is destroyed only once that thread has dropped the surface (`Window::destroy`).
             Some(
                 unsafe {
                     instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {

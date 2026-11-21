@@ -505,13 +505,15 @@ pub struct Hooks {
 }
 
 impl Hooks {
-    #[doc = " Construct every family whose site authenticates; a family whose"]
-    #[doc = " site is withheld stays unavailable and the others install."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base identify the authenticated executable in"]
-    #[doc = " this process. The caller owns these sites exclusively and must restore"]
-    #[doc = " them and wait for [`active`] to drain before releasing code."]
+    /// Construct every family whose site authenticates; a family whose
+    /// site is withheld stays unavailable and the others install.
+    ///
+    /// # Safety
+    /// The memory source and base identify the authenticated executable in
+    /// this process. The caller owns these sites exclusively and must restore
+    /// them, wait for [`active`] to drain, and confirm that no thread is still
+    /// executing in the hooks' code ranges before releasing code: a thread can
+    /// be in a relay before it counts itself in [`active`].
     pub unsafe fn new(
         _memory: &impl Memory,
         base: usize,

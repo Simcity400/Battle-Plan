@@ -159,6 +159,10 @@ pub(super) fn count(total: &mut Total, credit: bool) {
     add(if credit { &mut total.credits } else { &mut total.balances }, 1);
 }
 
+pub(super) fn unknown(total: &mut Total) {
+    add(&mut total.unknown, 1);
+}
+
 pub(super) fn unmatched(total: &mut Total) {
     add(&mut total.unmatched, 1);
 }

@@ -122,6 +122,8 @@ fn string(
         .checked_add(u32::try_from(count).map_err(|_| Overflow)?)
         .ok_or(Overflow)?;
     if end <= sink.rows.len() {
+        // SAFETY: count rows hold at least len+1 bytes; only a successful
+        // copy's initialized prefix is read, and every Row field accepts all bits.
         unsafe {
             let rows = sink.rows.as_mut_ptr().add(sink.required);
             {

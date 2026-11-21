@@ -37,6 +37,9 @@ pub const SESSION_FACTS_MAGIC: &[u8; 4] = b"H4SF";
 pub const SESSION_FACTS_FILE: &str = "facts.bin";
 
 pub fn encode_session_facts(identity: &Identity, pack: &[u8]) -> io::Result<Vec<u8>> {
+    if pack.is_empty() {
+        return Err(invalid_static("A session's game facts pack is empty"));
+    }
     let mut encoded = Vec::new();
     identity.encode(&mut encoded)?;
     let mut out = Vec::with_capacity(8 + encoded.len() + pack.len());
@@ -46,34 +49,36 @@ pub fn encode_session_facts(identity: &Identity, pack: &[u8]) -> io::Result<Vec<
     Ok(out)
 }
 
+fn session_facts_identity(head: &[u8], total: u64) -> Option<u64> {
+    let length = head.strip_prefix(SESSION_FACTS_MAGIC)?.get(..4)?;
+    let length = u64::from(u32::from_le_bytes(length.try_into().ok()?));
+    (8 + length < total).then_some(length)
+}
+
 pub fn session_facts_for<'a>(bytes: &'a [u8], identity: &Identity) -> Option<&'a [u8]> {
-    let mut input = Decoder::new(bytes.strip_prefix(SESSION_FACTS_MAGIC)?);
-    let encoded = input.bytes().ok()?;
-    let mut decoder = Decoder::new(&encoded);
-    let recorded = Identity::decode(&mut decoder).ok()?;
-    let pack = &bytes[bytes.len() - input.remaining()..];
-    (recorded.same_content(identity) && !pack.is_empty()).then_some(pack)
+    let length = usize::try_from(session_facts_identity(bytes.get(..8)?, bytes.len() as u64)?).ok()?;
+    let (encoded, pack) = bytes[8..].split_at(length);
+    let recorded = decode_identity(encoded).ok()?;
+    recorded.same_content(identity).then_some(pack)
 }
 
 pub fn session_facts_place(file: &mut std::fs::File, identity: &Identity) -> io::Result<Option<(u64, u64)>> {
-    use std::io::{Read, Seek, SeekFrom};
     let total = file.metadata()?.len();
     let mut head = [0; 8];
     file.seek(SeekFrom::Start(0))?;
-    if total < 8 || file.read_exact(&mut head).is_err() || &head[..4] != SESSION_FACTS_MAGIC {
+    if total < 8 || file.read_exact(&mut head).is_err() {
         return Ok(None);
     }
-    let length = u64::from(u32::from_le_bytes(head[4..].try_into().expect("four bytes")));
-    let offset = 8 + length;
-    if length > 1 << 20 || offset >= total {
-        return Ok(None);
-    }
-    let mut encoded = vec![0; length as usize];
+    let Some(length) = session_facts_identity(&head, total) else { return Ok(None) };
+    let bytes = usize::try_from(length).map_err(|_| engine_allocation::oom())?;
+    let mut encoded = engine_allocation::vec(bytes)?;
+    encoded.resize(bytes, 0);
     file.read_exact(&mut encoded)?;
-    let recorded = match Identity::decode(&mut Decoder::new(&encoded)) {
+    let recorded = match decode_identity(&encoded) {
         Ok(recorded) => recorded,
         Err(_) => return Ok(None),
     };
+    let offset = 8 + length;
     Ok(recorded.same_content(identity).then_some((offset, total - offset)))
 }
 

@@ -1140,8 +1140,8 @@ impl Store {
         }
     }
 
-    #[doc = " # Safety"]
-    #[doc = " This call returned normally in the same world, with fresh guarded reads."]
+    /// # Safety
+    /// This call returned normally in the same world, with fresh guarded reads.
     pub unsafe fn normal_returned(
         &mut self,
         ticket: Ticket,

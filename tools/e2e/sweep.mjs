@@ -555,18 +555,22 @@ async function playbackInputs() {
 
 async function playbackVisibility() {
   await app.evaluate(`(() => {
-    const reports = [], observed = new Set(), grid = document.querySelector('.dash-grid-scroll');
-    const visible = entry => entry.isIntersecting && entry.intersectionRect.width > 0 && entry.intersectionRect.height > 0;
+    const reports = [], observed = new Map(), grid = document.querySelector('.dash-grid-scroll');
+    const visible = entry => entry.target.isConnected && entry.isIntersecting && entry.intersectionRect.width > 0 && entry.intersectionRect.height > 0;
     const observer = new IntersectionObserver(entries => {
       for (const entry of entries) {
-        const canvas = entry.target, article = canvas.closest('article.dash-widget'), placement = canvas.dataset.placement;
-        if (!article || placement === undefined) continue;
-        reports.push({ id: article.dataset.widget, placement: Number(placement), at: performance.timeOrigin + entry.time, visible: visible(entry) });
+        const held = observed.get(entry.target);
+        if (!held) continue;
+        reports.push({ id: held.id, placement: held.placement, at: performance.timeOrigin + entry.time, visible: visible(entry) });
       }
     });
     const scan = () => {
+      for (const [canvas, held] of observed) if (!canvas.isConnected) {
+        observer.unobserve(canvas); observed.delete(canvas);
+        reports.push({ id: held.id, placement: held.placement, at: performance.timeOrigin + performance.now(), visible: false });
+      }
       for (const canvas of grid.querySelectorAll('article.dash-widget canvas[data-placement]'))
-        if (!observed.has(canvas)) { observed.add(canvas); observer.observe(canvas); }
+        if (!observed.has(canvas)) { observed.set(canvas, { id: canvas.closest('article.dash-widget').dataset.widget, placement: Number(canvas.dataset.placement) }); observer.observe(canvas); }
     };
     const layout = new MutationObserver(scan);
     layout.observe(grid, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'style', 'data-placement'] });

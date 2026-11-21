@@ -67,20 +67,26 @@ fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
         let mut previous = None;
         for (hour, seek) in [(100, true), (101, false), (102, false), (102, false), (104, false), (106, false), (110, false), (100, true)] {
             let read = (exact.advance)(hour, seek, &false.into(), None);
-            let (data, encoded) = (read.value, read.encoded);
             let cold = (exact.cold)(hour, &false.into());
-            assert_eq!(*data, cold, "{name} at {hour}");
+            let shown = |data: &dashboard_follow::panel::PanelData, values: bool| data.clone().map(|mut reply| {
+                for group in reply["live"]["groups"].as_array_mut().into_iter().flatten() {
+                    if !values && let Some(group) = group.as_object_mut() { group.remove("values"); }
+                }
+                reply
+            });
+            assert!(read.fresh || !seek, "{name}: a seed reads its live values at its hour");
+            assert_eq!(shown(&read.value, read.fresh), shown(&cold, read.fresh), "{name} at {hour}");
             if (104..110).contains(&hour) {
                 assert!(cold.as_ref().unwrap_err().contains("hour is not recorded"), "{name} gap at {hour}");
             } else {
                 assert!(cold.is_ok(), "{name} at {hour}: {cold:?}");
             }
-            let packet = delivery.packet((0, 1, 1), 1, hour, seek, &data, encoded);
-            assert_eq!(packet.changed, seek || previous.as_ref() != Some(&cold), "{name} at {hour}");
-            let body = match &cold { Ok(v) => rmp_serde::to_vec(v).unwrap(), Err(e) => e.as_bytes().to_vec() };
+            let packet = delivery.packet((0, 1, 1), 1, hour, seek, &read.value);
+            assert_eq!(packet.changed, seek || previous.as_ref() != Some(&*read.value), "{name} at {hour}");
+            let body = match &*read.value { Ok(v) => rmp_serde::to_vec(v).unwrap(), Err(e) => e.as_bytes().to_vec() };
             assert_eq!(delivery.body(), Some(body.as_slice()), "{name} wire record at {hour}");
             assert_eq!(dated::records(&packet.bytes).unwrap()[0].hour, hour);
-            previous = Some(cold);
+            previous = Some((*read.value).clone());
         }
     }
     drop(source);

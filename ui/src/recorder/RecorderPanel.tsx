@@ -326,9 +326,7 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
       <div className={`recorder-under${prompt ? ' is-covered' : ''}`} inert={prompt}>
       {notice}
       {preparationNotice}
-      {shown.bar !== undefined && <div className={`recorder-bar${shown.bar == null ? ' is-open' : ''}`} role="progressbar" aria-label={shown.label ?? undefined}
-        aria-valuemin={0} aria-valuemax={100} aria-valuenow={shown.bar == null ? undefined : Math.round(shown.bar * 100)}>
-        <i style={shown.bar == null ? undefined : { width: `${shown.bar * 100}%` }} /></div>}
+      {shown.busy && <div className="recorder-bar" role="progressbar" aria-label={shown.label ?? undefined}><i /></div>}
       {shown.campaign && campaign && settings && <section className="recorder-section">
         <div className="group-label recorder-label">This campaign</div>
         <Switch label="Auto record" checked={recordsAutomatically(settings, campaign)} onChange={record => actions.campaign(campaign, { record })} />
@@ -421,7 +419,7 @@ function UnsavedRow({ row, actions, confirming }: { row: UnsavedRecording; actio
 
 function SavedRow({ row, folder, full, settings, actions }: { row: SavedRecording; folder: string | null; full: string; settings: RecorderSettings | null;
   actions: PanelActions }) {
-  const kept = row.job?.state === 'kept';
+  const kept = row.job?.state === 'kept' || row.job?.state === 'unconfirmed';
   const name = recordingDisplayName(row.path);
   return <div className="recorder-item is-openable" data-tooltip-side="above">
     <Flag flag={row.flag} name={name} className="recorder-item-flag" />

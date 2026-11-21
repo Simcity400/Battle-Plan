@@ -488,6 +488,8 @@ pub fn observe(address: usize, influence: bool, field: usize, value: i64, operat
     if pointer.is_null() {
         return;
     }
+    // SAFETY: Flight admission precedes the pointer load; publication and Drop
+    // close admission and retain old storage when a flight is active.
     unsafe { &*pointer }.write(address, influence, field, value, operation);
 }
 thread_local! {static RANK_RECEIVER:std::cell::Cell<usize>=const{std::cell::Cell::new(0)};}

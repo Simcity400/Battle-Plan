@@ -40,6 +40,10 @@ fn design_source_availability(enabled: bool) {
         (receiver.enabled)(enabled);
     }
 }
+/// # Safety
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the reads its site makes; one the
+/// original destroys is an identity only once it returns.
 unsafe fn design_source_invoke(args: [usize; 4], original: DesignSourceOriginal) -> usize {
     let receiver = DESIGN_SOURCES.load(Ordering::Acquire);
     if let Some(receiver) = unsafe { receiver.as_ref() } {
@@ -978,14 +982,14 @@ pub struct Hooks {
     wargoals: crate::wargoal_changes::Hooks,
 }
 impl Hooks {
-    #[doc = " The runtime's build gate admitted this family before construction."]
-    #[doc = " A differing sentinel leaves the family uninstalled; both families"]
-    #[doc = " then read every country every hour."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// The runtime's build gate admitted this family before construction.
+    /// A differing sentinel leaves the family uninstalled; both families
+    /// then read every country every hour.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "country_input_changes")
@@ -1191,6 +1195,10 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
+        // SAFETY: like each Hook's relay, the bitmaps are dropped only once
+        // the hooks were never enabled, or were removed and drained after
+        // the last capture; the forwarding families are restored with the
+        // other families before any hook is dropped.
         unsafe {
             DOMAIN.accumulator.release();
             DOMAIN.sharing.release()
@@ -1502,8 +1510,8 @@ unsafe extern "system" fn faction_sharing_base(
 #[cfg(test)]
 mod tests;
 
-#[doc = " # Safety"]
-#[doc = " The faction acquisition worker owns the native quiescent lease."]
+/// # Safety
+/// The faction acquisition worker owns the native quiescent lease.
 pub unsafe fn accumulator_install_growth() {
     unsafe {
         DOMAIN.accumulator.install_growth_quiescent();

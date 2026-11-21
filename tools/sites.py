@@ -22,7 +22,8 @@ checked against the addresses recorded for it in HOI4RE_DATA/sites/<build>.json
 ({"<reference rva>": rva}); `relocate` writes that file for a new build from what the locator finds.
 Builds in engine_sites::LAYOUT_CHECKED are checked with their layouts checked as well. To change the
 reference: relocate the old one while it is still the reference, put the new one first in BUILDS,
-move each key to its position there (its sites/<build>.json), and generate.
+move each key to its position there (its sites/<build>.json), and generate; published names move
+with their keys. Then relocate every other build against the new spec and check.
 Needs Python 3.11, capstone and numpy.
 Set HOI4RE_DATA to the RE data directory if hoi4re is not on PATH.
 """
@@ -36,6 +37,7 @@ import re
 import shutil
 import struct
 import sys
+import tempfile
 
 import capstone
 import numpy as np
@@ -525,37 +527,293 @@ def resolve_keys(image, spec, layout_checked=True):
 
 
 
-KEY = re.compile(r"\bRva\(\s*(0x[0-9a-fA-F_]+)\s*\)")
-CONST = re.compile(r"\b(?:const|static)\s+([A-Z][A-Z0-9_]*)\s*:")
-NAME = re.compile(r'\bname:\s*"([^"]+)"')
-FN = re.compile(r"\bfn\s+([a-z_][a-z0-9_]*)")
-STRING = re.compile(r'"([A-Za-z][A-Za-z0-9_ ]*)"')
+SOURCE_TOKEN = re.compile(r'''
+    //[^\n]*
+  | (?P<string>[bc]?r(?P<hashes>\#*)"[\s\S]*?"(?P=hashes)|[bc]?"(?:\\[\s\S]|[^"\\])*")
+  | b?'(?:\\.|[^'\\])'(?!\w)
+  | (?P<number>0[xX][0-9a-fA-F_]+(?:[iu](?:8|16|32|64|128|size))?|[0-9][0-9_]*)
+  | (?P<word>[A-Za-z_][A-Za-z0-9_]*)
+  | (?P<open>[\[({])
+  | (?P<close>[\])}])
+  | (?P<other>\S)
+  | \s+
+''', re.X)
+TOKEN_KINDS = ("string", "number", "word", "open", "close", "other")
+HEX = re.compile(r"0[xX]([0-9a-fA-F_]+)(?:usize)?")
+PLAIN_STRING = re.compile(r'"[^"\\]*"')
+LABEL = re.compile(r'"[A-Za-z][A-Za-z0-9_ ]*"')
+QUALIFIERS = ("const", "async", "unsafe", "extern", "default")
+ITEMS = ("mod", "impl", "struct", "enum", "union", "trait", "extern", "macro_rules", "unsafe", "async")
+TEST_ATTRIBUTES = (["test"], ["bench"])
+PUBLISHED_VERSION = re.compile(r"from the game (\S+), the reference build")
+PUBLISHED = re.compile(r'Key\s*\{\s*rva:\s*(0x[0-9a-fA-F_]+),\s*name:\s*"([^"]*)"')
+PUBLISHED_TABLE = re.compile(r"static\s+KEYS:\s*&\[Key\]\s*=\s*&\[((?:\s*Key\s*\{[^{}]*\},?)+)\s*\];")
 TEST_PATH = re.compile(r"-tests/|/tests?/|tests?\.rs$|_tests?\.rs$|test_kit|fixtures?\b|bench|/examples/")
 
 
-def test_lines(text):
-    """Line numbers inside #[cfg(test)] items."""
-    lines = text.split("\n")
-    out = set()
-    i = 0
-    while i < len(lines):
-        if lines[i].strip().startswith("#[cfg(test)]"):
-            depth, started, j = 0, False, i + 1
-            while j < len(lines):
-                code = lines[j].split("//")[0]
-                depth += code.count("{") - code.count("}")
-                started = started or "{" in code
-                out.add(j + 1)
-                if (started and depth <= 0) or (not started and code.rstrip().endswith(";")):
-                    break
-                j += 1
-            i = j
-        i += 1
+def source_tokens(text):
+    """(kind, text, offset) for each Rust token that can name a site; comments, including nested
+    block comments, and character literals drop out."""
+    out, i = [], 0
+    while i < len(text):
+        if text.startswith("/*", i):
+            depth = 0
+            while i < len(text):
+                if text.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif text.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                    if depth == 0:
+                        break
+                else:
+                    i += 1
+            continue
+        m = SOURCE_TOKEN.match(text, i)
+        kind = next((kind for kind in TOKEN_KINDS if m[kind] is not None), None)
+        if kind:
+            out.append((kind, m[kind], m.start()))
+        i = m.end()
     return out
 
 
+def declarations(text):
+    """(rva, label, rank, line) for each `Rva(0x...)` outside test-only items, labelled by its own
+    declaration, strongest (lowest rank) first: the nearest enclosing `name: "..."` field, the
+    const or static it alone initializes, the next label-like string in its own expression, then
+    the function holding it. Formatting, comments and blank lines never change a label."""
+    toks = source_tokens(text)
+    close, parent, stack = {}, [], []
+    for i, (kind, _, _) in enumerate(toks):
+        parent.append(stack[-1] if stack else None)
+        if kind == "open":
+            stack.append(i)
+        elif kind == "close" and stack:
+            close[stack.pop()] = i
+
+    def value(i):
+        return toks[i][1] if i < len(toks) else None
+
+    def after(i):
+        return close.get(i, len(toks)) + 1 if toks[i][0] == "open" else i + 1
+
+    def members(group):
+        i = group + 1
+        while i < close.get(group, len(toks)):
+            yield i
+            i = after(i)
+
+    def statement_end(i, stops=(";",)):
+        while i < len(toks) and toks[i][1] not in stops and toks[i][0] != "close":
+            i = after(i)
+        return i
+
+    def item_end(i):
+        while i < len(toks) and toks[i][1] != ";" and toks[i][0] != "close":
+            if toks[i][1] == "{":
+                return close.get(i, len(toks))
+            i = after(i)
+        return i
+
+    def outside_tests(i):
+        """The predicate at `i` evaluated for a build without tests: False when it cannot hold,
+        True when it must, None when it depends on the build; and the token after it."""
+        if value(i + 1) == "(" and value(i) in ("all", "any", "not"):
+            results, j = [], i + 2
+            while j < close.get(i + 1, len(toks)):
+                result, j = outside_tests(j)
+                results.append(result)
+                j += value(j) == ","
+            end = close.get(i + 1, len(toks)) + 1
+            if value(i) == "not":
+                return (None if results[0] is None else not results[0]) if results else None, end
+            if value(i) == "all":
+                return (False if False in results else True if all(results) else None), end
+            return (True if True in results else False if all(r is False for r in results) else None), end
+        if value(i) == "test":
+            return False, i + 1
+        return None, i + 3 if value(i + 1) == "=" else i + 1
+
+    def test_only(group):
+        inside = [toks[j][1] for j in range(group + 1, close.get(group, group))]
+        if inside in TEST_ATTRIBUTES:
+            return True
+        return inside[:2] == ["cfg", "("] and outside_tests(group + 3)[0] is False
+
+    def item_after(j):
+        while value(j) == "#" and value(j + 1) == "[":
+            j = after(j + 1)
+        while value(j) == "pub":
+            j = after(j + 1) if value(j + 1) == "(" else j + 1
+        k = j
+        while k < len(toks) and (value(k) in QUALIFIERS or toks[k][0] == "string"):
+            k += 1
+        if value(k) == "fn":
+            return item_end(k)
+        if value(j) in ("const", "static", "use", "type", "let"):
+            return statement_end(j)
+        if value(j) in ITEMS:
+            return item_end(j)
+        return expression_end(j)
+
+    def generic_depth(i, depth):
+        """The turbofish depth after token `i`: `::<` opens type arguments, whose commas and
+        nested `<>` belong to them."""
+        if value(i) == "<" and (depth or value(i - 1) == ":" and value(i - 2) == ":"):
+            return depth + 1
+        return depth - 1 if value(i) == ">" and depth else depth
+
+    def expression_end(i):
+        arm, depth = i, 0
+        while arm < len(toks) and (toks[arm][1] not in (";", ",") or depth) and toks[arm][0] != "close":
+            if not depth and toks[arm][1] == "=" and value(arm + 1) == ">":
+                i = arm + 2
+                break
+            depth = generic_depth(arm, depth)
+            arm = after(arm)
+        depth = 0
+        while i < len(toks) and (toks[i][1] not in (";", ",") or depth) and toks[i][0] != "close":
+            if toks[i][1] == "{":
+                end = close.get(i, len(toks))
+                pattern = value(end + 1) == "=" and value(end + 2) not in ("=", ">")
+                if value(end + 1) != "else" and not pattern:
+                    return end
+            depth = generic_depth(i, depth)
+            i = after(i)
+        return i
+
+    def rva_at(i):
+        if value(i) != "Rva" or value(i + 1) != "(" or i + 2 >= len(toks) or toks[i + 2][0] != "number":
+            return None
+        number = HEX.fullmatch(toks[i + 2][1])
+        if number is None or close.get(i + 1) not in (i + 3, i + 4) or close[i + 1] == i + 4 and value(i + 3) != ",":
+            return None
+        return int(number[1].replace("_", ""), 16)
+
+    test = [False] * len(toks)
+    for i in range(len(toks) - 1):
+        if value(i) == "#" and value(i + 1) == "[" and test_only(i + 1):
+            end = item_after(after(i + 1)) + 1
+            test[i:end] = [True] * (end - i)
+    items = []
+    for i in range(len(toks) - 2):
+        kind, word, _ = toks[i]
+        name = toks[i + 1][1]
+        if kind != "word" or toks[i + 1][0] != "word":
+            continue
+        if word in ("const", "static") and re.fullmatch(r"[A-Z][A-Z0-9_]*", name) and value(i + 2) == ":":
+            initializer = statement_end(i + 2, (";", "="))
+            if value(i - 1) not in ("<", ",") and value(initializer) == "=":
+                items.append((1, name, initializer, statement_end(initializer)))
+        elif word == "fn" and re.fullmatch(r"[a-z_][a-z0-9_]*", name):
+            items.append((3, name, i, item_end(i + 2)))
+    rvas = {i: rva for i in range(len(toks)) if (rva := rva_at(i)) is not None}
+    out = []
+    for i, rva in rvas.items():
+        if test[i]:
+            continue
+        labels = []
+        holders = [item for item in items if item[2] < i <= item[3]]
+        for rank, name, start, end in holders:
+            if rank == 1 and sum(start < r <= end for r in rvas) == 1:
+                labels.append((1, name))
+        group = parent[i]
+        while group is not None and not any(rank == 0 for rank, _ in labels):
+            for j in members(group):
+                if value(j) == "name" and value(j + 1) == ":" and j + 2 < len(toks) and PLAIN_STRING.fullmatch(toks[j + 2][1]):
+                    labels.append((0, toks[j + 2][1][1:-1]))
+                    break
+            group = parent[group]
+        if parent[i] is not None:
+            stops = (";",) if value(parent[i]) == "(" else (";", ",")
+            j = after(i + 1)
+            while j < close.get(parent[i], len(toks)) and value(j) not in stops:
+                if toks[j][0] == "string":
+                    if LABEL.fullmatch(toks[j][1]):
+                        labels.append((2, toks[j][1][1:-1]))
+                    break
+                j = after(j)
+        functions = [item for item in holders if item[0] == 3]
+        if functions:
+            labels.append((3, max(functions, key=lambda item: item[2])[1]))
+        rank, label = min(labels, default=(4, None))
+        out.append((rva, label, rank, text.count("\n", 0, toks[i][2]) + 1))
+    return out
+
+
+def published_names():
+    """{rva: name}, at the current reference build's positions, for the keys the committed locator
+    already names. A key keeps its published name, so the committed file must be present with its
+    complete key table. Names published for an earlier reference move through the positions that
+    `relocate` recorded for the current one (DATA/sites/<reference>.json), so a key never takes the
+    name of another site that used to sit at its new position."""
+    try:
+        with open(OUTPUT, encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = ""
+    table = PUBLISHED_TABLE.search(text)
+    version = PUBLISHED_VERSION.search(text)
+    if table is None or version is None or version[1] not in BUILDS.values():
+        raise SystemExit("%s holds the published site names but has no complete key table for a known "
+                         "build; restore it from Git first" % OUTPUT)
+    names = {int(rva.replace("_", ""), 16): name for rva, name in PUBLISHED.findall(table[1])}
+    reference = next(iter(BUILDS))
+    if version[1] == BUILDS[reference]:
+        return names
+    moved = addresses(reference)
+    unmapped = sorted(name for rva, name in names.items() if not isinstance(moved.get(rva), int))
+    if unmapped:
+        raise SystemExit("%d published sites have no position recorded for the new reference %s (%s); "
+                         "relocate it with its layouts checked, or map them, so no site loses its name"
+                         % (len(unmapped), BUILDS[reference], ", ".join(unmapped[:5])))
+    sharing = collections.defaultdict(list)
+    for rva, name in names.items():
+        sharing[moved[rva]].append(name)
+    shared = sorted(" and ".join(sorted(group)) for group in sharing.values() if len(group) > 1)
+    if shared:
+        raise SystemExit("published sites relocate onto one position for the new reference %s (%s); "
+                         "correct the relocation so no site loses its name" % (BUILDS[reference], "; ".join(shared[:5])))
+    return {moved[rva]: name for rva, name in names.items()}
+
+
+def replace_files(outputs):
+    """Write each (path, text) through a sibling temporary file, all staged before any is published;
+    if publishing one fails, the ones already replaced get their previous contents back, so the
+    outputs never come from two different generations."""
+    staged, published = [], []
+    try:
+        for path, text in outputs:
+            descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix=os.path.basename(path) + ".")
+            staged.append(temporary)
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+        previous = []
+        for path, _ in outputs:
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    previous.append(f.read())
+            else:
+                previous.append(None)
+        for (path, _), temporary, old in zip(outputs, staged, previous):
+            os.replace(temporary, path)
+            published.append((path, old))
+    except BaseException:
+        for path, old in reversed(published):
+            if old is None:
+                os.unlink(path)
+            else:
+                with open(path, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(old)
+        for temporary in staged:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        raise
+
+
 def source_keys():
-    """{rva: (name, path, line)} for every Rva literal outside test code."""
+    """{rva: (name, path, line)} for every Rva literal outside test code. A published key keeps its
+    name; a new key takes its declaration's label, from its strongest-labelled occurrence."""
+    published = published_names()
     keys = {}
     for crate in sorted(os.listdir(os.path.join(ROOT, "crates"))):
         src = os.path.join(ROOT, "crates", crate, "src")
@@ -567,33 +825,15 @@ def source_keys():
                 rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
                 if TEST_PATH.search(rel) or f == "generated.rs" and crate == "engine-sites":
                     continue
-                text = open(path, encoding="utf-8").read()
-                tests = test_lines(text)
-                lines = text.split("\n")
+                with open(path, encoding="utf-8") as source:
+                    text = source.read()
+                if "Rva" not in text:
+                    continue
                 stem = rel.split("/src/", 1)[1][:-3].replace("/", "::")
-                for n, line in enumerate(lines, 1):
-                    if n in tests or line.lstrip().startswith("//"):
-                        continue
-                    for m in KEY.finditer(line):
-                        rva = int(m.group(1)[2:].replace("_", ""), 16)
-                        c = CONST.search(line)
-                        if c:
-                            name = "%s::%s" % (stem, c.group(1))
-                        else:
-                            near = [(abs(d), NAME.search(lines[n - 1 + d]).group(1)) for d in range(-8, 9)
-                                    if 0 <= n - 1 + d < len(lines) and NAME.search(lines[n - 1 + d])]
-                            s = STRING.search(line[m.end():])
-                            if near:
-                                name = "%s::%s" % (stem, min(near)[1])
-                            elif s:
-                                name = "%s::%s" % (stem, s.group(1))
-                            else:
-                                fns = [FN.search(lines[j]) for j in range(n - 1, -1, -1) if FN.search(lines[j])]
-                                name = "%s::%s" % (stem, fns[0].group(1)) if fns else stem
-                        if rva not in keys or (c and "::" in keys[rva][0] and not CONST.search(keys[rva][3])):
-                            keys[rva] = (name, rel, n, line)
-    return {k: v[:3] for k, v in keys.items()}
-
+                for rva, label, rank, line in declarations(text):
+                    if rva not in keys or rank < keys[rva][3]:
+                        keys[rva] = ("%s::%s" % (stem, label) if label else stem, rel, line, rank)
+    return {rva: (published.get(rva, name), rel, line) for rva, (name, rel, line, _) in keys.items()}
 
 
 def leaf_bounds(build, rva):
@@ -899,12 +1139,13 @@ def emit(spec, version):
 BUILDS = {"c184": "1.19.5.0", "0bdb": "1.19.4.2", "f584": "1.19.4.1"}
 EXPECTED_WITHHELD = {
     "f584": {
-        0xc4a420: "requisition_hq_from_army: its code really changed in 1.19.4.2",
-        0x19c9a20: "add_hq_manpower: reached only through requisition_hq_from_army",
-        0x29b6ce0: "OPTION_COMMAND_VTABLE_RVA: 1.19.4.2 added a virtual to its base class",
-        0x11e59f0: "set_garrison_priority: reached only through a command vtable whose shape changed",
-        0xe29230: "mio_queue_remove: reached only through a command vtable whose shape changed",
-        0xf23420: "repair dockyard setting: reached only through a command vtable whose shape changed",
+        0xc4a420: ("template_mutations::requisition_hq_from_army", "its code really changed in 1.19.4.2"),
+        0x19c9a20: ("template_mutations::add_hq_manpower", "reached only through requisition_hq_from_army"),
+        0x29b6ce0: ("script_event_sites::OPTION_COMMAND_VTABLE_RVA", "1.19.4.2 added a virtual to its base class"),
+        0x11e59f0: ("template_mutations::set_garrison_priority",
+                    "reached only through a command vtable whose shape changed"),
+        0xe29230: ("world_input_mutations::mio_queue_remove", "reached only through a command vtable whose shape changed"),
+        0xf23420: ("changes::sites::repair dockyard setting", "reached only through a command vtable whose shape changed"),
     },
 }
 PINNED = os.path.join(os.path.dirname(DATA), "..", "pinned")
@@ -961,6 +1202,78 @@ def report(image, spec, recorded, layout_checked):
     return reasons, wrong, withheld
 
 
+def unplaced(keys):
+    """The published names, moved to the current reference, that no source key carries any more."""
+    return sorted(name for rva, name in published_names().items() if rva not in keys)
+
+
+def digest(path):
+    """The SHA-256 of the executable at `path`, as engine_sites::LAYOUT_CHECKED records it."""
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).digest()
+
+
+def verify(spec, images, reference, written, promoted_from=None):
+    """Whether `spec` fails against the source keys and every known build, printing each failure;
+    with `written`, also whether the committed generated.rs differs from it. With `promoted_from`,
+    the build that was the reference, the addresses recorded against it are re-keyed through the
+    new reference's relocation map, so every site with a known position is still compared."""
+    moved = addresses(reference) if promoted_from else {}
+    failed = False
+    if written:
+        with open(OUTPUT, encoding="utf-8") as f:
+            if f.read() != emit(spec, BUILDS[reference]):
+                print("FAIL generated.rs does not match the spec; run tools/sites.py generate")
+                failed = True
+    unwitnessed = {k["rva"] for k in spec["keys"]
+                   if k["kind"] == "vtable" and not spec["vtables"][k["index"]]["witnesses"]}
+    print("%d vtable keys have no witness and are withheld on builds whose layouts were not checked"
+          % len(unwitnessed))
+    names = {k["rva"]: k["name"] for k in spec["keys"]}
+    source = set(source_keys())
+    spec_keys = {k["rva"] for k in spec["keys"]}
+    for rva in sorted(source - spec_keys):
+        print("FAIL key %#x is not generated; run tools/sites.py generate" % rva)
+        failed = True
+    expected_withheld = {}
+    for b, entries in EXPECTED_WITHHELD.items():
+        expected_withheld[b] = set()
+        for rva, (name, _) in sorted(entries.items()):
+            if names.get(rva) != name:
+                print("FAIL %s expects %s withheld at %#x, but %s; key it at its address in the reference build %s"
+                      % (BUILDS.get(b, b), name, rva, "the key there is %s" % names[rva] if rva in names
+                         else "no key is there", BUILDS[reference]))
+                failed = True
+            else:
+                expected_withheld[b].add(rva)
+    checked_builds = {b for b in BUILDS if digest(exe(b)) in layout_checked()}
+    if reference not in checked_builds:
+        print("FAIL the reference build %s is not in engine_sites::LAYOUT_CHECKED" % BUILDS[reference])
+        failed = True
+    for b in BUILDS:
+        if b == reference:
+            expected_at = None
+        elif promoted_from:
+            old = {rva: rva for rva in moved} if b == promoted_from else addresses(b)
+            expected_at = {moved[rva]: at for rva, at in old.items() if rva in moved}
+        else:
+            expected_at = addresses(b)
+        for checked in ((True, False) if b in checked_builds else (False,)):
+            expected = set() if checked else expected_withheld.get(b, set()) | unwitnessed
+            reasons, wrong, withheld = report(images[b], spec, expected_at, checked)
+            print("%s (%s), layouts %s:" % (BUILDS[b], b, "checked" if checked else "by witnesses"))
+            for k, n in sorted(reasons.items()):
+                print("  %5d %s" % (n, k))
+            for line in wrong:
+                print("  WRONG", line)
+            for rva in sorted(withheld - expected):
+                print("  FAIL withholds %s (%#x)" % (names[rva], rva))
+            for rva in sorted(expected - withheld):
+                print("  FAIL no longer withholds %s (%#x)" % (names.get(rva, "?"), rva))
+            failed = failed or bool(wrong) or withheld != expected
+    return failed
+
+
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -978,56 +1291,35 @@ def main(argv):
     if a.cmd == "generate":
         keys = {rva: name for rva, (name, _, _) in source_keys().items()}
         spec, problems = generate(keys, ref, [images[b] for b in BUILDS if b != reference], reference)
-        with open(OUTPUT, "w", encoding="utf-8", newline="\n") as f:
-            f.write(emit(spec, BUILDS[reference]))
-        with open(os.path.join(DATA, "sites", "spec.json"), "w") as f:
-            json.dump(spec, f)
         for line in problems:
             print("problem:", line)
         print("%d keys, %d functions, %d vtables, %d globals; %d problems" % (
             len(spec["keys"]), len(spec["functions"]), len(spec["vtables"]), len(spec["data"]), len(problems)))
-        if problems:
-            raise SystemExit(1)
-        a.cmd = "check"
+        with open(OUTPUT, encoding="utf-8") as f:
+            published = PUBLISHED_VERSION.search(f.read())
+        promoted_from = next((b for b, v in BUILDS.items() if published is not None and v == published[1]), None)
+        if promoted_from == reference:
+            promoted_from = None
+        if published is not None and promoted_from is None and published[1] != BUILDS[reference]:
+            raise SystemExit("%s names the unknown reference build %s" % (OUTPUT, published[1]))
+        if promoted_from:
+            print("the reference changed from %s: other builds are compared through its relocation map; "
+                  "relocate each one, then run check" % BUILDS[promoted_from])
+            dropped = unplaced(keys)
+            if dropped:
+                raise SystemExit("%s and spec.json are unchanged: %d published sites have no key at their new "
+                                 "position (%s); move each declaration there" % (OUTPUT, len(dropped), ", ".join(dropped[:5])))
+        if problems or verify(spec, images, reference, written=False, promoted_from=promoted_from):
+            raise SystemExit("%s and spec.json are unchanged: publishing a failing table would lose or "
+                             "replace published names" % OUTPUT)
+        replace_files([(OUTPUT, emit(spec, BUILDS[reference])),
+                       (os.path.join(DATA, "sites", "spec.json"), json.dumps(spec))])
+        raise SystemExit(0)
     spec = json.load(open(os.path.join(DATA, "sites", "spec.json")))
     if a.cmd == "check":
-        failed = False
-        with open(OUTPUT, encoding="utf-8") as f:
-            if f.read() != emit(spec, BUILDS[reference]):
-                print("FAIL generated.rs does not match the spec; run tools/sites.py generate")
-                failed = True
-        unwitnessed = {k["rva"] for k in spec["keys"]
-                       if k["kind"] == "vtable" and not spec["vtables"][k["index"]]["witnesses"]}
-        print("%d vtable keys have no witness and are withheld on builds whose layouts were not checked"
-              % len(unwitnessed))
-        names = {k["rva"]: k["name"] for k in spec["keys"]}
-        source = set(source_keys())
-        spec_keys = {k["rva"] for k in spec["keys"]}
-        for rva in sorted(source - spec_keys):
-            print("FAIL key %#x is not generated; run tools/sites.py generate" % rva)
-            failed = True
-        checked_builds = {b for b in BUILDS if hashlib.sha256(open(exe(b), "rb").read()).digest() in layout_checked()}
-        if reference not in checked_builds:
-            print("FAIL the reference build %s is not in engine_sites::LAYOUT_CHECKED" % BUILDS[reference])
-            failed = True
-        for b in BUILDS:
-            recorded = None if b == reference else addresses(b)
-            for checked in ((True, False) if b in checked_builds else (False,)):
-                expected = set() if checked else set(EXPECTED_WITHHELD.get(b, ())) | unwitnessed
-                reasons, wrong, withheld = report(images[b], spec, recorded, checked)
-                print("%s (%s), layouts %s:" % (BUILDS[b], b, "checked" if checked else "by witnesses"))
-                for k, n in sorted(reasons.items()):
-                    print("  %5d %s" % (n, k))
-                for line in wrong:
-                    print("  WRONG", line)
-                for rva in sorted(withheld - expected):
-                    print("  FAIL withholds %s (%#x)" % (names[rva], rva))
-                for rva in sorted(expected - withheld):
-                    print("  FAIL no longer withholds %s (%#x)" % (names.get(rva, "?"), rva))
-                failed = failed or bool(wrong) or withheld != expected
-        raise SystemExit(1 if failed else 0)
+        raise SystemExit(1 if verify(spec, images, reference, written=True) else 0)
     image = Image(a.exe)
-    got = resolve_keys(image, spec, layout_checked=False)
+    got = resolve_keys(image, spec, layout_checked=digest(a.exe) in layout_checked())
     os.makedirs(os.path.join(DATA, "sites"), exist_ok=True)
     with open(os.path.join(DATA, "sites", a.build + ".json"), "w") as f:
         json.dump({"%#x" % k: v for k, v in got.items() if isinstance(v, int)}, f, indent=0)

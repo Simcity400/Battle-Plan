@@ -31,6 +31,9 @@ pub struct Hooks {
 }
 
 impl Hooks {
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let (at, original) = crate::located_hook(base, cgame_state::COMMAND_BATCH_RVA)?;
         let mut hook = unsafe { Hook::new(at, batch as *const () as usize, original) }

@@ -38,11 +38,16 @@ static OFFERED_LEN: AtomicUsize = AtomicUsize::new(0);
 
 fn free(log: *mut Log) {
     if !log.is_null() {
+        // SAFETY: each pointer came from Box::into_raw and is owned here.
         drop(unsafe { Box::from_raw(log) });
     }
 }
 
 fn installed() -> Option<&'static Log> {
+    // SAFETY: a replaced log is freed only after a drain saw no writer
+    // running, and the consumer is the only drain. Teardown's `release` frees
+    // the installed log only once the hooks are drained and acquisition has
+    // stopped, so no borrow from here outlives either.
     unsafe { LOG.load(Ordering::SeqCst).as_ref() }
 }
 #[repr(align(64))]
@@ -223,7 +228,7 @@ fn install_offered() {
     if offered.is_null() {
         return;
     }
-    INSTALLED_LEN.store(OFFERED_LEN.swap(0, Ordering::SeqCst), Ordering::SeqCst);
+    INSTALLED_LEN.store(unsafe { &*offered }.statuses.len(), Ordering::SeqCst);
     let replaced = LOG.swap(offered, Ordering::SeqCst);
     DRAINING.store(replaced, Ordering::SeqCst);
     INSTALLS.fetch_add(1, Ordering::Relaxed);
@@ -239,13 +244,17 @@ pub fn offer(marks: usize) {
     else {
         return;
     };
-    if len <= INSTALLED_LEN.load(Ordering::SeqCst) || len <= OFFERED_LEN.load(Ordering::SeqCst) {
+    if len <= OFFERED_LEN.load(Ordering::SeqCst) {
         return;
     }
     let Some(log) = Log::new(len) else {
         return;
     };
     OFFERED_LEN.store(len, Ordering::SeqCst);
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(between) = OFFERING.with_borrow_mut(Option::take) {
+        between();
+    }
     free(OFFERED.swap(Box::into_raw(log), Ordering::SeqCst));
 }
 
@@ -267,6 +276,8 @@ fn release() {
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static BETWEEN_READS: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static OFFERING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -357,13 +368,13 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    #[doc = " The runtime's build gate admitted this family before construction."]
-    #[doc = " Never fails: without every hook, refreshes read every status."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// The runtime's build gate admitted this family before construction.
+    /// Never fails: without every hook, refreshes read every status.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let hooks = if cfg!(feature = "opinion_changes") {
             unsafe { Self::install(base) }.unwrap_or_else(|reason| {
@@ -381,6 +392,9 @@ impl Hooks {
         Ok(Self { hooks })
     }
 
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     unsafe fn install(base: usize) -> Result<Vec<Hook>, &'static str> {
         let callbacks: [usize; SITES] = [
             recompute_opinion as *const () as usize,
@@ -798,5 +812,33 @@ mod tests {
         assert_eq!(marks, Some(0));
         observe_for_test(false);
         assert_eq!(drain(&mut consumed, &mut output, &mut required), None);
+    }
+
+    #[test]
+    fn a_drain_taking_an_older_offer_while_a_larger_one_is_published_reports_each_ring() {
+        let _lock = test_lock();
+        observe_for_test(true);
+        install_for_test();
+        collect();
+        let drain_once = || {
+            let (mut consumed, mut output, mut required) = (cursor(), [Mark::default(); 1], 0);
+            drain(&mut consumed, &mut output, &mut required);
+        };
+        offer(2 * LEN);
+        OFFERING.with_borrow_mut(|between| *between = Some(Box::new(drain_once)));
+        offer(8 * LEN);
+        assert_eq!(installed().unwrap().statuses.len(), 32);
+        assert_eq!(INSTALLED_LEN.load(Ordering::SeqCst), 32, "the drain reports the ring it took");
+        drain_once();
+        assert_eq!(installed().unwrap().statuses.len(), 128);
+        assert_eq!(INSTALLED_LEN.load(Ordering::SeqCst), 128, "the larger ring is reported once installed");
+        let installs = INSTALLS.load(Ordering::SeqCst);
+        offer(8 * LEN);
+        assert!(OFFERED.load(Ordering::SeqCst).is_null(), "the installed ring already serves that demand");
+        drain_once();
+        assert_eq!(INSTALLS.load(Ordering::SeqCst), installs);
+        collect();
+        release();
+        observe_for_test(false);
     }
 }

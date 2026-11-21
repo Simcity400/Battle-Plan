@@ -187,11 +187,11 @@ export function rowKeys(answer: FollowedAnswer | undefined): string {
   return out;
 }
 
-export interface DatedPanel { id: number; hour: number; panel: FollowedPanel | null; stepped?: boolean }
+export interface DatedPanel { id: number; hour: number; panel: FollowedPanel | null; stepped?: boolean; waiting?: boolean }
 
 export function parseDatedPanels(bytes: Uint8Array) {
   const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (data.byteLength < 24 || wireKind(bytes) !== DATED_PANEL || data.getUint16(4, true) !== 5) throw new Error('Invalid dated panel header.');
+  if (data.byteLength < 24 || wireKind(bytes) !== DATED_PANEL || data.getUint16(4, true) !== 6) throw new Error('Invalid dated panel header.');
   const count = data.getUint32(8, true), clock = data.getInt32(12, true), route = data.getUint32(16, true), seek = data.getUint32(20, true);
   const panels: DatedPanel[] = [];
   let completed: number | undefined;
@@ -199,11 +199,12 @@ export function parseDatedPanels(bytes: Uint8Array) {
   for (let i = 0; i < count; i++) {
     const id = data.getUint32(at, true), hour = data.getInt32(at + 4, true), kind = data.getUint8(at + 8);
     const length = data.getUint32(at + 12, true), end = at + 16 + length;
-    if (end > bytes.length || ![0, 1, 3, 4].includes(kind) || (kind >= 3 && length)) throw new Error('Invalid dated panel record.');
+    if (end > bytes.length || ![0, 1, 3, 4, 5].includes(kind) || (kind >= 3 && length)) throw new Error('Invalid dated panel record.');
     if (kind === 4) {
       if (id !== 0 || i !== count - 1) throw new Error('Invalid completed product step.');
       completed = hour; at = aligned(end); continue;
     }
+    if (kind === 5) { panels.push({ id, hour, panel: null, waiting: true }); at = aligned(end); continue; }
     const body = bytes.subarray(at + 16, end);
     panels.push({ id, hour, panel: kind === 3 ? null : kind === 0 ? { refused: decoder.decode(body) } : { data: decode(body), refused: null } });
     if (data.getUint8(at + 9) & 1) panels.at(-1)!.stepped = true;

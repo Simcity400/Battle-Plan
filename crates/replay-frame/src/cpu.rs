@@ -1021,6 +1021,7 @@ unsafe extern "system" {
 #[cfg(windows)]
 struct Handle(windows_sys::Win32::Foundation::HANDLE);
 
+// SAFETY: a thread handle is a kernel object reference usable from any thread.
 #[cfg(windows)]
 unsafe impl Send for Handle {}
 

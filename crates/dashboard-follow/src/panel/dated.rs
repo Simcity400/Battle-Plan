@@ -3,13 +3,14 @@ use replay_data::Hour;
 use std::{collections::BTreeMap, io};
 
 pub const MAGIC: &[u8; 4] = b"PNL2";
-const VERSION: u16 = 5;
+const VERSION: u16 = 6;
 const HEAD: usize = 24;
 const PANEL_HEAD: usize = 16;
 pub const REFUSED: u8 = 0;
 pub const DATA: u8 = 1;
 pub const STANDS: u8 = 3;
 pub const COMPLETED: u8 = 4;
+pub const WAITING: u8 = 5;
 
 pub struct ProductBatch {
     bytes: Vec<u8>,
@@ -158,6 +159,7 @@ pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
             DATA | REFUSED => { stands.remove(&r.id); readings.insert(r.id, r); }
             STANDS => { stands.insert(r.id, r); }
             COMPLETED => completed = Some(r),
+            WAITING => return Err(crate::invalid("A product waiting for its table keeps every message whole")),
             _ => return Err(crate::invalid("Unknown dated panel kind")),
         }
     }

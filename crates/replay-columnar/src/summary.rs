@@ -287,6 +287,9 @@ fn get_u128(reader: &mut Reader<'_>) -> io::Result<u128> {
     let mut value = 0u128;
     for shift in (0..128).step_by(7) {
         let byte = reader.u8()?;
+        if u32::from(byte & 0x7f) >> (128 - shift).min(7) != 0 {
+            break;
+        }
         value |= u128::from(byte & 0x7f) << shift;
         if byte & 0x80 == 0 {
             return Ok(value);

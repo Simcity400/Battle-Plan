@@ -28,6 +28,8 @@ const LIMIT: usize = 16;
 #[inline(always)]
 fn line(address: usize) {
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: `_mm_prefetch` never dereferences, never faults and never
+    // observes a value, so an arbitrary integer address is sound and inert.
     unsafe {
         std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(address as *const i8);
     }

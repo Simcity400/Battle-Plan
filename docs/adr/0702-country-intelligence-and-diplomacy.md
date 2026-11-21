@@ -12,8 +12,4 @@ Read owned war-goal recipients in vector order. A non-authenticating goal refuse
 
 Retain the full capitulation byte. A synthetic case checks a non-Boolean value. Captured-operative references hold two identity words, copied together by construction and preserved by the intelligence-agency roster walk.
 
-## Safety of the synthetic cryptology cost test
-
-In `ccryptology::tests::acquisition_cost`, `intel_arena` finishes constructing the owned backing arena before the test creates `LiveMemory`. Every serial and batched read uses pointers into that arena. The arena stays allocated and immutable through both cases.
-
 [Country intel](../../crates/engine-native/src/ccountry_intel.rs) · [Cryptology](../../crates/engine-native/src/ccryptology.rs) · [Diplomacy](../../crates/engine-native/src/cdiplomacy_status.rs) · [Autonomy state](../../crates/engine-native/src/ccurrent_autonomy_status.rs)

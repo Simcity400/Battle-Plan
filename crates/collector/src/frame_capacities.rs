@@ -16,6 +16,8 @@ pub(crate) struct Capacities {
     readers: [AtomicUsize; 2],
 }
 
+// SAFETY: a slot is written only by the holder of `held`, only while it is not `current` and no
+// reader is in it; readers copy only the current slot.
 unsafe impl Sync for Capacities {}
 
 impl Capacities {
@@ -51,6 +53,7 @@ impl Capacities {
             let slot = self.current.load(Ordering::SeqCst);
             self.readers[slot].fetch_add(1, Ordering::SeqCst);
             if self.current.load(Ordering::SeqCst) == slot {
+                // SAFETY: the current slot, pinned: no holder writes it until this reader leaves.
                 let capacities = unsafe { *self.slots[slot].get() };
                 self.readers[slot].fetch_sub(1, Ordering::Release);
                 return capacities;
@@ -61,6 +64,7 @@ impl Capacities {
 
     fn publish(&self, capacities: &FrameCapacities) {
         let current = self.current.load(Ordering::SeqCst);
+        // SAFETY: only the holder writes a slot, and never the current one.
         if unsafe { *self.slots[current].get() } == *capacities {
             return;
         }
@@ -68,6 +72,7 @@ impl Capacities {
         while self.readers[next].load(Ordering::SeqCst) != 0 {
             std::thread::yield_now();
         }
+        // SAFETY: not current and no reader in it; readers find it only once it is published.
         unsafe { *self.slots[next].get() = *capacities };
         self.current.store(next, Ordering::SeqCst);
     }

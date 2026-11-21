@@ -106,17 +106,19 @@ pub fn follow() {
 }
 
 pub fn confined<T>(work: impl FnOnce() -> T) -> T {
-    struct Restore(Option<Processors>, Option<Processors>);
+    struct Restore(Option<Processors>, Option<Processors>, Caller);
     impl Drop for Restore {
         fn drop(&mut self) {
             CONFINED.set(self.0);
             if let Some(processors) = self.1 {
                 processors.enter();
             }
+            self.2.clone().enter();
         }
     }
     let all = Processors::current().filter(|_| Processors::one_group());
-    let _restore = Restore(CONFINED.get(), all);
+    let _restore = Restore(CONFINED.get(), all, Caller::current());
+    set_thread_priority(Level::BelowNormal, false);
     if let Some(half) = all.and_then(Processors::half) {
         CONFINED.set(Some(half));
         half.enter();

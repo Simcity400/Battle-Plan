@@ -88,6 +88,7 @@ impl Gate {
 
     fn leave(&self) {
         self.ticking.store(0, Ordering::SeqCst);
+        // SAFETY: an aligned u32 that outlives every waiter on it.
         unsafe { WakeByAddressAll(self.ticking.as_ptr().cast()) };
     }
 
@@ -106,6 +107,7 @@ impl Gate {
                 self.capped.fetch_add(1, Ordering::Relaxed);
                 break;
             };
+            // SAFETY: an aligned u32 compared with a local of the same size, live through the wait.
             unsafe {
                 WaitOnAddress(
                     self.ticking.as_ptr().cast(),

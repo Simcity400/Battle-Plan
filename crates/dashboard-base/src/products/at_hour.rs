@@ -26,9 +26,8 @@ use std::{
 use ts_rs::TS;
 
 mod incremental;
-mod encoding;
 mod placed;
-pub use incremental::Edits;
+pub use incremental::{Edits, Held};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Keys {
@@ -85,6 +84,7 @@ pub struct ReadsAt<'a, C> {
     pub context: &'a C,
     pub run: u32,
     pub hour: i32,
+    pub since: Option<i32>,
 }
 
 pub trait AtHour: 'static {
@@ -92,7 +92,6 @@ pub trait AtHour: 'static {
     const TITLE: &'static str;
     const CONTENT_DEPENDENT: bool;
     const INTERACTIVE: bool = true;
-    const ENCODE_LIVE_CELLS: bool = false;
     type Params: DeserializeOwned + Send + 'static;
     type Reply: Serialize + ReplyWarnings + PartialEq + Send + 'static;
     type Context: Send + 'static;
@@ -137,7 +136,7 @@ pub trait AtHour: 'static {
 
     fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> { Self::columns(table) }
 
-    fn plan_changes(_stage: usize, edits: &Edits) -> bool { !edits.tables.is_empty() || !edits.replaced.is_empty() }
+    fn plan_changes(_stage: usize, edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool { !edits.tables.is_empty() || !edits.replaced.is_empty() }
 
     fn compares_previous(_table: TableId) -> bool { false }
 
@@ -146,7 +145,7 @@ pub trait AtHour: 'static {
 
     fn clock_dependent(_plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> bool { Self::CLOCK_DEPENDENT }
 
-    fn advance(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, _edits: &Edits, _live: &Live, _data: &mut Value) -> io::Result<bool> {
+    fn advance(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, _edits: &Edits, _live: &Live, _data: &mut Held<'_>) -> io::Result<bool> {
         Ok(false)
     }
 
@@ -261,7 +260,7 @@ fn answered<P: AtHour, C: std::borrow::Borrow<P::Context>>(query: &Query<'_>, po
     let mut read_frame = |reads: &[Read]| dashboard_query::cost::storage(|| input.frame(reads, P::columns, query.timeline.id));
     for step in 0.. {
         crate::metadata::check_cancel(cancelled)?;
-        let reads = P::reads_in(params, owner, step, &answer.frame, &ReadsAt { holders: &query.holders, context, run, hour });
+        let reads = P::reads_in(params, owner, step, &answer.frame, &ReadsAt { holders: &query.holders, context, run, hour, since: None });
         if reads.is_empty() {
             break;
         }
@@ -393,7 +392,7 @@ where P::Params: Sync, P::Context: Sync {
 
 pub fn product_panel(advance: dashboard_follow::panel::ProductReader, cold: dashboard_follow::panel::ExactReader) -> Box<dyn Panel> {
     let current = advance.clone();
-    let read = Arc::new(move |hour, cancelled: &AtomicBool| current(hour, false, cancelled, None).value.as_ref().clone());
+    let read = Arc::new(move |hour, cancelled: &AtomicBool| current(hour, true, cancelled, None).value.as_ref().clone());
     Box::new(dashboard_follow::panel::AtHour { read, cold, advance })
 }
 

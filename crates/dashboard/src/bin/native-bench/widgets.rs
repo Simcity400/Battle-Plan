@@ -22,31 +22,41 @@ pub struct Widget {
 }
 
 enum Reader {
-    Panel { read: ProductReader, cold: ExactReader, delivery: Delivery },
+    Panel { read: ProductReader, cold: ExactReader, delivery: Delivery, last_bytes: Vec<u8>, last_through: i32 },
     Ranking { hook: Hook, result: Arc<Mutex<Option<(u64, dashboard_follow::Message)>>>, query: dashboard_follow::Query, previous: Vec<u8> },
 }
 
 impl Widget {
     pub fn step(&mut self, id: u32, step: &Step, lanes: &Lanes<'_>, audit: Option<&Arc<playhead::pages::WorldPages>>) -> Packet {
         match &mut self.reader {
-            Reader::Panel { read, cold, delivery } => {
+            Reader::Panel { read, cold, delivery, last_bytes, last_through } => {
                 let token = AtomicBool::new(false);
-                let run = || read(step.last(), step.reset(), &token, Some(ProductStep { step, lanes }));
+                let delivered = *last_through != i32::MIN;
+                let run = || {
+                    let reading = read(step.last(), step.reset(), &token, Some(ProductStep { step, lanes, held: None, wake: None }));
+                    if reading.pending && !delivered { read(step.last(), true, &token, None) } else { reading }
+                };
                 let (reading, extra) = if audit.is_some() { at_hour::counted(run) } else { (run(), 0) };
-                let (answer, rows, body, read_lanes) = (reading.value, reading.rows, reading.encoded, reading.lanes);
-                let record = delivery.packet((0, 1, step.epoch() as u32), id, step.last(), step.reset(), &answer, body);
+                if reading.pending {
+                    return Packet { bytes: last_bytes.clone(), through: *last_through, data: false, refused: false, rows: reading.rows + extra, cold_rows: None, mismatch: None, lanes: reading.lanes };
+                }
+                let (answer, rows, read_lanes, fresh) = (reading.value, reading.rows, reading.lanes, reading.fresh);
+                let record = delivery.packet((0, 1, step.epoch() as u32), id, step.last(), step.reset(), &answer);
                 let mut cold_rows = None;
                 let mut mismatch = None;
                 if audit.is_some() {
                     let (expected, count) = at_hour::counted(|| cold(step.last(), &token));
                     cold_rows = Some(count);
-                    if expected.is_err() != answer.is_err() || hash(&expected) != blake3::hash(delivery.body().unwrap()) {
-                        mismatch = Some(match (&expected, answer.as_ref()) {
+                    let (expected, shown) = (shown(&expected, fresh), shown(&answer, fresh));
+                    if expected.is_err() != shown.is_err() || hash(&expected) != hash(&shown) {
+                        mismatch = Some(match (&expected, &shown) {
                             (Ok(left), Ok(right)) => difference("", left, right).unwrap_or_else(|| "payload bytes differ".into()),
-                            _ => format!("refusals {:?} / {:?}", expected.as_ref().err(), answer.as_ref().as_ref().err()),
+                            _ => format!("refusals {:?} / {:?}", expected.as_ref().err(), shown.as_ref().err()),
                         });
                     }
                 }
+                last_bytes.clone_from(&record.bytes);
+                *last_through = step.last();
                 Packet { bytes: record.bytes, through: step.last(), data: record.changed, refused: record.refused, rows: rows + extra, cold_rows, mismatch, lanes: read_lanes }
             }
             Reader::Ranking { hook, result, query, previous } => {
@@ -68,6 +78,15 @@ impl Widget {
             }
         }
     }
+}
+
+fn shown(data: &PanelData, values: bool) -> PanelData {
+    data.clone().map(|mut reply| {
+        for group in reply["live"]["groups"].as_array_mut().into_iter().flatten() {
+            if !values && let Some(group) = group.as_object_mut() { group.remove("values"); }
+        }
+        reply
+    })
 }
 
 fn hash(data: &PanelData) -> blake3::Hash {
@@ -92,7 +111,7 @@ fn panel(name: &'static str, panel: Result<Box<dyn Panel>, String>) -> io::Resul
     let panel = panel.map_err(io::Error::other)?;
     let exact = panel.exact().expect("complete at-hour reader");
     let (read, cold) = (exact.advance.clone(), exact.cold.clone());
-    Ok(Widget { name, declared: Vec::new(), reader: Reader::Panel { read, cold, delivery: Delivery::default() } })
+    Ok(Widget { name, declared: Vec::new(), reader: Reader::Panel { read, cold, delivery: Delivery::default(), last_bytes: Vec::new(), last_through: i32::MIN } })
 }
 
 fn rank(identity: &Identity, name: &'static str, product: &str, mut params: Value) -> io::Result<Widget> {

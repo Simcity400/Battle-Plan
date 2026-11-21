@@ -587,12 +587,12 @@ pub struct Hooks {
     hook: Option<Hook>,
 }
 impl Hooks {
-    #[doc = " The runtime's build gate admitted this family, as for line_output."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// The runtime's build gate admitted this family, as for line_output.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize, capacity: Capacities) -> Self {
         presize(capacity);
         install_offered();

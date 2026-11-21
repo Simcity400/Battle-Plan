@@ -30,6 +30,9 @@ impl Part {
     }
     fn read(&mut self) {
         let (base, hour) = (self.base, self.hour);
+        // SAFETY: lanes run inside the capture's write boundary, as every acquisition read does:
+        // the game is held, or every writer of the design data these lanes read waits at the
+        // capture gate.
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let mut scratch = Vec::new();
         let mut largest = (0, 0);

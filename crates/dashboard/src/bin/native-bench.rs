@@ -142,11 +142,14 @@ fn main() -> io::Result<()> {
     let metadata = source.metadata().map_err(io::Error::other)?;
     let branch = metadata.branches.iter().find(|b| b.main).ok_or_else(|| io::Error::other("no main branch"))?;
     let q = answer::query(&source, branch.id.parse().map_err(io::Error::other)?)?;
-    let span = q.timeline.stretches.iter().rev().find(|s| s.last - s.first >= 3600 + QUANTUM)
-        .ok_or_else(|| io::Error::other("no continuous recording long enough for the late window"))?;
+    let opened = q.timeline.stretches.iter().map(|s| s.first).min().ok_or_else(|| io::Error::other("the branch holds no recording"))?;
+    let closed = q.timeline.stretches.iter().map(|s| s.last).max().unwrap_or(opened);
+    let start = opened + (closed - opened) * 3 / 10;
+    let span = q.timeline.stretches.iter().find(|s| s.first <= start && start + 3600 + QUANTUM <= s.last)
+        .ok_or_else(|| io::Error::other("no continuous recording for 3,600 hours from where the acceptance suite plays"))?;
     let pages = Arc::new(WorldPages::open(&path, Span::Run(span.run as usize))?);
-    let end = span.last - (span.last - pages.pieces()[0].first + 1).rem_euclid(QUANTUM);
-    let first = end - 3600;
+    let first = start + (pages.pieces()[0].first - 1 - start).rem_euclid(QUANTUM);
+    let end = first + 3600;
     let last = if hourly { first + QUANTUM } else { end };
     let reads = [TableId::Countries, TableId::Projects, TableId::ProjectHistory, TableId::ProductionLines].map(at_hour::Read::all);
     let census = at_hour::frame(&q, first, &reads, "country census")?;

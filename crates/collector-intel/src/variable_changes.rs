@@ -250,6 +250,9 @@ fn install_handler() -> bool {
     if !HANDLER.load(Ordering::SeqCst).is_null() {
         return true;
     }
+    // SAFETY: `vectored` is a function of this DLL, removed before the DLL
+    // unloads ([`remove_handler`]), and only reads what the dispatcher
+    // passes.
     let handle = unsafe { AddVectoredExceptionHandler(1, vectored) };
     if handle.is_null() {
         HANDLER_FAILURES.fetch_add(1, Ordering::Relaxed);
@@ -428,14 +431,14 @@ pub struct Hooks {
     taps: Vec<Tap>,
 }
 impl Hooks {
-    #[doc = " The runtime's build gate admitted this family before construction."]
-    #[doc = " A withheld site or an unreadable TLS index leaves the family"]
-    #[doc = " uninstalled; ScriptVariables then reads every store afresh."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// The runtime's build gate admitted this family before construction.
+    /// A withheld site or an unreadable TLS index leaves the family
+    /// uninstalled; ScriptVariables then reads every store afresh.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
         use engine_mutations::{
             script_variable_mutations::CLEAR_RVA, script_variable_mutations::END_CONTEXT_RVA,
@@ -569,6 +572,9 @@ impl Hooks {
 impl Drop for Hooks {
     fn drop(&mut self) {
         let _ = remove_handler();
+        // SAFETY: like each Hook's relay, the watch tables are dropped only
+        // once the hooks were never enabled, or were removed and drained
+        // after the last capture.
         unsafe { WATCHES.registry.release() };
     }
 }

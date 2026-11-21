@@ -145,6 +145,9 @@ pub(super) struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub(super) unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         BASE.store(base, Ordering::Release);
         DIRTY.offer(0);
@@ -192,6 +195,8 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
+        // SAFETY: dropped only after patch restoration, with both template callbacks and
+        // acquisition workers quiesced.
         unsafe { DIRTY.release() };
         OFFERED.store(0, Ordering::Release);
         OBSERVED.store(0, Ordering::Release);

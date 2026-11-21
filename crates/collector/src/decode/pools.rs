@@ -13,6 +13,9 @@ fn keep() -> usize {
     let backlog = if shared.is_null() {
         0
     } else {
+        // SAFETY: the loader publishes SHARED only once its state is built, which the null check
+        // above covers, and keeps that state alive until every worker that returns jobs here has
+        // stopped.
         unsafe { &*shared }
             .frames
             .live()

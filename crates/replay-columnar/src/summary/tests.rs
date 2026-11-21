@@ -612,3 +612,13 @@ mod labelled {
         assert!(peak > 0 && peak as u64 <= model, "folding holds {peak} bytes; the model says at most {model}");
     }
 }
+
+#[test]
+fn summary_numbers_hold_128_bits_and_refuse_bits_past_them() {
+    let mut widest = Vec::new();
+    put_u128(&mut widest, u128::MAX);
+    assert_eq!(get_u128(&mut Reader::new(&widest)).unwrap(), u128::MAX);
+    let over = |last: u8| [vec![0x80; 18], vec![last]].concat();
+    assert_eq!(get_u128(&mut Reader::new(&over(3))).unwrap(), 3 << 126);
+    assert!(get_u128(&mut Reader::new(&over(4))).is_err());
+}

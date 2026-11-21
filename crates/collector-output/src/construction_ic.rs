@@ -152,6 +152,11 @@ pub fn collect() {
 }
 
 fn log() -> Option<&'static Storage> {
+    // SAFETY: native writers hold OBSERVATION.enter(); a test that appends on the draining thread
+    // holds `test_lock` and drains after. The observer boundary's job is the sole drain,
+    // and it finishes with this log before it installs the replacement; the capture gate keeps
+    // command-batch writers out through that sequence. Teardown frees the log only once the hooks
+    // are removed and no writer is active.
     unsafe { LOG.load(Ordering::SeqCst).as_ref() }
 }
 
@@ -538,13 +543,13 @@ pub const SITES: [&Site; 7] = [
     &BUILDING_RESET,
 ];
 impl Hooks {
-    #[doc = " The runtime's build gate admitted this family. Installation failure leaves"]
-    #[doc = " the output table unavailable; site order preserves paired observation."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// The runtime's build gate admitted this family. Installation failure leaves
+    /// the output table unavailable; site order preserves paired observation.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
         let _ = presize_from_live(memory, base);
         install_offered();

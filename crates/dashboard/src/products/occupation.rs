@@ -19,7 +19,14 @@ pub use law::OccupationLawInfo;
 
 type Named = (Vec<u8>, Vec<u8>, Result<String, String>);
 
-type Eligibility = HashMap<(String, u32, u32), Result<bool, String>>;
+type Judgements = HashMap<(String, u32, u32), (Result<bool, String>, dashboard_text::triggers::inputs::Inputs)>;
+
+#[derive(Default)]
+struct Judged {
+    at: Option<(replay_data::BranchId, replay_data::Hour)>,
+    decisions: Judgements,
+    carried: bool,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct WorldReads {
@@ -54,7 +61,7 @@ pub struct Content {
     warnings: Vec<String>,
     names: Mutex<HashMap<u32, Named>>,
     world: Mutex<WorldReads>,
-    eligible: Mutex<Option<((replay_data::BranchId, replay_data::Hour), Eligibility)>>,
+    judged: Mutex<Judged>,
 }
 
 impl Content {
@@ -78,7 +85,7 @@ impl Content {
                 Err(why) => warnings.push(format!("Garrison defines unavailable: {why}")),
             }
         }
-        Self { catalogue, laws, equipment: OnceLock::new(), red, warnings, names: Mutex::default(), world: Mutex::default(), eligible: Mutex::default() }
+        Self { catalogue, laws, equipment: OnceLock::new(), red, warnings, names: Mutex::default(), world: Mutex::default(), judged: Mutex::default() }
     }
 
     fn equipment(&self) -> Result<&Database, String> {

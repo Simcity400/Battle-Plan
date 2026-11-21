@@ -153,6 +153,9 @@ pub struct Hooks {
     fleet_regions: collector_observers::fleet_region_changes::Hooks,
 }
 impl Hooks {
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         let mut located = [(0, [0; 16]); SITES];
@@ -226,6 +229,9 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
+        // SAFETY: like each Hook's relay, the watch tables are dropped only
+        // once the hooks were never enabled, or were removed and drained
+        // after the last capture.
         unsafe { WATCHES.registry.release() };
     }
 }

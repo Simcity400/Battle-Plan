@@ -74,15 +74,21 @@ pub fn posix_delete(path: &Path) -> io::Result<()> {
 
 pub fn posix_replace(source: &File, target: &[u16]) -> io::Result<bool> {
     posix_replace_with(target, |info, size| {
-        if unsafe {
-            SetFileInformationByHandle(source.as_raw_handle(), FileRenameInfoEx, info, size)
-        } == 0
-        {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
+        rename_by_handle(source, FileRenameInfoEx, info, size)
     })
+}
+
+fn rename_by_handle(
+    source: &File,
+    class: windows_sys::Win32::Storage::FileSystem::FILE_INFO_BY_HANDLE_CLASS,
+    info: *const c_void,
+    size: u32,
+) -> io::Result<()> {
+    if unsafe { SetFileInformationByHandle(source.as_raw_handle(), class, info, size) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 pub(crate) fn posix_replace_with(
@@ -168,8 +174,20 @@ pub(crate) fn replace_file_with(
     directory.sync_all().map_err(unflushed)
 }
 
-pub fn replace_unopened(source: &Path, destination: &Path) -> io::Result<()> {
-    classic_replace(source, destination)
+pub fn replace_held(source: &File, destination: &Path, held: File) -> Result<(), ReplaceError> {
+    let unrenamed = ReplaceError::Unrenamed;
+    let destination = std::path::absolute(destination).map_err(unrenamed)?;
+    let directory = publication_directory(&destination).map_err(unrenamed)?;
+    if !posix_replace(source, &wide(&destination).map_err(unrenamed)?).map_err(unrenamed)? {
+        return Err(unrenamed(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this drive cannot replace a file while it is held",
+        )));
+    }
+    drop(held);
+    let unflushed = ReplaceError::Unflushed;
+    source.sync_all().map_err(unflushed)?;
+    directory.sync_all().map_err(unflushed)
 }
 
 pub fn sync_file(destination: &Path) -> io::Result<()> {

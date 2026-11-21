@@ -2,12 +2,12 @@ use crate::hook::Hook;
 use engine_characters::ccharacter_portraits::MUTATIONS;
 use engine_native::{
     Memory,
-    portrait_cache::{Changes, Counts, EntryImage, HolderImage},
+    portrait_cache::{Changes, Counts, EntryImage, HolderImage, Readers, Reading},
 };
 use std::{
     cell::{Cell, UnsafeCell},
     ops::Range,
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
 use windows_sys::Win32::System::Threading::{WaitOnAddress, WakeByAddressAll};
@@ -120,11 +120,15 @@ impl Drop for Mutation {
 }
 
 static PRE_IMAGES: PreImages = PreImages::new(Duration::from_millis(5));
-static WITHHELD: AtomicU64 = AtomicU64::new(0);
+static WITHHELD: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 
 const OPEN: u32 = 0;
 const CLOSING: u32 = 1;
 const READING: u32 = 2;
+
+const ADMITTED: u8 = 0;
+const WRITER_RUNNING: u8 = 1;
+const READER_HOLDING: u8 = 2;
 
 thread_local! {
     static WRITING: Cell<usize> = const { Cell::new(0) };
@@ -134,8 +138,9 @@ struct PreImages {
     state: AtomicU32,
     in_flight: AtomicUsize,
     bound: Duration,
-    withheld: AtomicBool,
+    withheld: AtomicU8,
     logging: AtomicUsize,
+    readers: Readers,
     reserved: [AtomicUsize; 3],
     demand: [AtomicUsize; 3],
     storage: UnsafeCell<Storage>,
@@ -176,6 +181,11 @@ enum Log {
     Full,
 }
 
+// SAFETY: a slot is written only by the writer that reserved it, before its record is
+// published, and only in a capture that began with no reader holding a pre-image; the storage
+// is replaced only while no writer logs and no reader holds one. Every borrow `image` hands out
+// is counted in `readers` until its `Reading` drops, and covers only a published record's
+// entries and their text ranges.
 unsafe impl Sync for PreImages {}
 
 impl PreImages {
@@ -184,8 +194,9 @@ impl PreImages {
             state: AtomicU32::new(OPEN),
             in_flight: AtomicUsize::new(0),
             bound,
-            withheld: AtomicBool::new(false),
+            withheld: AtomicU8::new(ADMITTED),
             logging: AtomicUsize::new(0),
+            readers: Readers::new(),
             reserved: [const { AtomicUsize::new(0) }; 3],
             demand: [const { AtomicUsize::new(0) }; 3],
             storage: UnsafeCell::new(Storage {
@@ -197,14 +208,6 @@ impl PreImages {
     }
 
     fn begin(&self) -> bool {
-        let storage = unsafe { &*self.storage.get() };
-        let used = self.reserved[RECORDS].load(Ordering::SeqCst);
-        for record in &storage.records[..used.min(storage.records.len())] {
-            record.ready.store(false, Ordering::SeqCst);
-        }
-        for reserved in &self.reserved {
-            reserved.store(0, Ordering::SeqCst);
-        }
         self.state.store(CLOSING, Ordering::SeqCst);
         let deadline = Instant::now() + self.bound;
         let settled = WRITING.get() == 0
@@ -217,10 +220,29 @@ impl PreImages {
                 }
                 std::thread::yield_now();
             };
-        self.withheld.store(!settled, Ordering::SeqCst);
+        let withheld = if !settled {
+            WRITER_RUNNING
+        } else if !self.readers.idle() {
+            READER_HOLDING
+        } else {
+            ADMITTED
+        };
+        if withheld == ADMITTED {
+            // SAFETY: closing, with no writer logging since the last end and no reader holding a
+            // pre-image, and the capture gate admits one capture at a time.
+            let storage = unsafe { &*self.storage.get() };
+            let used = self.reserved[RECORDS].load(Ordering::SeqCst);
+            for record in &storage.records[..used.min(storage.records.len())] {
+                record.ready.store(false, Ordering::SeqCst);
+            }
+            for reserved in &self.reserved {
+                reserved.store(0, Ordering::SeqCst);
+            }
+        }
+        self.withheld.store(withheld, Ordering::SeqCst);
         self.state.store(READING, Ordering::SeqCst);
         self.wake();
-        settled
+        withheld == ADMITTED
     }
 
     fn end(&self, grow: bool) {
@@ -229,7 +251,9 @@ impl PreImages {
         while self.logging.load(Ordering::SeqCst) != 0 {
             std::thread::yield_now();
         }
-        if grow {
+        if grow && self.readers.idle() {
+            // SAFETY: open, with no writer logging and no reader holding a pre-image; a reader
+            // entering now sees the store open and borrows nothing.
             unsafe { self.grow() };
         }
     }
@@ -261,8 +285,8 @@ impl PreImages {
         }
     }
 
-    #[doc = " # Safety"]
-    #[doc = " Open, with no writer logging and no capture reading."]
+    /// # Safety
+    /// Open, with no writer logging and no reader holding a pre-image.
     unsafe fn grow(&self) {
         let storage = unsafe { &mut *self.storage.get() };
         let [records, entries, text] = self.demand.each_ref().map(|d| d.load(Ordering::SeqCst));
@@ -320,7 +344,9 @@ impl PreImages {
 
     fn log(&self, array: usize, memory: &impl Memory) -> Log {
         self.logging.fetch_add(1, Ordering::SeqCst);
-        let log = if self.state.load(Ordering::SeqCst) != READING {
+        let log = if self.state.load(Ordering::SeqCst) != READING
+            || self.withheld.load(Ordering::SeqCst) != ADMITTED
+        {
             Log::Inactive
         } else if self.find(array).is_some() {
             Log::Logged
@@ -332,11 +358,13 @@ impl PreImages {
     }
 
     fn find(&self, array: usize) -> Option<&Record> {
+        // SAFETY: replaced only while no writer logs and no reader holds a pre-image.
         let storage = unsafe { &*self.storage.get() };
         let len = self.reserved[RECORDS].load(Ordering::SeqCst);
         storage.records[..len.min(storage.records.len())]
             .iter()
             .find(|record| {
+                // SAFETY: a ready record's fields were written before it was published.
                 record.ready.load(Ordering::Acquire) && unsafe { *record.array.get() } == array
             })
     }
@@ -348,6 +376,7 @@ impl PreImages {
         let (Some(record), Some(image)) = (storage.records.get(slot), image) else {
             return Log::Full;
         };
+        // SAFETY: this writer reserved the slot; nothing reads it before it is published.
         unsafe {
             *record.array.get() = array;
             *record.image.get() = image;
@@ -411,6 +440,7 @@ impl PreImages {
             if !fits {
                 continue;
             }
+            // SAFETY: cells this writer reserved, contiguous in one allocation.
             let text = unsafe {
                 std::slice::from_raw_parts_mut(
                     UnsafeCell::raw_get(storage.text.as_ptr().add(start)),
@@ -420,6 +450,7 @@ impl PreImages {
             if len != 0 && !memory.copy(source, text) {
                 return unreadable;
             }
+            // SAFETY: an entry slot this writer reserved.
             unsafe {
                 *storage.entries[first + index as usize].get() = EntryImage {
                     head,
@@ -436,16 +467,27 @@ impl PreImages {
 }
 
 impl engine_native::portrait_cache::PreImages for PreImages {
-    fn image(&self, array: usize) -> Option<Result<HolderImage<'_>, &'static str>> {
+    fn image(&self, array: usize) -> Option<Result<Reading<'_>, &'static str>> {
+        let reader = self.readers.enter();
         if self.state.load(Ordering::SeqCst) != READING {
             return None;
         }
-        if self.withheld.load(Ordering::SeqCst) {
-            return Some(Err(
-                "character portrait writer still running when the capture began",
-            ));
+        match self.withheld.load(Ordering::SeqCst) {
+            ADMITTED => {}
+            WRITER_RUNNING => {
+                return Some(Err(
+                    "character portrait writer still running when the capture began",
+                ));
+            }
+            _ => {
+                return Some(Err(
+                    "character portrait pre-image still read when the capture began",
+                ));
+            }
         }
         let record = self.find(array)?;
+        // SAFETY: `reader` is counted before the state was seen reading, so no capture that
+        // begins and no growth while it lives rewrites the published record or its slots.
         Some(match unsafe { *record.image.get() } {
             Logged::Unreadable => Err("character portrait pre-image unreadable"),
             Logged::Holder {
@@ -456,14 +498,17 @@ impl engine_native::portrait_cache::PreImages for PreImages {
                 let storage = unsafe { &*self.storage.get() };
                 let entries: *const [UnsafeCell<EntryImage>] =
                     &storage.entries[first..first + count];
-                let text: *const [UnsafeCell<u8>] = &storage.text[..];
-                let (entries, text) =
-                    unsafe { (&*(entries as *const [EntryImage]), &*(text as *const [u8])) };
-                Ok(HolderImage {
-                    header,
-                    entries,
-                    text,
-                })
+                let entries = unsafe { &*(entries as *const [EntryImage]) };
+                // SAFETY: the record's writer filled each of its entries' text ranges before
+                // publishing it, and they stay unchanged until the next capture begins.
+                Ok(Reading::new(reader, unsafe {
+                    HolderImage::published(
+                        header,
+                        entries,
+                        UnsafeCell::raw_get(storage.text.as_ptr()).cast_const(),
+                        storage.text.len(),
+                    )
+                }))
             }
         })
     }
@@ -480,7 +525,8 @@ pub(crate) struct PreImagesCapture;
 impl PreImagesCapture {
     pub(crate) fn begin() -> Self {
         if !PRE_IMAGES.begin() {
-            WITHHELD.fetch_add(1, Ordering::Relaxed);
+            let reader = PRE_IMAGES.withheld.load(Ordering::SeqCst) == READER_HOLDING;
+            WITHHELD[usize::from(reader)].fetch_add(1, Ordering::Relaxed);
         }
         Self
     }
@@ -491,8 +537,10 @@ impl Drop for PreImagesCapture {
     }
 }
 
-pub(crate) fn withheld_captures() -> u64 {
-    WITHHELD.load(Ordering::Relaxed)
+pub(crate) fn withheld_captures() -> [u64; 2] {
+    WITHHELD
+        .each_ref()
+        .map(|count| count.load(Ordering::Relaxed))
 }
 
 #[cfg(test)]
@@ -563,11 +611,13 @@ pub fn record(counts: Counts) {
     }
 }
 
-
 pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "portrait_changes") {
@@ -657,6 +707,23 @@ unsafe extern "system" fn insert(array: usize, at: i32, source: usize, count: i3
 #[cfg(test)]
 mod revision_tests {
     use super::*;
+    use engine_native::{memory::SliceMemory, portrait_cache::PreImages as _};
+
+    const ENTRY: usize = 0x100;
+
+    fn holder(base: usize, name: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0; 0x200];
+        let mut put = |at: usize, value: &[u8]| bytes[at..at + value.len()].copy_from_slice(value);
+        put(0, &((base + ENTRY) as u64).to_le_bytes());
+        put(8, &1_u32.to_le_bytes());
+        put(12, &1_u32.to_le_bytes());
+        put(ENTRY, &4_u32.to_le_bytes());
+        put(ENTRY + 8, &[1]);
+        put(ENTRY + 0x10, name);
+        put(ENTRY + 0x20, &(name.len() as u64).to_le_bytes());
+        put(ENTRY + 0x28, &15_u64.to_le_bytes());
+        bytes
+    }
 
     #[test]
     fn unwatched_holder_writers_leave_the_quiet_revision_still() {
@@ -673,23 +740,10 @@ mod revision_tests {
 
     #[test]
     fn the_first_change_in_a_capture_logs_the_holder_as_it_was() {
-        use engine_native::{memory::SliceMemory, portrait_cache::PreImages as _};
         const ARRAY: usize = 0x1000;
-        const ENTRY: usize = 0x100;
-        let put = |bytes: &mut [u8], at: usize, value: &[u8]| {
-            bytes[at..at + value.len()].copy_from_slice(value)
-        };
-        let mut bytes = vec![0; 0x200];
-        put(&mut bytes, 0, &((ARRAY + ENTRY) as u64).to_le_bytes());
-        put(&mut bytes, 8, &1_u32.to_le_bytes());
-        put(&mut bytes, 12, &1_u32.to_le_bytes());
-        put(&mut bytes, ENTRY, &4_u32.to_le_bytes());
-        bytes[ENTRY + 8] = 1;
-        put(&mut bytes, ENTRY + 0x10, b"x.dds");
-        put(&mut bytes, ENTRY + 0x20, &5_u64.to_le_bytes());
-        put(&mut bytes, ENTRY + 0x28, &15_u64.to_le_bytes());
+        let bytes = holder(ARRAY, b"x.dds");
         let mut changed = bytes.clone();
-        put(&mut changed, ENTRY, &9_u32.to_le_bytes());
+        changed[ENTRY..ENTRY + 4].copy_from_slice(&9_u32.to_le_bytes());
         let before = SliceMemory {
             base: ARRAY,
             bytes: &bytes,
@@ -707,11 +761,13 @@ mod revision_tests {
         assert!(store.begin());
         assert_eq!(store.log(ARRAY, &before), Log::Logged);
         assert_eq!(store.log(ARRAY, &after), Log::Logged);
-        let image = store.image(ARRAY).unwrap().unwrap();
+        let reading = store.image(ARRAY).unwrap().unwrap();
+        let image = reading.image();
         assert_eq!(image.header[..], bytes[..16]);
-        assert_eq!(image.entries.len(), 1);
-        assert_eq!(image.entries[0].head[..], bytes[ENTRY..ENTRY + 16]);
-        assert_eq!(image.identity(&image.entries[0]).unwrap(), b"x.dds");
+        assert_eq!(image.entries().len(), 1);
+        assert_eq!(image.entries()[0].head[..], bytes[ENTRY..ENTRY + 16]);
+        assert_eq!(image.identity(0).unwrap(), b"x.dds");
+        drop(reading);
         assert!(store.image(ARRAY + 8).is_none());
         store.end(true);
         assert!(store.image(ARRAY).is_none());
@@ -742,7 +798,7 @@ mod revision_tests {
         });
         assert!(patient.image(ARRAY + 0x1000).is_none());
         assert_eq!(
-            patient.image(ARRAY).unwrap().unwrap().header[..],
+            patient.image(ARRAY).unwrap().unwrap().image().header[..],
             bytes[..16]
         );
         patient.in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -763,6 +819,56 @@ mod revision_tests {
         assert!(!store.begin());
         store.end(false);
         WRITING.set(0);
+    }
+
+    #[test]
+    fn a_held_pre_image_keeps_its_bytes_until_its_reader_returns() {
+        const FIRST: usize = 0x1000;
+        const SECOND: usize = 0x3000;
+        let (first, second) = (holder(FIRST, b"x.dds"), holder(SECOND, b"y.dds"));
+        let first = SliceMemory {
+            base: FIRST,
+            bytes: &first,
+        };
+        let second = SliceMemory {
+            base: SECOND,
+            bytes: &second,
+        };
+        let text = |store: &PreImages| unsafe { (*store.storage.get()).text.as_ptr() };
+        let store = PreImages::new(Duration::ZERO);
+        assert!(store.begin());
+        assert_eq!(store.log(FIRST, &first), Log::Full);
+        store.end(true);
+        assert!(store.begin());
+        assert_eq!(store.log(FIRST, &first), Log::Logged);
+        let reading = store.image(FIRST).unwrap().unwrap();
+        store.demand[TEXT].fetch_add(1, Ordering::SeqCst);
+        let held = text(&store);
+        store.end(true);
+        assert_eq!(text(&store), held);
+        assert!(!store.begin());
+        assert!(store.find(FIRST).is_some());
+        assert_eq!(store.log(SECOND, &second), Log::Inactive);
+        assert!(store.image(SECOND).unwrap().is_err());
+        assert!(store.image(FIRST).unwrap().is_err());
+        store.end(true);
+        assert_eq!(text(&store), held);
+        assert_eq!(reading.image().identity(0).unwrap(), b"x.dds");
+        drop(reading);
+        assert!(store.begin());
+        assert_eq!(store.log(SECOND, &second), Log::Logged);
+        assert_eq!(
+            store
+                .image(SECOND)
+                .unwrap()
+                .unwrap()
+                .image()
+                .identity(0)
+                .unwrap(),
+            b"y.dds"
+        );
+        store.end(true);
+        assert_ne!(text(&store), held);
     }
 
     #[test]

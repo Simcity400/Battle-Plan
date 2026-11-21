@@ -8,6 +8,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub const STARTED_WITH_REPLAY: &str = "--with-replay";
+
+pub const RECORDER_INSTANCE: &str = "Local\\HOI4Replay.Recorder";
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NextLoad {

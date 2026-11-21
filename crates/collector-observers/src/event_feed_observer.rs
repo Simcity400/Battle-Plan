@@ -718,6 +718,8 @@ impl Owner {
                     .fetch_and(!(HOLDER | CANDIDATE | CANDIDATE_WAITING), Ordering::SeqCst);
                 self.releases.fetch_add(1, Ordering::SeqCst);
                 if held & CANDIDATE_WAITING != 0 {
+                    // SAFETY: the ownership qword stays live through every
+                    // synchronous callback and any enclosing native Flight.
                     unsafe { WakeByAddressAll(self.busy.as_ptr().cast()) };
                 }
                 Ok(value)
@@ -803,6 +805,9 @@ fn fault(code: u32) {
     FLIGHT.fetch_or(RETAIN, Ordering::SeqCst);
 }
 
+/// # Safety
+/// Only the assembly entry stub calls this, through `hoi4_event_before`, on the native thread
+/// entering the hooked call, with the frame it owns for that call.
 unsafe fn before(frame: &mut Frame) -> Result<bool, &'static str> {
     let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
         fault(BEFORE_FAULT);
@@ -1023,8 +1028,9 @@ fn observed(owner: &Owner, store: &mut Store) -> Option<u64> {
     }
 }
 
-#[doc = " C++ invokes only on this exact original's normal return. It never repeats"]
-#[doc = " this callback after Err/panic/SEH, and never guesses an incomplete settlement."]
+/// # Safety
+/// C++ invokes only on this exact original's normal return. It never repeats
+/// this callback after Err/panic/SEH, and never guesses an incomplete settlement.
 unsafe fn returned(frame: &mut Frame) -> Result<(), &'static str> {
     let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
         fault(RETURNED_FAULT);
@@ -1108,12 +1114,12 @@ pub struct Hooks {
 }
 
 impl Hooks {
-    #[doc = " Build verified, unpublished CALL hooks using the shared patch owner."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// Build verified, unpublished CALL hooks using the shared patch owner.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(
         memory: &impl Memory,
         base: usize,

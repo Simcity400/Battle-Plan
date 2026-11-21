@@ -16,8 +16,12 @@ use std::sync::Arc;
 
 fn main() {
     let mut args = std::env::args_os().skip(1);
-    if args.next().is_some_and(|arg| arg == compress::ARGUMENT) {
+    let first = args.next();
+    if first.as_ref().is_some_and(|arg| arg == compress::ARGUMENT) {
         std::process::exit(compress::child(args.next()));
+    }
+    if first.is_some_and(|arg| arg == replay::recorder_settings::STARTED_WITH_REPLAY) && startup::held_by_a_job() {
+        return;
     }
     if app_update::refused_during_setup("BattlePlan Recorder") {
         return;
@@ -35,7 +39,9 @@ fn main() {
         .setup(move |app| {
             let handle = app.handle().clone();
             if let Ok(settings) = replay::recorder_settings::RecorderSettings::load() {
-                jobs.take_up(&worker::save_folder(&settings), &settings);
+                for root in std::iter::once(worker::save_folder(&settings)).chain(settings.earlier_save_folders.iter().cloned()) {
+                    jobs.take_up(&root, &settings);
+                }
             }
             let changed = handle.clone();
             jobs.serve(move || worker::recordings_changed(&changed))?;

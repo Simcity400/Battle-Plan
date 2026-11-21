@@ -9,7 +9,7 @@ import type { PlaybackController } from '../../dashboard/playback';
 import type { ArsenalModel, RaceInspection, RaceTarget } from '../../draw/arsenal';
 import { arsenalNotice, arsenalRows, validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { countryRaceItem } from './countryRace.ts';
-import { noticeMatchesAnchor } from '../../draw/anchorGeneration.ts';
+import { noticeMatchesAnchor, shownTime } from '../../draw/anchorGeneration.ts';
 
 type ExactRead = (hour: number) => Promise<unknown>;
 export default function DatedArsenal(props: RaceChartProps & { exactRead?: ExactRead; clock: PlaybackController; model: Omit<ArsenalModel, 'width' | 'height' | 'dpr' | 'scroll'> & { exactRead?: undefined } }) {
@@ -74,8 +74,9 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
         return;
       }
       if (m.type === 'raceInspection') { if (m.request === ticket) { resolve?.(m.picture); resolve = undefined; } return; }
-      if (m.hour === null || (latest.current.model.fixed === undefined && m.head !== undefined && Math.floor(m.head) > Math.floor(clock.positionAt())) ||
-        m.hour > Math.floor(latest.current.model.fixed ?? clock.positionAt())) clear();
+      const clockHour = clock.positionAt(shownTime(m.shown));
+      if (m.hour === null || (latest.current.model.fixed === undefined && m.head !== undefined && Math.floor(m.head) > Math.floor(clockHour)) ||
+        m.hour > Math.floor(latest.current.model.fixed ?? clockHour)) clear();
       else visible(true);
     });
     const inspect = (target?: RaceTarget) => new Promise<RaceInspection | undefined>(done => {

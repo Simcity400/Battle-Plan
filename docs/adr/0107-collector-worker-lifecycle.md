@@ -18,12 +18,4 @@ The versioned `HOI4WSMP` header has an 88-byte fixed prefix and a UTF-8 debug pa
 
 The scale fixture uses one group per 24 divisions to exercise the test topology. Its serial and partitioned walks share the same census, then join the partitions in slot order. Timings of the partitioned fixture include test thread startup, which the production workers do not pay. Tests that suspend or gate a real worker release it before assertions and keep it alive until the sampler stops, including on error. The fixtures use independently authored exceptions and synthetic local regions.
 
-## Safety decisions
-
-`tick_gate::Gate::leave` wakes an aligned atomic `u32` that outlives every waiter. `Gate::wait` compares that same address with a local `u32` of the same size that stays live throughout the Windows wait call.
-
-`worker_sampler::format::Header::current` gets the collector module handle from the address of its static magic bytes and keeps the reference count unchanged. Sampler teardown joins its worker before unloading the DLL, so the Windows-mapped image stays live for the header read. The header validates PE identity before exposing the declared image span and bounds the debug directory and CodeView records within that span.
-
-`division_input_parts_scale` shares an immutable synthetic world whose lifetime extends through the scoped worker joins. In `worker_sampler_real_pool_job_attribution_and_guard_reset`, the submitted fixture job carries no foreign pointers. Its only collector drains the job while the pool and captured barrier are still live.
-
 [Status writer](../../crates/collector/src/status_writer.rs) · [Thread CPU accounting](../../crates/collector/src/thread_cpu.rs) · [Tick gate](../../crates/collector/src/tick_gate.rs) · [Panic reporting](../../crates/collector/src/worker_panic.rs) · [Sampler](../../crates/collector/src/worker_sampler.rs) · [Sampler encoding](../../crates/collector/src/worker_sampler/format.rs) · [Sampler worker test](../../crates/collector/src/worker_sampler/tests.rs) · [Scale fixture](../../crates/collector/src/unit_scale_tests.rs) · [Profile reader](../../tools/worker_profile.py)

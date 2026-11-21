@@ -2633,6 +2633,10 @@ unsafe extern "system-unwind" fn delete(
     }
 }
 
+/// # Safety
+/// The arguments are ones the selected site's published original accepts with its ABI, and
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn returned_at(site: SiteId, reserves: usize, pool: usize) {
     let _call = Call::enter(site);
     let original: unsafe extern "system-unwind" fn(usize, usize) =
@@ -2916,6 +2920,10 @@ fn transfer_before(
     }))
 }
 
+/// # Safety
+/// The arguments are ones the selected site's published original accepts with its ABI, and
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn transfer_roster(
     site: SiteId,
     country: usize,
@@ -2967,6 +2975,10 @@ unsafe extern "system-unwind" fn exile_transfer(country: usize, army: usize) -> 
     }
 }
 
+/// # Safety
+/// The arguments are ones the selected site's published original accepts with its ABI, and
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn pool_scale(site: SiteId, receiver: usize, factor: usize, cause: native::Cause) {
     let _call = Call::enter(site);
     let original: unsafe extern "system-unwind" fn(usize, usize) =
@@ -3374,6 +3386,9 @@ pub struct Hooks {
     supplemental: Vec<(native::SiteId, Hook)>,
 }
 impl Hooks {
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         LazyLock::force(&STORE);
         BASE.store(base, Ordering::Relaxed);

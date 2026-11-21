@@ -6,6 +6,8 @@ use crate::{
         live::{self, Admit, Applied, Asked, Committed, Host, LiveWriter},
         session_facts_for,
     },
+    columnar_file::Settings,
+    columnar_frames::{Open, Recording},
     columnar_journal::{Journal, Record, Source},
 };
 use replay_data::identity::{Identity, SessionStart};
@@ -28,6 +30,36 @@ pub fn journal_start(directory: &Path, capture: u32) -> io::Result<(Vec<u8>, Ses
         )),
         _ => Err(io::Error::other(format!("{}'s journal does not begin with its capture's start", directory.display()))),
     }
+}
+
+const ENCODER: &str = "journal-encode";
+
+pub fn encoder_source(multiplied: bool, start: Option<u32>) -> String {
+    let mut source = ENCODER.to_owned();
+    if multiplied {
+        source.push_str(" --times");
+    }
+    if let Some(block) = start {
+        source.push_str(&format!(" --start={block}"));
+    }
+    source
+}
+
+pub fn open_encoded(out: &Path, state: &Path, capture: u32, settings: Settings, source: &str) -> io::Result<LiveWriter> {
+    let cursors = match std::fs::metadata(out) {
+        Ok(_) => Recording::open_path_as(out, Open::Newest)?.records()?.cursors,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    let encoder = |held: &str| held.strip_prefix(ENCODER).is_some_and(|rest| rest.is_empty() || rest.starts_with(' '));
+    if let Some(other) = cursors.iter().find(|cursor| cursor.capture == capture && cursor.source != source && encoder(&cursor.source)) {
+        return Err(io::Error::other(format!(
+            "{} holds capture {capture} encoded as `{}`, whose blocks a run encoding as `{source}` does not follow on from: encode into a new file",
+            out.display(),
+            other.source
+        )));
+    }
+    LiveWriter::open(out, state, source, capture, settings, Vec::new())
 }
 
 pub fn session_facts_file(directory: &Path, campaign: &[u8]) -> Option<PathBuf> {
@@ -56,6 +88,7 @@ pub struct Everything {
     pub facts: Option<Vec<u8>>,
     pub revisions: u64,
     pub committed: bool,
+    pub blocks: u64,
     pub pace: Option<(f64, u64)>,
     pub hours: u64,
     pub paced: Option<Instant>,
@@ -65,7 +98,7 @@ pub struct Everything {
 
 impl Everything {
     pub fn new(facts: Option<Vec<u8>>, pace: Option<(f64, u64)>) -> Self {
-        Self { facts, revisions: 0, committed: false, pace, hours: 0, paced: None, taken: Rc::default(), last: None }
+        Self { facts, revisions: 0, committed: false, blocks: 0, pace, hours: 0, paced: None, taken: Rc::default(), last: None }
     }
 }
 
@@ -101,9 +134,10 @@ impl Host for Everything {
         }
     }
 
-    fn committed(&mut self, _: &Committed) {
+    fn committed(&mut self, committed: &Committed) {
         self.revisions += 1;
         self.committed = true;
+        self.blocks += u64::from(committed.hours > 0);
     }
 }
 
@@ -156,8 +190,8 @@ pub fn revision_line(writer: &LiveWriter, revision: u64, hours: u64, started: In
     line
 }
 
-pub fn stopped_after(block: Option<u64>, hours: u64) -> bool {
-    if !block.is_some_and(|block| hours / 720 == block + 1) {
+pub fn stopped_after(block: Option<u64>, blocks: u64, hours: u64) -> bool {
+    if !block.is_some_and(|block| blocks == block + 1) {
         return false;
     }
     eprintln!("{}", json!({ "stopped_after_block": block, "hours": hours }));

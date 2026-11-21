@@ -181,13 +181,13 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    #[doc = " The runtime's build gate admitted this family before construction. A differing"]
-    #[doc = " sentinel refuses installation with the site; the census then reads every group."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in this"]
-    #[doc = " process. The caller owns this family exclusively and must restore its hooks and"]
-    #[doc = " quiesce native calls before releasing code or unloading."]
+    /// The runtime's build gate admitted this family before construction. A differing
+    /// sentinel refuses installation with the site; the census then reads every group.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in this
+    /// process. The caller owns this family exclusively and must restore its hooks and
+    /// quiesce native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         validate_sites(base)?;
         let callbacks: [usize; SITES] = [
@@ -228,6 +228,9 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
+        // SAFETY: the watch tables are dropped only once these hooks and the forwarding
+        // template hooks were never enabled, or were removed and drained after the last
+        // capture.
         unsafe { WATCHES.registry.release() };
     }
 }

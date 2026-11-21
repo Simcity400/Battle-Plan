@@ -40,7 +40,7 @@ pub fn get_varint(bytes: &[u8], at: &mut usize) -> io::Result<u64> {
     loop {
         let byte = *bytes.get(*at).ok_or_else(|| invalid("A unit stream ends inside a number"))?;
         *at += 1;
-        if shift >= 64 {
+        if shift >= 64 || u64::from(byte & 0x7f) >> (64 - shift).min(7) != 0 {
             return Err(invalid("A unit stream's number passes 64 bits"));
         }
         value |= u64::from(byte & 0x7f) << shift;
@@ -53,12 +53,22 @@ pub fn get_varint(bytes: &[u8], at: &mut usize) -> io::Result<u64> {
 
 #[inline]
 pub(crate) fn get_wide(bytes: &[u8], at: &mut usize) -> io::Result<u128> {
-    let (mut value, mut shift) = (0_u128, 0);
+    get_within(bytes, at, 128, "A unit stream's number passes 128 bits")
+}
+
+#[inline]
+pub(crate) fn get_code(bytes: &[u8], at: &mut usize) -> io::Result<u128> {
+    get_within(bytes, at, 65, "A track's event code passes 65 bits")
+}
+
+#[inline]
+fn get_within(bytes: &[u8], at: &mut usize, width: u32, past: &'static str) -> io::Result<u128> {
+    let (mut value, mut shift) = (0_u128, 0_u32);
     loop {
         let byte = *bytes.get(*at).ok_or_else(|| invalid("A unit stream ends inside a number"))?;
         *at += 1;
-        if shift >= 128 {
-            return Err(invalid("A unit stream's number passes 128 bits"));
+        if shift >= width || u32::from(byte & 0x7f) >> (width - shift).min(7) != 0 {
+            return Err(invalid(past));
         }
         value |= u128::from(byte & 0x7f) << shift;
         if byte < 0x80 {

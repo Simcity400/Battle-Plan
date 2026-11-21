@@ -4,7 +4,7 @@ import type { PanelModel } from './panels/view';
 import { perfLog } from '../shell/perf.ts';
 import { pictureHour } from './pictureDate.ts';
 import { cancelGeometry, invalidateGeometry } from '../charts/geometry.ts';
-import { noticeMatchesAnchor } from './anchorGeneration.ts';
+import { noticeMatchesAnchor, shownTime } from './anchorGeneration.ts';
 
 export function attachPanel(content: HTMLElement, clock: PlaybackController, model: (id: number, owner: number) => PanelModel | null,
   own: (visible: boolean, pending?: boolean) => void, hit: (key: string | null) => void) {
@@ -50,8 +50,9 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
     if (message.type !== 'present') return;
     for (const p of message.surfaces) {
       if (p.id !== id || p.owner !== owner || p.seek !== clock.getSnapshot().seekSequence || !noticeMatchesAnchor(p.generation, clockGeneration(clock))) continue;
-      if (fixed === undefined && p.head !== undefined && Math.floor(p.head) > Math.floor(clock.positionAt())) { release(); continue; }
-      const hour = pictureHour(p.date, clock.positionAt(), fixed);
+      const clockHour = clock.positionAt(shownTime(p.shown));
+      if (fixed === undefined && p.head !== undefined && Math.floor(p.head) > Math.floor(clockHour)) { release(); continue; }
+      const hour = pictureHour(p.date, clockHour, fixed);
       visible(hour !== null);
       own(hour !== null, hour === null);
       if (hour === null) hit(null);

@@ -1,6 +1,9 @@
-use std::sync::{
-    OnceLock,
-    atomic::{Ordering, fence},
+use std::{
+    marker::PhantomData,
+    sync::{
+        OnceLock,
+        atomic::{AtomicUsize, Ordering, fence},
+    },
 };
 
 pub trait Changes {
@@ -22,22 +25,111 @@ pub struct EntryImage {
 #[derive(Clone, Copy, Debug)]
 pub struct HolderImage<'a> {
     pub header: [u8; 16],
-    pub entries: &'a [EntryImage],
-    pub text: &'a [u8],
+    entries: &'a [EntryImage],
+    text: *const u8,
+    text_len: usize,
+    _text: PhantomData<&'a [u8]>,
 }
 
-impl HolderImage<'_> {
-    pub fn identity(&self, entry: &EntryImage) -> Result<&[u8], &'static str> {
-        let [start, len] = entry.text;
-        start
-            .checked_add(len)
-            .and_then(|end| self.text.get(start..end))
-            .ok_or("character portrait pre-image outside its text")
+impl<'a> HolderImage<'a> {
+    pub fn new(header: [u8; 16], entries: &'a [EntryImage], text: &'a [u8]) -> Self {
+        Self {
+            header,
+            entries,
+            text: text.as_ptr(),
+            text_len: text.len(),
+            _text: PhantomData,
+        }
+    }
+
+    /// # Safety
+    /// For `'a`, `text` points to `text_len` bytes in one allocation, and the bytes each of
+    /// `entries` names there are initialized and unchanged. Other bytes in the span may change.
+    pub unsafe fn published(
+        header: [u8; 16],
+        entries: &'a [EntryImage],
+        text: *const u8,
+        text_len: usize,
+    ) -> Self {
+        Self {
+            header,
+            entries,
+            text,
+            text_len,
+            _text: PhantomData,
+        }
+    }
+
+    pub fn entries(&self) -> &'a [EntryImage] {
+        self.entries
+    }
+
+    pub fn identity(&self, index: usize) -> Result<&'a [u8], &'static str> {
+        let [start, len] = self
+            .entries
+            .get(index)
+            .ok_or("character portrait pre-image entry outside its holder")?
+            .text;
+        if start.checked_add(len).is_none_or(|end| end > self.text_len) {
+            return Err("character portrait pre-image outside its text");
+        }
+        // SAFETY: the range lies within the text span and belongs to one of this image's
+        // entries, which its constructor keeps unchanged for `'a`.
+        Ok(unsafe { std::slice::from_raw_parts(self.text.add(start), len) })
+    }
+}
+
+pub struct Readers(AtomicUsize);
+
+impl Readers {
+    pub const fn new() -> Self {
+        Self(AtomicUsize::new(0))
+    }
+
+    pub fn enter(&self) -> Reader<'_> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Reader(self)
+    }
+
+    pub fn idle(&self) -> bool {
+        self.0.load(Ordering::SeqCst) == 0
+    }
+}
+
+impl Default for Readers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct Reader<'a>(&'a Readers);
+
+impl Drop for Reader<'_> {
+    fn drop(&mut self) {
+        self.0.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+pub struct Reading<'a> {
+    _reader: Reader<'a>,
+    image: HolderImage<'a>,
+}
+
+impl<'a> Reading<'a> {
+    pub fn new(reader: Reader<'a>, image: HolderImage<'a>) -> Self {
+        Self {
+            _reader: reader,
+            image,
+        }
+    }
+
+    pub fn image(&self) -> HolderImage<'_> {
+        self.image
     }
 }
 
 pub trait PreImages: Sync {
-    fn image(&self, array: usize) -> Option<Result<HolderImage<'_>, &'static str>>;
+    fn image(&self, array: usize) -> Option<Result<Reading<'_>, &'static str>>;
 }
 
 static PRE_IMAGES: OnceLock<&'static dyn PreImages> = OnceLock::new();
@@ -54,7 +146,7 @@ pub fn settled<T>(
     fence(Ordering::SeqCst);
     match PRE_IMAGES.get().and_then(|images| images.image(array)) {
         None => live,
-        Some(Ok(holder)) => image(holder),
+        Some(Ok(reading)) => image(reading.image()),
         Some(Err(reason)) => Err(reason),
     }
 }
@@ -68,13 +160,15 @@ pub(crate) mod test_images {
         static IMAGE: Cell<Option<(usize, HolderImage<'static>)>> = const { Cell::new(None) };
     }
 
+    static READERS: Readers = Readers::new();
+
     struct ThreadImages;
     impl PreImages for ThreadImages {
-        fn image(&self, array: usize) -> Option<Result<HolderImage<'_>, &'static str>> {
+        fn image(&self, array: usize) -> Option<Result<Reading<'_>, &'static str>> {
             IMAGE
                 .get()
                 .filter(|(at, _)| *at == array)
-                .map(|(_, image)| Ok(image))
+                .map(|(_, image)| Ok(Reading::new(READERS.enter(), image)))
         }
     }
 

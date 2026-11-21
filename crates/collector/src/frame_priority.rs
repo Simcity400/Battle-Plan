@@ -241,6 +241,7 @@ fn select(thread: HANDLE, sets: Option<&[u32]>) -> bool {
     let (list, count) = sets.map_or((std::ptr::null(), 0), |sets| {
         (sets.as_ptr(), sets.len() as u32)
     });
+    // SAFETY: callers name a live collector-owned thread; a null, empty list clears.
     unsafe { SetThreadSelectedCpuSets(thread, list, count) != 0 }
 }
 
@@ -357,6 +358,7 @@ impl Pipeline {
     fn notify(&self) {
         if !self.pending.swap(true, Ordering::SeqCst) {
             if let Some(event) = self.event.get() {
+                // SAFETY: the pipeline retains this auto-reset event through every notifier.
                 unsafe { SetEvent(event.as_raw_handle()) };
             }
         }
@@ -390,6 +392,7 @@ impl Pipeline {
         if slot.get().is_some() {
             return;
         }
+        // SAFETY: this id names the registering collector worker, never a game thread.
         let handle = unsafe {
             OpenThread(
                 THREAD_SET_INFORMATION
@@ -522,6 +525,7 @@ impl Drop for Callback<'_> {
 }
 fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
     let handle = target.handle.as_raw_handle();
+    // SAFETY: the reconciler alone writes these retained collector-owned handles.
     let mut applied = unsafe { SetThreadPriority(handle, priority(value)) != 0 };
     let sets = if value == TICK || value == TICK_PRESSED {
         pipeline.tick_sets()
@@ -683,6 +687,7 @@ impl Reconciler {
     pub(crate) fn finish(&mut self) {
         self.pipeline.stopping.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
+            // SAFETY: the pipeline owns this event until after the joined worker exits.
             unsafe { SetEvent(self.pipeline.event.get().unwrap().as_raw_handle()) };
             let _ = thread.join();
             crate::thread_cpu::register_id(crate::thread_cpu::Role::FramePriority, 0);

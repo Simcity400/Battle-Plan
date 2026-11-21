@@ -238,6 +238,10 @@ impl<J, R> Cell<J, R> {
         self.0.get().cast()
     }
 }
+// SAFETY: the module ownership protocol admits one cell writer/reader at a
+// time. The mutex hands Queued ownership to a runner; release publication and
+// acquire collection hand it to one collector; release VACANT and locked
+// acquire admission hand it to the next submitter. No shared J/R references.
 unsafe impl<J: Send, R: Send> Sync for Cell<J, R> {}
 
 struct State {
@@ -306,6 +310,8 @@ impl State {
         slot.phase = Phase::Running;
         shared.active.fetch_add(1, Ordering::SeqCst);
         #[cfg(feature = "callback_profile")]
+        // SAFETY: the queue mutex and removed ready entry give this claimant
+        // exclusive ownership of the Queued cell, before its runner begins.
         unsafe {
             (*shared.cells[index].pointer()).profile.claimed_qpc = crate::sampling::qpc();
         }
@@ -370,6 +376,9 @@ impl State {
             let slot = &self.slots[index];
             debug_assert!(slot.phase == Phase::Queued);
             let completion = shared.cells[index].pointer();
+            // SAFETY: cancellation holds the mutex and has removed the only
+            // ready entry. No claimant can access this Queued cell. The job
+            // and optional profile were initialized at submission.
             unsafe {
                 std::ptr::addr_of_mut!((*completion).report).write(Err(Failure::Stopped));
                 #[cfg(test)]
@@ -386,6 +395,8 @@ impl State {
 type Runner<J, R> = dyn Fn(&mut J) -> R + Send + Sync;
 type Classes<J> = (usize, fn(&J) -> usize);
 struct BatchContext(UnsafeCell<crate::allocation::Context>);
+// SAFETY: writes are locked and require uncollected == 0 and active == 0.
+// Both the native body and its detached continuation end before active retires.
 unsafe impl Sync for BatchContext {}
 
 struct Shared<J, R> {
@@ -466,6 +477,9 @@ impl<J, R> Shared<J, R> {
 
     fn publish(&self, index: usize, generation: u64) {
         #[cfg(feature = "callback_profile")]
+        // SAFETY: called only by the unique Running claimant, or by locked
+        // cancellation of Queued work. Every completion field is initialized
+        // and exclusively owned until the SC release store below.
         unsafe {
             (*self.cells[index].pointer()).profile.published_qpc = crate::sampling::qpc();
         }
@@ -505,6 +519,9 @@ impl<J, R> Shared<J, R> {
         let index = claim.index;
         let completion = self.cells[index].pointer();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Acquisition);
+        // SAFETY: claim was removed under the mutex, incrementing active and
+        // retaining one uncollected admission. Context cannot reset until all
+        // admissions are collected and every active publisher has retired.
         let borrowed_context = unsafe { crate::allocation::borrow_context(self.context.0.get()) };
         let reads = crate::read_accounting::Capture::new();
         #[cfg(feature = "callback_profile")]
@@ -518,6 +535,9 @@ impl<J, R> Shared<J, R> {
         let mut report = if crate::allocation::failed() {
             Err(Failure::Stopped)
         } else {
+            // SAFETY: only this claimant owns the Running cell. The job was
+            // initialized at admission; no move or other cell reference occurs
+            // while its body runs. The borrow ends inside the unwind boundary.
             match catch_unwind(AssertUnwindSafe(|| unsafe {
                 (self.run)(&mut (*completion).request)
             })) {
@@ -531,6 +551,7 @@ impl<J, R> Shared<J, R> {
         };
         let publication = match catch_unwind(AssertUnwindSafe(|| {
             self.on_completed.get().and_then(|completed| {
+                // SAFETY: the claimant still exclusively owns this Running cell.
                 unsafe { completed(&mut (*completion).request, &report) }
             })
         })) {
@@ -558,6 +579,8 @@ impl<J, R> Shared<J, R> {
             self.lock().stop(self);
             self.work_ready.notify_all();
         }
+        // SAFETY: still the sole Running claimant, with the job borrow ended.
+        // Initialize report/counts and update only already-initialized stages.
         unsafe {
             std::ptr::addr_of_mut!((*completion).report).write(report);
             #[cfg(test)]
@@ -619,6 +642,7 @@ impl<J, R> Shared<J, R> {
         );
         self.publish(index, claim.generation);
         if let Some(publication) = publication {
+            // SAFETY: active still retains this batch's immutable context.
             let _context = unsafe { crate::allocation::borrow_context(self.context.0.get()) };
             if let Err(payload) =
                 catch_unwind(AssertUnwindSafe(|| publication.published()))
@@ -637,6 +661,7 @@ impl<J, R> Shared<J, R> {
         }
         let active = self.active.fetch_sub(1, Ordering::SeqCst) - 1;
         if active == 0 && self.settling.load(Ordering::SeqCst) != 0 {
+            // SAFETY: active lives until every runner/waiter releases Shared.
             unsafe { WakeByAddressAll(self.active.as_ptr().cast()) };
         }
     }
@@ -731,11 +756,17 @@ impl<J, R> Drop for Shared<J, R> {
                 match state.load(Ordering::Relaxed) & PHASE_MASK {
                     VACANT => {}
                     PENDING | RUNNING => {
+                        // SAFETY: last Shared owner: no runner, submitter, unpark
+                        // or collector remains. Every pending/running cell has a job;
+                        // other fields may be uninitialized after an executor
+                        // failure, so only drop the owned job.
                         unsafe {
                             std::ptr::addr_of_mut!((*cell.pointer()).request).drop_in_place()
                         };
                     }
                     PUBLISHED => {
+                        // SAFETY: last owner, fully initialized at publication;
+                        // this completion was never moved out by collection.
                         unsafe { cell.pointer().drop_in_place() };
                     }
                     _ => unreachable!("last acquisition owner cannot still be collecting"),
@@ -960,12 +991,8 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         Ok(pool)
     }
 
-    #[doc = " # Safety"]
-    #[doc = " Keep the foreign live-read lease until EVERY accepted ticket and"]
-    #[doc = " continuation successor is drained, then settle active publishers,"]
-    #[doc = " including on failure. Mutable outputs must be disjoint; shared"]
-    #[doc = " seeds live through all consumers. Each ticket has one collecting owner."]
-    #[doc = " Nested workers collect only their children through finish_worker_into."]
+    /// # Safety
+    /// As [`Self::submit_with_priority`].
     #[cfg(test)]
     pub(crate) unsafe fn submit(&self, request: &mut Option<J>) -> Result<Ticket, SubmitError> {
         unsafe { self.submit_with_priority(request, 0, false, true) }
@@ -982,8 +1009,13 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         Ok(())
     }
 
-    #[doc = " # Safety"]
-    #[doc = " The same lease and unique-collector contract as submit."]
+    /// # Safety
+    /// Keep the foreign live-read lease until EVERY accepted ticket is collected,
+    /// active publishers have settled and every successor they admitted has
+    /// drained, including on failure and unwinding. Mutable outputs must be
+    /// disjoint; shared seeds live through all consumers. Each ticket has one
+    /// collecting owner. Nested workers collect only their children through
+    /// finish_worker_into.
     pub(crate) unsafe fn submit_with_priority(
         &self,
         request: &mut Option<J>,
@@ -1017,6 +1049,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         if self.shared.uncollected.load(Ordering::Acquire) == 0
             && self.shared.active.load(Ordering::Acquire) == 0
         {
+            // SAFETY: no runner or detached continuation can still borrow
+            // this context. Parked jobs never run. The mutex excludes any
+            // competing claim, admission or reset.
             unsafe { *self.shared.context.0.get() = crate::allocation::context() };
         }
         let index = free.expect("checked free acquisition slot");
@@ -1042,6 +1077,10 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             self.shared.body_begin[index].store(0, Ordering::Relaxed);
         }
         let completion = self.shared.cells[index].pointer();
+        // SAFETY: locked admission acquired this word's VACANT release; the
+        // preceding collector/unpark finished its read and owns the old job.
+        // The cell holds no initialized owned value. Initialize each field
+        // separately, without constructing or moving a whole completion.
         unsafe {
             std::ptr::addr_of_mut!((*completion).request)
                 .write(request.take().expect("checked owned acquisition request"));
@@ -1096,6 +1135,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         if let Ok(threads) = self.threads.try_lock() {
             for thread in threads.iter() {
                 let handle = thread.as_raw_handle();
+                // SAFETY: a live worker handle owned by `threads`, held through these calls.
                 if unsafe { SetThreadPriority(handle as _, THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
                     PRIORITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
                 }
@@ -1149,6 +1189,8 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         slot.priority = 0;
         slot.worker_only = worker_only;
         slot.phase = Phase::Parked;
+        // SAFETY: locked park acquired VACANT and exclusively owns the empty
+        // cell. Parked has only an initialized job; no completion is exposed.
         unsafe {
             std::ptr::addr_of_mut!((*self.shared.cells[index].pointer()).request)
                 .write(request.take().expect("checked parked request"))
@@ -1174,6 +1216,8 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         {
             return None;
         }
+        // SAFETY: locked, matching Parked cell owns exactly this job and no
+        // runner/collector can access it. Read once; release VACANT afterwards.
         let request = unsafe {
             std::ptr::addr_of!((*self.shared.cells[ticket.slot].pointer()).request).read()
         };
@@ -1206,9 +1250,15 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             return false;
         }
         let cell = self.shared.cells[ticket.slot].pointer();
+        // SAFETY: the matching parked cell has one initialized request, owned
+        // exclusively under the mutex. A panicking handler leaves it parked,
+        // so the batch's drain still owns and drops it exactly once.
         let Some(report) = complete(unsafe { &mut (*cell).request }) else {
             return false;
         };
+        // SAFETY: initialize the other fields in the heap cell, then move its
+        // sole completion into empty output before releasing the cell. The
+        // promoted zero array is copied directly without a stack temporary.
         unsafe {
             std::ptr::addr_of_mut!((*cell).report).write(report);
             #[cfg(test)]
@@ -1316,6 +1366,10 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             return false;
         }
         let completion = self.shared.cells[ticket.slot].pointer();
+        // SAFETY: acquire CAS synchronizes with fully initialized publication
+        // and gives this collector exclusive ownership. Racing/stale tickets
+        // cannot read the cell. Move straight into empty out, without Drop;
+        // no cell references survive the following VACANT release.
         unsafe {
             #[cfg(feature = "callback_profile")]
             {
@@ -1611,6 +1665,8 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                 Ordering::Relaxed,
             )
             .ok()?;
+        // SAFETY: the CAS exclusively owns the fully initialized completion;
+        // copying R neither moves nor drops its request or other fields.
         let report = unsafe { (*self.shared.cells[ticket.slot].pointer()).report };
         value.store(word(ticket.generation, PUBLISHED), Ordering::SeqCst);
         Some(report)

@@ -676,6 +676,21 @@ fn hidden(entry: &fs::DirEntry) -> bool {
         .is_ok_and(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0)
 }
 
+fn recording_folder(entry: &fs::DirEntry) -> bool {
+    let name = entry.file_name();
+    name != "sessions" && !name.to_string_lossy().starts_with('.') && !hidden(entry)
+}
+
+pub(crate) fn recording_folders(root: &Path) -> Vec<PathBuf> {
+    let mut folders = vec![root.to_path_buf()];
+    for entry in fs::read_dir(root).into_iter().flatten().flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) && recording_folder(&entry) {
+            folders.push(entry.path());
+        }
+    }
+    folders
+}
+
 fn recordings_in(folder: &Path, files: &mut Vec<PathBuf>) -> Option<std::io::Error> {
     let entries = match fs::read_dir(folder) {
         Ok(entries) => entries,
@@ -717,15 +732,9 @@ pub(crate) fn saved_files(root: &Path, made_when_needed: bool) -> (Vec<PathBuf>,
             }
         };
         let path = entry.path();
-        let name = entry.file_name();
         match entry.file_type() {
             Ok(kind) if kind.is_file() && is_recording(&path) => files.push(path),
-            Ok(kind)
-                if kind.is_dir()
-                    && name != "sessions"
-                    && !name.to_string_lossy().starts_with('.')
-                    && !hidden(&entry) =>
-            {
+            Ok(kind) if kind.is_dir() && recording_folder(&entry) => {
                 if let Some(error) = recordings_in(&path, &mut files) {
                     unreadable.get_or_insert_with(|| failure(false, &path, error));
                 }

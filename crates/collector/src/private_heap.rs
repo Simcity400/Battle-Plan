@@ -88,6 +88,7 @@ const fn page_end(bytes: usize) -> usize {
 #[repr(C, align(16))]
 struct Stack(UnsafeCell<SLIST_HEADER>);
 
+// SAFETY: the header is only touched by the interlocked list functions.
 unsafe impl Sync for Stack {}
 
 impl Stack {
@@ -468,6 +469,9 @@ impl PrivateHeap {
             .cast()
     }
 
+    /// # Safety
+    /// The [`GlobalAlloc::alloc`] contract: `size` and `align` come from a valid layout of non-zero
+    /// size.
     unsafe fn allocate(&self, size: usize, align: usize, zeroed: bool) -> *mut u8 {
         let bytes = if size > SMALL_LIMIT {
             let Some(reserved) = reservation(size, align) else {
@@ -526,6 +530,9 @@ impl PrivateHeap {
         aligned
     }
 
+    /// # Safety
+    /// As [`Self::allocate`], with `size` above `SMALL_LIMIT`, so `dealloc` routes the block back here,
+    /// and `reserved` the reservation size [`reservation`] gave for `size` and `align`.
     unsafe fn allocate_large(
         &self,
         reserved: usize,
@@ -587,6 +594,8 @@ impl PrivateHeap {
         unsafe { body.cast::<*mut Record>().sub(1).read() }
     }
 
+    /// # Safety
+    /// `body` is a live large block of this heap, never used again.
     unsafe fn free_large(&self, body: *mut u8) {
         let record = Self::record(body);
         let committed = unsafe { (*record).committed };
@@ -618,6 +627,9 @@ impl PrivateHeap {
         self.pages.free[reservation_list(reserved)].push(record.cast());
     }
 
+    /// # Safety
+    /// The [`GlobalAlloc::realloc`] contract, for a large block `body` of this heap, with `new_size`
+    /// above `SMALL_LIMIT`: a block kept in place must still be freed as a large one.
     unsafe fn reallocate_large(
         &self,
         body: *mut u8,
@@ -680,12 +692,12 @@ impl PrivateHeap {
         }
     }
 
-    #[doc = " # Safety"]
-    #[doc = " On FreeLibrary detach no caller may still own an allocation it will use,"]
-    #[doc = " free or reallocate. Runtime must first restore/quiesce hooks and join all"]
-    #[doc = " workers; the loader has run the unloading thread's TLS destructors before"]
-    #[doc = " DllMain, and removes this module's callbacks before other threads exit."]
-    #[doc = " No Rust static has an automatic destructor. Do not allocate/log here."]
+    /// # Safety
+    /// On FreeLibrary detach no caller may still own an allocation it will use,
+    /// free or reallocate. Runtime must first restore/quiesce hooks and join all
+    /// workers; the loader has run the unloading thread's TLS destructors before
+    /// DllMain, and removes this module's callbacks before other threads exit.
+    /// No Rust static has an automatic destructor. Do not allocate/log here.
     pub(super) unsafe fn detach(&self, reason: u32, reserved: *mut c_void) -> bool {
         if reason != DLL_PROCESS_DETACH || !reserved.is_null() {
             return false;
@@ -725,6 +737,10 @@ impl PrivateHeap {
     }
 }
 
+// SAFETY: small blocks belong to this heap and pass between threads whole;
+// large blocks are reservations this allocator made; over-aligned small blocks
+// keep their original pointer in a header. Failure returns null without
+// unwinding or calling capture accounting: engine_allocation retains that path.
 unsafe impl GlobalAlloc for PrivateHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe { self.allocate(layout.size(), layout.align(), false) }
@@ -776,6 +792,8 @@ unsafe impl GlobalAlloc for PrivateHeap {
 }
 
 impl PrivateHeap {
+    /// # Safety
+    /// The [`GlobalAlloc::realloc`] contract. On success `pointer` is freed.
     unsafe fn moved(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let replacement = unsafe { self.allocate(new_size, layout.align(), false) };
         if !replacement.is_null() {

@@ -403,13 +403,13 @@ const CALLBACKS: [unsafe extern "system-unwind" fn(); ENTRIES] = [
     release_command_entry,
 ];
 
-#[doc = " The verified entry detours, unpublished; the event feed observer owns"]
-#[doc = " them with its CALL hooks."]
-#[doc = ""]
-#[doc = " # Safety"]
-#[doc = " The memory source and base must identify the authenticated executable in"]
-#[doc = " this process. The caller owns this family exclusively and must restore"]
-#[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+/// The verified entry detours, unpublished; the event feed observer owns
+/// them with its CALL hooks.
+///
+/// # Safety
+/// The memory source and base must identify the authenticated executable in
+/// this process. The caller owns this family exclusively and must restore
+/// its hooks and quiesce native calls before releasing code or unloading.
 pub unsafe fn hooks(_memory: &impl Memory, base: usize) -> Result<Vec<Hook>, &'static str> {
     let mut hooks = Vec::with_capacity(ENTRIES);
     for (index, (entry, callback)) in native::ENTRIES.iter().zip(CALLBACKS).enumerate() {

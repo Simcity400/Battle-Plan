@@ -1050,8 +1050,8 @@ pub struct Hooks {
     taps: Vec<Tap>,
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " The host verified the executable and exclusively owns these dedicated sites."]
+    /// # Safety
+    /// The host verified the executable and exclusively owns these dedicated sites.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, Ordering::Release);
         let callbacks = [

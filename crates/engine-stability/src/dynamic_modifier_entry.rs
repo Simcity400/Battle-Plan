@@ -72,6 +72,8 @@ pub fn copy_values(memory: &impl Memory, array: Array, output: &mut [i64]) -> bo
     let Some(byte_len) = output.len().checked_mul(VALUE_STRIDE) else {
         return false;
     };
+    // SAFETY: initialized i64 has no padding or invalid bit patterns; the byte
+    // slice covers exactly the caller-owned output and cannot escape this call.
     let bytes =
         unsafe { std::slice::from_raw_parts_mut(output.as_mut_ptr().cast::<u8>(), byte_len) };
     if !read_slice(memory, array.data, bytes) {

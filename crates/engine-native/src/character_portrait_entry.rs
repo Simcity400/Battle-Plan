@@ -84,13 +84,13 @@ fn head<T>(header: [u8; 16], output: &mut Row<T>) {
 
 pub(crate) fn from_image<T: crate::capture_text::Value>(
     holder: &crate::portrait_cache::HolderImage<'_>,
-    entry: &crate::portrait_cache::EntryImage,
+    index: usize,
 ) -> Result<Row<T>, &'static str> {
     let mut row = Row {
-        identity: T::from_image(holder.identity(entry)?)?,
+        identity: T::from_image(holder.identity(index)?)?,
         ..Row::default()
     };
-    head(entry.head, &mut row);
+    head(holder.entries()[index].head, &mut row);
     Ok(row)
 }
 

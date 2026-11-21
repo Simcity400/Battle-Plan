@@ -16,7 +16,7 @@ const MB = 2 ** 20;
 const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, startWithWindows: false, startWithReplay: true, captureMode: 'full', liveCompression: 'low', autoCompress: true,
   campaigns: {}, effectiveSaveFolder: 'C:\\Recordings' };
 const recording: Snapshot = { phase: 'recording', campaign: CAMPAIGN, recording: PATH, name: 'Germany 1936–1943', continued: true, hour: 59_000_000,
-  firstHour: null, savedBytes: 214 * MB, spoolBytes: 1229 * MB, progress: null, startedAt: STARTED, stopping: false, problem: null, automatic: true,
+  firstHour: null, savedBytes: 214 * MB, spoolBytes: 1229 * MB, startedAt: STARTED, stopping: false, problem: null, automatic: true,
   session: null, flag: null, captureMode: 'full' };
 const flag = { width: 2, height: 1, pixels: [255, 0, 0, 255, 0, 0, 255, 255] };
 const START = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
@@ -77,9 +77,10 @@ test('the panel draws each state, and the Stop prompt covers everything under th
     assert.match(text(render({ asking: true, discarding: true, quitting: true })), /Discard this session \(2 h 14 min\) and quit\? The earlier/);
     assert.doesNotMatch(text(render({ asking: true, snapshot: { ...recording, stopping: true } })), /Save this session/);
 
-    const saving = render({ snapshot: { ...recording, phase: 'saving', progress: 0.35 } });
+    const saving = render({ snapshot: { ...recording, phase: 'saving' } });
     assert.match(text(saving), /Saving recording…/);
-    assert.match(saving, /role="progressbar"[^>]*aria-valuenow="35"/);
+    assert.match(saving, /role="progressbar"/);
+    assert.doesNotMatch(saving, /aria-valuenow/);
     assert.doesNotMatch(text(saving), /This campaign/);
 
     const problem = render({ snapshot: { ...recording, problem: { text: '2 hours couldn’t be recorded: the recorder fell behind.', detail: 'queue full', failed: false } } });
@@ -239,6 +240,10 @@ test('the recordings view lists what is not saved yet and what is saved, each wi
     const broken = compress({ job: { state: 'kept', reason: 'compression couldn’t finish: the compressor stopped early (exit code: 1)' } });
     assert.match(text(broken), /Kept as recorded: compression couldn’t finish Compress/);
     assert.match(broken, /data-detail="compression couldn’t finish: the compressor stopped early \(exit code: 1\)"/, 'the exit code stays in the detail');
+    const unconfirmed = compress({ level: 19, job: { state: 'unconfirmed', reason: 'the disk is full' } });
+    assert.match(text(unconfirmed), /Compression not confirmed: the disk is full/);
+    assert.doesNotMatch(text(unconfirmed), /Kept as recorded/);
+    assert.match(unconfirmed, /class="recorder-item-meta is-warning" role="status"/);
 
     const empty = text(render({ recordings: { unsaved: [], saved: [] } }));
     assert.match(empty, /Not saved yet Nothing is waiting to be saved\. Saved No saved recordings yet\./);

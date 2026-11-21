@@ -146,7 +146,6 @@ impl Pool {
 pub struct Segment {
     pub branch: u64,
     pub run: u32,
-    pub restart: Option<usize>,
     pub first: u32,
     pub last: u32,
 }

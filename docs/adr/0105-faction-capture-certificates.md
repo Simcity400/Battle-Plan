@@ -10,8 +10,4 @@ Ordinary faction pool acquisition uses demand and scalar operands rather than sc
 
 Observer watch tables remain live until their patch owners are restored and admitted flights drain. The goal tests serialize mutations of the process-wide table and restore the original callbacks after a test. Busy publication is retryable when a native call remains in flight, including when it is part of a shared attach round.
 
-## Safety contracts
-
-`faction_companion_changes::install_growth` and `faction_goal_changes::install_growth` belong to the Factions worker while it holds the exclusive native quiescent lease. That worker is the only capture reader of the domain during replacement. Both modules' `Hooks::new` callers own the verified image and patch publication. The companion hook caller also owns the hooks' lifetime.
-
 [Faction account acquisition](../../crates/collector/src/faction_accounts.rs) · [Account scalar storage](../../crates/collector/src/faction_accounts/mirror.rs) · [Subject accumulators](../../crates/collector/src/faction_accounts/subject.rs) · [Goal observer](../../crates/collector/src/faction_goal_changes.rs) · [Companion observer](../../crates/collector/src/faction_companion_changes.rs) · [Goals](../../crates/collector/src/faction_goals.rs) · [Advisors](../../crates/collector/src/faction_advisors.rs) · [Pool operands](../../crates/collector/src/faction_pools.rs)
