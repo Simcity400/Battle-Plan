@@ -28,10 +28,6 @@ node_modules/
 /.mcp.json
 /.claude/
 /.codex/
-/.agents/*
-!/.agents/skills/
-/.agents/skills/*
-!/.agents/skills/delete-comment/
 /.aws/
 /.ssh/
 /captures/
