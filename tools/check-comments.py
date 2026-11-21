@@ -159,13 +159,16 @@ def script_comments(language, source, scalar):
         yield source_offsets[first] + begin - script_offsets[first], source_offsets[last] + end - script_offsets[last]
 
 
-def exempt(name, start, comment):
+def exempt(name, start, comment, source=b""):
     if start == 0 and comment.startswith(b"#!/") and language_of(name) in ("bash", "python"):
         return True
     if (name.endswith("/Cargo.toml") or name == "Cargo.toml") and comment in CARGO_GENERATED:
         return True
     if re.fullmatch(rb"// quarantine: #[1-9][0-9]* \S.*", comment):
-        return name.endswith(".rs") or bool(re.search(r"\.test\.[cm]?[jt]sx?$", name))
+        if name.endswith(".rs"):
+            return True
+        following = source[start + len(comment):].lstrip(b"\r\n").split(b"\n", 1)[0]
+        return bool(re.search(r"\.test\.[cm]?[jt]sx?$", name)) and b"test.skip(" in following
     return bool(re.fullmatch(rb"(?:#|//|/\*)\s*SPDX-License-Identifier: [\w.+() -]+(?:\*/)?", comment))
 
 
@@ -174,7 +177,7 @@ def comments(name, source):
     if language is None:
         return []
     spans = comment_spans(language, source, workflow=name.startswith(".github/workflows/") and language == "yaml")
-    return [(a, b) for a, b in spans if not exempt(name, a, source[a:b])]
+    return [(a, b) for a, b in spans if not exempt(name, a, source[a:b], source)]
 
 
 def added_comments(name, before, after, old_name=None):
