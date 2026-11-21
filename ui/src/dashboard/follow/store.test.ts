@@ -387,6 +387,32 @@ test('a product waiting for its table is covered only through the hour before it
   assert.deepEqual(store.coverage(entry), { start: 82, through: 82 });
 });
 
+test('a native reset keeps an old picture to the hours it was confirmed through until its replacement shows', () => {
+  let hour = 10;
+  const { store, add, deliver, frame } = dated(() => hour);
+  const entry = add();
+  store.bind('1', 9, 1);
+  const packet = datedPanel(entry.id, 10, 'held');
+  packet[33] = 1;
+  deliver(packet);
+  const waiting = (at: number) => { const wait = datedPanel(entry.id, at); wait[32] = 5; deliver(wait); };
+  waiting(34);
+  deliver(completedStep(34));
+  hour = 58; frame();
+  assert.deepEqual(store.coverage(entry), { start: 10, through: 33 });
+  deliver(datedStep(58, [], 1, true));
+  waiting(58);
+  deliver(completedStep(58));
+  const group = { table: 0, keys: ['1'], columns: [0], follow: 0x80000001, seedHour: 99, values: [12] };
+  const retry = datedPanel(entry.id, 58, { live: { groups: [group], rows: [], kinds: [], cells: [] } });
+  retry[33] = 1;
+  deliver(retry);
+  deliver(completedStep(58));
+  hour = 58; frame();
+  const covered = store.coverage(entry);
+  assert.ok(covered === null || covered.through <= 33, `hours the reset left unread stay uncovered while the replacement waits for its cells: ${JSON.stringify(covered)}`);
+});
+
 test('page seeks admit their own packets immediately and a native reset supersedes its queued future', () => {
   let head = 10;
   const { store, add, deliver, frame } = dated(() => head);

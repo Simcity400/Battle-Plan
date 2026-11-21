@@ -241,7 +241,7 @@ export class DatedStore {
           for (const [id, g] of this.groups) if (g.route === route) this.groups.delete(id);
           for (const r of this.readings.values()) if (this.reading(r.entry.id, route)) {
             for (const id of r.candidate?.cells ?? []) this.dependents.delete(id);
-            r.candidate = undefined; r.ends = undefined; r.waiting = undefined; r.seek = undefined; r.stream = undefined; r.lane = undefined;
+            r.candidate = undefined; r.ends = undefined; r.waiting = r.shown && r.shown.through + 1; r.seek = undefined; r.stream = undefined; r.lane = undefined;
           }
         }
         stream.lane.limited = message.limited;
