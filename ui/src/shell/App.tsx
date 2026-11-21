@@ -345,9 +345,9 @@ export default function App() {
       <aside ref={sidebar.aside} className="sidebar" aria-label="Battle Plan navigation" inert={sidebar.hidden && !sidebar.peek}
         onContextMenu={iconMenu.onContextMenu} onKeyDown={iconMenu.onKeyDown}>
         <div className="sidebar-header">
+          <BrandMark size={30} /><span className="sidebar-wordmark">BattlePlan</span>
           <button type="button" className="icon-button sidebar-toggle" onClick={sidebar.toggle} aria-label={sidebar.hidden ? 'Keep sidebar open' : 'Hide sidebar'}
             data-tooltip={`${sidebar.hidden ? 'Keep sidebar open' : 'Hide sidebar'} · Ctrl+B`}><Icon name="sidebar" /></button>
-          <BrandMark size={20} /><span className="sidebar-wordmark"><strong>BattlePlan</strong></span>
         </div>
         <div className="sidebar-body">
         {tab === 'settings'
