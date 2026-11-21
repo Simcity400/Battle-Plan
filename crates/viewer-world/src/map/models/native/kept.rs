@@ -2484,22 +2484,16 @@ impl Kept {
         &self.bytes
     }
 
-    /// How the list's draws read the blocks it shares.
+    /// The walk's draws the draw at `at` stands for, by slot.
     #[cfg(test)]
-    pub(super) fn reads(&self) -> Reads {
-        self.shared.reads
+    pub(super) fn slots_at(&self, at: usize) -> &[usize] {
+        &self.groups[self.order[at]].as_ref().expect("a drawn group").slots
     }
 
-    /// Where the blocks of one instance of the draw at `at` stand: each run of its group at that
-    /// instance's slot.
+    /// The part the draw at `at` draws.
     #[cfg(test)]
-    pub(super) fn rows_at(&self, at: usize, slot: usize) -> Vec<(Supply, usize)> {
-        let group = self.groups[self.order[at]].as_ref().expect("a drawn group");
-        group
-            .runs
-            .iter()
-            .map(|run| (run.supply, run.at + slot * run.stride))
-            .collect()
+    pub(super) fn key_at(&self, at: usize) -> usize {
+        self.groups[self.order[at]].as_ref().expect("a drawn group").key
     }
 }
 

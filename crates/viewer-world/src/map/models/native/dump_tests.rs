@@ -141,6 +141,46 @@ fn fixture() -> (TestDir, ModelLibrary, usize) {
     "#,
     )
     .unwrap();
+    // A program that reads its figure's whole world, for the kept lists: a move changes what it
+    // draws.
+    std::fs::write(
+        root.join("gfx/FX/kept.shader"),
+        br#"
+        VertexStruct I
+        {
+            float3 position : POSITION;
+        };
+        VertexStruct O
+        {
+            float4 position : SV_POSITION;
+        };
+        ConstantBuffer(0,0) {
+            float4 firstScene;
+        };
+        ConstantBuffer(1,0) {
+            float4 world0;
+            float4 world1;
+            float4 world2;
+            float4 world3;
+        };
+        MainCode WorldV
+        [[
+            O main(I v) { O o; o.position = float4(v.position,1) + (world0 + world1 + world2 + world3) * 0.001 + firstScene * 0.0001; return o; }
+        ]]
+        MainCode WorldP
+        [[
+            float4 main(O v) : SV_TARGET { return abs(world0); }
+        ]]
+        MainCode P
+        [[
+            float4 main(O v) : SV_TARGET { return float4(0, 1, 0, 1); }
+        ]]
+        RasterizerState Visible { CullMode = none }
+        Effect World { VertexShader = WorldV PixelShader = WorldP RasterizerState = Visible }
+        Effect WorldShadow { VertexShader = WorldV PixelShader = P RasterizerState = Visible }
+    "#,
+    )
+    .unwrap();
     let layers = Arc::new(ResolvedLayers::from_folders(&[(root, &[])]).unwrap());
     let mut library = ModelLibrary {
         layers: Some(layers),
@@ -1305,11 +1345,17 @@ fn native_plan_tail_keeps_independent_late_fatal_prefix_and_recovery() {
     }
 }
 
-/// A kept list's draws cover a fresh walk's: one instanced draw for each part the walk drew,
-/// over the instances its draws of that part became, with the same pipeline, resources and
-/// range. Each instance's rows hold the bytes the fresh walk staged for its own draw, and a
-/// block the list shares stands where its draw reads it.
-fn same_draws(kept: &DrawList, list: &kept::Kept, fresh: &DrawList) {
+/// A kept list's draws cover a fresh walk of `figures` figures, all of one part: one instanced
+/// draw whose instances name the walk's draws, each of them once, with the same pipeline,
+/// resources and range. Each instance reads, where its draw's bindings send the shader, what the
+/// fresh walk staged for its own draw: a row at its base in the draw's rows block, as long as the
+/// row's stride, and any other block at its own offset.
+fn same_draws(
+    (kept, list): (&DrawList, &kept::Kept),
+    fresh: &DrawList,
+    residents: &[Resident],
+    figures: usize,
+) {
     let bytes = list.bytes();
     let same = |a: &RecordedDraw, b: &RecordedDraw| {
         let range = |draw: &RecordedDraw| {
@@ -1317,63 +1363,94 @@ fn same_draws(kept: &DrawList, list: &kept::Kept, fresh: &DrawList) {
         };
         range(a) == range(b) && a.bindings.same_resources(&b.bindings)
     };
-    // The fresh walk's draws of one part, in its order, which one kept draw stands for.
-    let mut grouped: Vec<Vec<&RecordedDraw>> = Vec::new();
-    for draw in &fresh.draws {
-        match grouped.iter_mut().find(|held| same(held[0], draw)) {
-            Some(held) => held.push(draw),
-            None => grouped.push(vec![draw]),
-        }
-    }
-    assert!(!kept.draws.is_empty());
-    assert_eq!(kept.draws.len(), grouped.len(), "one draw a part the walk drew");
-    for (at, (keep, drawn)) in kept.draws.iter().zip(&grouped).enumerate() {
-        assert!(same(keep, drawn[0]), "the same pipeline, resources and range");
-        assert_eq!(keep.instances as usize, drawn.len(), "one instance a draw of the walk");
-        for (slot, fresh) in drawn.iter().enumerate() {
-            let rows = list.rows_at(at, slot);
+    assert_eq!(fresh.draws.len(), figures, "the walk draws every figure placed");
+    assert_eq!(kept.draws.len(), 1, "one draw a part the walk drew");
+    let programs = part_programs(residents);
+    // Draws of different parts can be alike, so which walk draws a kept draw stands for is the
+    // list's to say, not inferred from their likeness.
+    let mut covered = vec![false; fresh.draws.len()];
+    for (at, keep) in kept.draws.iter().enumerate() {
+        let rows = programs(list.key_at(at)).expect("a resident program").program.instanced_rows();
+        let (reads, offsets) = keep.bindings.preparation_proof();
+        // A read taken per instance is bound whole, from the base its rows block gives; that
+        // block's offset is the draw's last.
+        let (block, offsets) = match offsets.split_last() {
+            Some((block, offsets)) if !rows.is_empty() => (Some(*block as usize), offsets),
+            _ => (None, offsets),
+        };
+        let base = |binding: u32| {
+            let at = block.expect("a rows block") + binding as usize * 4;
+            u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes")) as usize
+        };
+        let walked = list.slots_at(at);
+        assert_eq!(keep.instances as usize, walked.len(), "one instance a draw of the walk");
+        for (slot, &draw) in walked.iter().enumerate() {
+            assert!(!std::mem::replace(&mut covered[draw], true), "each draw of the walk once");
+            let fresh = &fresh.draws[draw];
+            assert!(same(keep, fresh), "the same pipeline, resources and range");
             let (staged, _) = fresh.bindings.preparation_proof();
-            let (reads, offsets) = keep.bindings.preparation_proof();
-            let mut shared = offsets.iter();
+            let mut own = offsets.iter();
             for ((binding, staged), (read, _)) in staged.iter().zip(reads) {
                 assert_eq!(binding, read);
-                let at = match kept::supply_of(*binding, list.reads()) {
-                    Some(supply) => {
-                        rows.iter().find(|(held, _)| *held == supply).expect("a row of its own").1
+                let (at, length) = match rows.iter().find(|(row, _)| row == binding) {
+                    Some(&(_, stride)) => {
+                        let stride = stride as usize;
+                        ((base(*binding) + slot) * stride, stride.min(staged.len()))
                     }
-                    None => *shared.next().expect("a shared block binds at its own offset") as usize,
+                    None => {
+                        let at = own.next().expect("a block bound at its own offset");
+                        (*at as usize, staged.len())
+                    }
                 };
-                assert_eq!(&bytes[at..at + staged.len()], &staged[..], "binding {binding}");
+                assert_eq!(&bytes[at..at + length], &staged[..length], "binding {binding}, {slot}");
             }
+            assert!(own.next().is_none(), "every offset the draw binds is read");
         }
     }
+    assert!(covered.into_iter().all(|drawn| drawn), "every draw of the walk");
+}
+
+/// The fixture with its plain triangle drawn by `World`, which reads each figure's whole world
+/// and the scene's block.
+fn kept_fixture() -> (TestDir, ModelLibrary, usize) {
+    let (directory, mut library, blank) = fixture();
+    let material = &mut library.meshes[1].native[0].lods[0][0].material;
+    material.shader = Some("World".into());
+    material.shader_file = Some("gfx/FX/kept.shader".into());
+    (directory, library, blank)
+}
+
+/// Three figures of the kept fixture's triangle, from `x`. The fixture's other meshes stay
+/// unplaced: their actors are refused, and a walk that refuses an actor is walked again the next
+/// frame, never kept.
+fn placed_kept(x: f32) -> Vec<(usize, ModelInstance)> {
+    (0..3)
+        .map(|at| {
+            (
+                1,
+                ModelInstance {
+                    position: [x + at as f32, 0., 0.],
+                    scale: 1.,
+                    animation_identity: at as u32 + 1,
+                    ..Default::default()
+                },
+            )
+        })
+        .collect()
 }
 
 /// The retained casters equal a fresh caster walk draw for draw, byte for byte: after the walk
 /// that makes them, in a kept frame (no walk), after an instance moved (its own nodes rewritten)
-/// and after the camera moved (walked again); a figure leaving and another joining are walked
-/// alone into the list. Each frame says whether its casters draw what the frame before drew:
-/// only a kept frame whose read bytes are all the same does.
+/// and after the camera moved (kept: a list holds no camera); a figure leaving and another
+/// joining are walked alone into the list. Each frame says whether its casters draw what the
+/// frame before drew: only a kept frame whose read bytes are all the same does.
 #[test]
 #[ignore = "requires the pinned shader compiler and a GPU"]
 fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
-    let (_directory, library, blank) = fixture();
+    let (_directory, library, blank) = kept_fixture();
     let (_serial, device, queue) = tests::device();
-    let placed = |x: f32| -> Vec<(usize, ModelInstance)> {
-        (0..library.meshes.len())
-            .map(|mesh| {
-                (
-                    mesh,
-                    ModelInstance {
-                        position: [x + mesh as f32, 0., 0.],
-                        scale: 1.,
-                        animation_identity: mesh as u32 + 1,
-                        ..Default::default()
-                    },
-                )
-            })
-            .collect()
-    };
+    let placed = placed_kept;
+    let figures = std::cell::Cell::new(3);
     let mut model = ModelPass::new(&library, "map buildings");
     model
         .upload(&device, &queue, &library, ModelField::build(&library, placed(0.), 128.))
@@ -1396,8 +1473,9 @@ fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
             .prepare_native(&arena, frame, inputs, Queue::Caster, &mut ObjectConstants::default())
             .unwrap();
         let renderer = model.native.borrow();
-        let list = &renderer.as_ref().unwrap().casters;
-        same_draws(&list.draws, list, &fresh);
+        let native = renderer.as_ref().unwrap();
+        let list = &native.casters;
+        same_draws((&list.draws, list), &fresh, &native.residents, figures.get());
         let counts = list.counts();
         drop(renderer);
         model.recycle_native(fresh);
@@ -1439,27 +1517,30 @@ fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
     assert!(!repeats(moved), "a move draws otherwise");
     assert_eq!(walks(moved), (1, 7), "a move rewrites its nodes in place");
     assert!(repeats(step(&mut model, camera, 4)));
+    // A list holds no camera: one that travels keeps it, and the casters read the same bytes.
     camera.center[0] += 1.;
-    let walked = step(&mut model, camera, 4);
-    assert!(!repeats(walked), "a walk draws otherwise");
-    assert_eq!(walks(walked), (2, 8), "the camera walks again");
-    assert_eq!(walks(step(&mut model, camera, 7)), (2, 9));
+    let travelled = step(&mut model, camera, 4);
+    assert_eq!(walks(travelled), (1, 9), "a camera move walks nothing");
+    assert!(repeats(travelled));
+    assert_eq!(walks(step(&mut model, camera, 7)), (1, 10));
     // The first entity's figure leaves and the second's is another actor: that one is walked
     // alone and the list equals a fresh walk, draw for draw.
     let mut other = placed(0.5);
     other.remove(0);
     other[0].1.animation_identity = 100;
     model.update_placed(other.clone(), 128.);
+    figures.set(2);
     let (counts, repeated) = step(&mut model, camera, 7);
-    assert_eq!((counts.walks, counts.spliced, counts.figures), (2, 1, 1));
+    assert_eq!((counts.walks, counts.spliced, counts.figures), (1, 1, 1));
     assert!(!repeated, "a splice draws otherwise");
     // The first entity's figure comes back: walked alone again, the others kept.
     model.update_placed(placed(0.5).into_iter().take(1).chain(other).collect(), 128.);
+    figures.set(3);
     let (counts, repeated) = step(&mut model, camera, 7);
-    assert_eq!((counts.walks, counts.spliced, counts.figures), (2, 2, 2));
+    assert_eq!((counts.walks, counts.spliced, counts.figures), (1, 2, 2));
     assert!(!repeated);
     let kept = step(&mut model, camera, 7);
-    assert_eq!(walks(kept), (2, 12));
+    assert_eq!(walks(kept), (1, 13));
     assert!(repeats(kept));
     // A field that places nothing casts nothing: otherwise than figures, as nothing did before.
     model.update_placed(Vec::new(), 128.);
@@ -1563,23 +1644,10 @@ fn a_kept_list_draws_what_the_frame_draws_and_only_gathers_by_the_candidates() {
 #[test]
 #[ignore = "requires the pinned shader compiler and a GPU"]
 fn a_kept_lit_list_equals_a_fresh_lit_walk_and_leaves_the_same_constant_state() {
-    let (_directory, library, blank) = fixture();
+    let (_directory, library, blank) = kept_fixture();
     let (_serial, device, queue) = tests::device();
-    let placed = |x: f32| -> Vec<(usize, ModelInstance)> {
-        (0..library.meshes.len())
-            .map(|mesh| {
-                (
-                    mesh,
-                    ModelInstance {
-                        position: [x + mesh as f32, 0., 0.],
-                        scale: 1.,
-                        animation_identity: mesh as u32 + 1,
-                        ..Default::default()
-                    },
-                )
-            })
-            .collect()
-    };
+    let placed = placed_kept;
+    let figures = std::cell::Cell::new(3);
     let mut model = ModelPass::new(&library, "map buildings");
     model
         .upload(&device, &queue, &library, ModelField::build(&library, placed(0.), 128.))
@@ -1619,8 +1687,9 @@ fn a_kept_lit_list_equals_a_fresh_lit_walk_and_leaves_the_same_constant_state() 
         let fresh = model.prepare_native(&arena, frame, inputs, Queue::Regular, &mut fresh_state).unwrap();
         let counts = {
             let renderer = model.native.borrow();
-            let list = &renderer.as_ref().unwrap().lit[0][0];
-            same_draws(&kept, list, &fresh);
+            let native = renderer.as_ref().unwrap();
+            let list = &native.lit[0][0];
+            same_draws((&kept, list), &fresh, &native.residents, figures.get());
             list.counts()
         };
         assert_eq!(kept_state.bytes, fresh_state.bytes, "the next pass starts from the same block");
@@ -1638,6 +1707,7 @@ fn a_kept_lit_list_equals_a_fresh_lit_walk_and_leaves_the_same_constant_state() 
     other.remove(0);
     other[0].1.animation_identity = 100;
     model.update_placed(other, 128.);
+    figures.set(2);
     assert_eq!(walks(step(&mut model, 4)), (1, 3, 1), "a figure left and another joined");
     assert_eq!(walks(step(&mut model, 5)), (1, 4, 1));
     queue.submit([]);
