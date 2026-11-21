@@ -4,6 +4,7 @@ import base64
 import importlib.util
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,12 @@ SPEC = importlib.util.spec_from_file_location("leak_gate", GATE)
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
 
+
+
+def at(local, domain):
+    return local + "@" + domain
+
+
 TERM = "Planted" + "term"
 KEY_LINE = "RWRT" + "y0Iy" + "planted" + "updater" + "keyline"
 UPDATER_KEY = base64.b64encode(f"untrusted comment: test key\n{KEY_LINE}\n".encode()).decode()
@@ -23,7 +30,7 @@ SAMPLES = {
     "term": "see " + TERM.upper() + " here",
     "user-path": "C:" + "\\" + "Users" + "\\" + "someone" + "\\x",
     "steam-path": "D:/" + "Steam" + "Library" + "/x",
-    "email": "someone" + "@" + "example.com",
+    "email": at("someone", "example.com"),
     "github-token": "gh" + "p_" + "a1" * 18,
     "private-key": "-----BEGIN " + "RSA PRIVATE" + " KEY-----",
     "aws-key": "AK" + "IA" + "ABCDEFGHIJ234567",
@@ -31,7 +38,9 @@ SAMPLES = {
     "secret-key": "encrypted " + "secret key",
     "updater-key": KEY_LINE.lower(),
 }
+NOREPLY = "users.noreply." + "github.com"
 NAMED = {"pdb": "app.pdb", "source-map": "app.js.map"}
+LINE = re.compile(r"^(.+): ([a-z-]+) x[1-9]\d*$")
 FORMS = {
     "utf8": lambda text: text.encode(),
     "utf16": lambda text: text.encode("utf-16-le"),
@@ -39,13 +48,17 @@ FORMS = {
 }
 
 
-def run_gate(cwd, *paths):
+def run_gate(test, cwd, *paths):
     env = {**os.environ, "LEAK_GATE_TERMS": f'["{TERM}"]', "TAURI_SIGNING_PRIVATE_KEY": UPDATER_KEY}
     result = subprocess.run([sys.executable, str(GATE), *paths], cwd=cwd, env=env, capture_output=True, text=True)
+    test.assertEqual(result.stderr, "")
+    *lines, total = result.stdout.splitlines()
+    test.assertRegex(total, r"^Leak gate: \d+ files checked, \d+ matches\.$")
     found = {}
-    for line in result.stdout.splitlines()[:-1]:
-        label, kind = line.rsplit(": ", 1)
-        found.setdefault(label, set()).add(kind.split(" x")[0])
+    for line in lines:
+        test.assertRegex(line, LINE)
+        label, kind = LINE.fullmatch(line).groups()
+        found.setdefault(label, set()).add(kind)
     return result, found
 
 
@@ -73,10 +86,10 @@ class Planted(unittest.TestCase):
                     expected[f"outer.zip/in/{name}"] = {kind}
                 archive.write(inner, "inner.zip")
                 archive.writestr("in/clean.txt", "nothing to see " * 100)
-            (scratch / "plain" / "noreply.txt").write_text("1+me@users.noreply.github.com noreply@github.com")
+            (scratch / "plain" / "noreply.txt").write_text(at("1+me", NOREPLY) + " " + at("noreply", "github.com"))
             (scratch / "plain" / "LICENSE").write_text("Copyright someone " + SAMPLES["email"])
             inner.unlink()
-            result, found = run_gate(scratch, "plain", "outer.zip")
+            result, found = run_gate(self, scratch, "plain", "outer.zip")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertEqual(found, expected)
         for text in [*SAMPLES.values(), TERM]:
@@ -84,26 +97,39 @@ class Planted(unittest.TestCase):
 
     def test_one_kind_does_not_hide_another_in_the_same_bytes(self):
         with tempfile.TemporaryDirectory() as scratch:
-            Path(scratch, "LICENSE").write_text(SAMPLES["aws-key"] + "@example.com")
+            Path(scratch, "LICENSE").write_text(at(SAMPLES["aws-key"], "example.com"))
             Path(scratch, "notes.txt").write_text(SAMPLES["user-path"].replace("someone", TERM))
-            _, found = run_gate(scratch, "LICENSE", "notes.txt")
+            _, found = run_gate(self, scratch, "LICENSE", "notes.txt")
         self.assertEqual(found, {"LICENSE": {"aws-key"}, "notes.txt": {"term", "user-path"}})
 
     def test_a_clean_folder_passes(self):
         with tempfile.TemporaryDirectory() as scratch:
             Path(scratch, "a.txt").write_text("nothing to see")
-            result, found = run_gate(scratch, ".")
+            result, found = run_gate(self, scratch, ".")
         self.assertEqual((result.returncode, found), (0, {}), result.stdout + result.stderr)
 
 
 class Addresses(unittest.TestCase):
     def test_an_address_counts_once_unless_it_is_a_github_noreply_one(self):
-        count = gate.addresses
-        self.assertEqual(count(b"ab@example.com, cd@example.org"), 2)
-        self.assertEqual(count(b"1+me@users.noreply.github.com noreply@github.com"), 0)
-        self.assertEqual(count(b"xnoreply@github.com"), 1)
-        self.assertEqual(count(b"a@example.com @example.com ab@example.comx"), 0)
-        self.assertEqual(count(b"ab@cd.com.ef@gh.com"), 2)
+        def count(*parts):
+            return gate.addresses("".join(parts).encode())
+        self.assertEqual(count(at("ab", "example.com"), ", ", at("cd", "example.org")), 2)
+        self.assertEqual(count(at("1+me", NOREPLY), " ", at("noreply", "github.com")), 0)
+        self.assertEqual(count(at("xnoreply", "github.com")), 1)
+        self.assertEqual(count(at("a", "example.com"), " ", at("", "example.com"), " ", at("ab", "example.comx")), 0)
+        self.assertEqual(count(at("ab", "cd.com.ef"), at("", "gh.com")), 2)
+        self.assertEqual(count(at("x", NOREPLY), at("", "example.org")), 1)
+
+    def test_a_noreply_address_does_not_hide_the_address_after_it(self):
+        matcher = gate.Matcher([TERM], [], [("note.txt", "steam-path")])
+        data = ("Steam" + "Library" + at("", NOREPLY) + at("", "example.org")).encode()
+        self.assertEqual(matcher.scan_bytes("note.txt", data), [("email", 1)])
+
+
+class Terms(unittest.TestCase):
+    def test_overlapping_terms_count_one_match(self):
+        matcher = gate.Matcher(["foo", "foobar"], [], [])
+        self.assertEqual(matcher.scan_bytes("a.txt", b"x FOOBAR x"), [("term", 1)])
 
 
 if __name__ == "__main__":

@@ -100,11 +100,11 @@ def updater_key():
 
 
 def literal(strings):
-    """Each string, also with its slashes turned the other way."""
+    """One pattern for each string, also with its slashes turned the other way."""
     forms = set()
     for value in strings:
         forms |= {value, value.replace("\\", "/"), value.replace("/", "\\")}
-    return sorted({re.escape(form.encode("utf-8").lower()) for form in forms})
+    return b"|".join(sorted({re.escape(form.encode("utf-8").lower()) for form in forms}))
 
 
 def load_allow(path=ALLOW):
@@ -127,9 +127,9 @@ class Matcher:
     """The kinds to look for, compiled once."""
 
     def __init__(self, terms, key_forms, allow):
-        rules = {"term": literal(terms), **RULES}
+        rules = {"term": [literal(terms)], **RULES}
         if key_forms:
-            rules["updater-key"] = literal(key_forms)
+            rules["updater-key"] = [literal(key_forms)]
         self.patterns = [(kind, re.compile(pattern)) for kind, patterns in rules.items() for pattern in patterns]
         self.allow = allow
 
@@ -149,7 +149,7 @@ class Matcher:
                          .encode("latin-1", errors="replace") for offset in (0, 1))]
         for view in views:
             for kind, pattern in self.patterns:
-                if found := len(pattern.findall(view)):
+                if found := sum(1 for _ in pattern.finditer(view)):
                     counts[kind] = counts.get(kind, 0) + found
             if found := addresses(view):
                 counts["email"] = counts.get("email", 0) + found
@@ -157,15 +157,11 @@ class Matcher:
 
 
 def addresses(view):
-    """The email addresses in `view`, as a lone search for them would count them, less GitHub noreply ones."""
-    count = end = 0
+    """The email addresses in `view`, one per @ and each judged whole, less GitHub noreply ones."""
+    count = 0
     for match in EMAIL.finditer(view):
-        at = match.start()
-        local = view[max(end, at - 8):at]
-        local = local[len(local.rstrip(LOCAL)):]
-        if len(local) >= 2:
-            end = match.end()
-            count += not NOREPLY.search(local + view[at:end])
+        before = view[max(0, match.start() - 8):match.start()]
+        count += not NOREPLY.search(before[len(before.rstrip(LOCAL)):] + match.group())
     return count
 
 
