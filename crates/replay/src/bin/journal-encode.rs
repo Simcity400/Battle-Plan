@@ -19,7 +19,7 @@ static ALLOCATOR: engine_allocation::labels::Counting<std::alloc::System> =
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = || io::Error::new(io::ErrorKind::InvalidInput, "journal-encode <session directory> <capture> <out.battleplan> [--level=N] [--facts=<file>] [--memory] [--timed] [--pace=<hours a second>,<from hour>] [--times=<factors>] [--start=<block> --start-file=<file>] [--hours=N] [--stop-after=<block>] | journal-encode --preroll <session directory> <capture> <block> <file>");
+    let usage = || io::Error::new(io::ErrorKind::InvalidInput, "journal-encode <session directory> <capture> <out.battleplan> [--level=N] [--facts=<file>] [--memory] [--timed] [--pace=<hours a second>,<from hour>] [--times=<factors>] [--start=<block> --start-file=<file>] [--hours=N] [--stop-after=<n, from 0, of the blocks this run commits>] | journal-encode --preroll <session directory> <capture> <block> <file>");
     if let [flag, directory, capture, block, file] = args.as_slice()
         && flag == "--preroll"
     {
@@ -91,10 +91,6 @@ fn main() -> io::Result<()> {
     }
     let tables = replay_data::rows::TableId::ALL.len();
     let factors = times.unwrap_or_else(|| Factors { factor: vec![1; tables], in_phase: vec![false; tables] });
-    let prefix = encode_report::recorded_blocks(out, "journal-encode", capture)?;
-    if let Some(block) = stop_after.filter(|&block| block < prefix) {
-        return Err(io::Error::other(format!("Block {block} is committed in {} already", out.display())));
-    }
     let mut source = Multiplied::open(Path::new(directory), capture, factors, start)?;
     let first_hours = u64::from(writer.segments()).saturating_sub(1) * 720;
     source.start(writer.segments())?;
@@ -102,7 +98,6 @@ fn main() -> io::Result<()> {
         "build": { "memory_labels": engine_allocation::labels::ENABLED, "multiplied": cfg!(feature = "multiplied"), "keep_journal": cfg!(feature = "keep-journal") } }));
     let facts = facts.filter(|_| !writer.carries_facts());
     let mut host = Everything::new(facts, pace);
-    host.blocks = prefix;
     let taken = host.taken.clone();
     loop {
         let stop = || memory || stop_after.is_some() || taken.get() >= limit;

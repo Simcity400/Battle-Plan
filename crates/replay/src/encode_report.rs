@@ -158,17 +158,6 @@ pub fn revision_line(writer: &LiveWriter, revision: u64, hours: u64, started: In
     line
 }
 
-pub fn recorded_blocks(path: &Path, source: &str, capture: u32) -> io::Result<u64> {
-    if !path.exists() {
-        return Ok(0);
-    }
-    let recording = crate::columnar_frames::Recording::open_path_as(path, crate::columnar_frames::Open::Newest)?;
-    let records = recording.records()?;
-    let sessions: std::collections::HashSet<u64> = records.cursors.iter().filter(|cursor| cursor.source == source && cursor.capture == capture).map(|cursor| cursor.session).collect();
-    let branches: std::collections::HashSet<u64> = records.branches.iter().filter(|branch| sessions.contains(&branch.session)).map(|branch| branch.id).collect();
-    Ok(recording.directories()?.iter().filter(|run| branches.contains(&run.branch)).map(|run| u64::from(run.blocks())).sum())
-}
-
 pub fn stopped_after(block: Option<u64>, blocks: u64, hours: u64) -> bool {
     if !block.is_some_and(|block| blocks == block + 1) {
         return false;

@@ -381,7 +381,7 @@ fn a_session_facts_file_whose_identity_passes_a_mebibyte_reads_alike_from_memory
 
 #[test]
 fn the_encoders_block_count_follows_each_committed_block_across_short_runs_and_a_resume() {
-    use crate::encode_report::{Everything, recorded_blocks, stopped_after};
+    use crate::encode_report::{Everything, stopped_after};
     let folder = Folder::new("committed-blocks");
     let mut records = vec![session(), branch(1, 100)];
     records.extend(hours(1, 100..=399, 19));
@@ -421,10 +421,9 @@ fn the_encoders_block_count_follows_each_committed_block_across_short_runs_and_a
 
     let mut first = Everything::new(None, None);
     assert_eq!(encode(&mut first, Some(0)), [(1, 300)], "--stop-after=0 stops at the short block");
-    assert_eq!(recorded_blocks(&folder.recording(), SOURCE, 0).unwrap(), 1);
     let mut resumed = Everything::new(None, None);
-    resumed.blocks = recorded_blocks(&folder.recording(), SOURCE, 0).unwrap();
-    assert_eq!(encode(&mut resumed, Some(1)), [(2, 720)], "a resumed encoder counts on from its committed prefix");
+    assert_eq!(encode(&mut resumed, Some(0)), [(1, 720)], "a resumed encoder takes up after its committed prefix and counts the blocks it commits itself");
+    assert_eq!(saved(&folder.recording()).directories().unwrap().iter().map(|run| run.blocks()).sum::<u32>(), 2);
 }
 
 #[test]
