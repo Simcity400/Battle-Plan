@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import base64
+import errno
 import fcntl
 import gzip
 import hashlib
@@ -15,6 +16,10 @@ import tarfile
 import time
 
 ROOT = Path('/home/user/hoi4')
+HOST = 'x86_64-unknown-linux-gnu'
+TRANSIENT_ERRNOS = {errno.EAGAIN, errno.ENOMEM, errno.EINTR}
+BROKEN_TOOLCHAIN = 72
+UNPROVEN_TOOLCHAIN = 71
 SRC = ROOT / 'src'
 CLAIM = ROOT / 'claim'
 STRANDED = ROOT / 'stranded'
@@ -182,6 +187,27 @@ def restore_metadata():
                     pass
         BOOT_MARKER.write_text(boot)
         print(f'Restored {len(mtimes)} cached mtimes after clone/resume', file=sys.stderr)
+
+def toolchain_fault(channel):
+    """(exit code, why) when the installed toolchain of `channel`, the incoming tree's, does not run Cargo: BROKEN_TOOLCHAIN
+    when it fails or cannot launch, UNPROVEN_TOOLCHAIN when the probe was cut short; (None, None) when it runs, or the VM
+    lacks the toolchain, which is rustup's to install."""
+    if not channel:
+        return None, None
+    toolchains = Path(os.environ.get('RUSTUP_HOME', '/usr/local/rustup')) / 'toolchains'
+    if not any((toolchains / name).is_dir() for name in (channel, f'{channel}-{HOST}')):
+        return None, None
+    try:
+        result = subprocess.run(['cargo', '--version'], cwd=ROOT, env={**os.environ, 'RUSTUP_TOOLCHAIN': channel, 'RUSTUP_AUTO_INSTALL': '0'}, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return UNPROVEN_TOOLCHAIN, 'cargo --version did not answer within 60 s'
+    except OSError as error:
+        return (UNPROVEN_TOOLCHAIN if error.errno in TRANSIENT_ERRNOS else BROKEN_TOOLCHAIN), repr(error)
+    if result.returncode < 0:
+        return UNPROVEN_TOOLCHAIN, f'cargo --version was killed by signal {-result.returncode}'
+    if result.returncode:
+        return BROKEN_TOOLCHAIN, (result.stderr or result.stdout).strip() or f'exit {result.returncode}'
+    return None, None
 
 def manifest():
     if MANIFEST.exists():
@@ -365,6 +391,17 @@ elif mode == 'acquire':
         else:
             leftover.unlink()
     restore_metadata()
+    fault, why = toolchain_fault(sys.argv[3] if len(sys.argv) > 3 else '')
+    if fault:
+        print(f'The toolchain does not run: {why}' if fault == BROKEN_TOOLCHAIN else f'The toolchain could not be checked: {why}', file=sys.stderr)
+        with (ROOT / 'running.lock').open('a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                sys.exit(fault)
+            if CLAIM.exists() and owned(token):
+                shutil.rmtree(CLAIM)
+        sys.exit(fault)
     print(json.dumps(manifest()))
 elif mode == 'release':
     token = sys.argv[2]

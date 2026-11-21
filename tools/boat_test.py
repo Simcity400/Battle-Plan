@@ -42,9 +42,13 @@ class FakeBoat:
         self.refused = set()
         self.starting = {}
         self.hydrating = {}
+        self.too_small = set()
+        self.single = []
 
-    def boat(self, *args, check=True, idempotent=None, shielded=False):
+    def boat(self, *args, check=True, idempotent=None, shielded=False, retry=True):
         self.calls.append(args)
+        if not retry:
+            self.single.append(args[0])
         command = args[0]
         if command == "list":
             return OK, [{"sandboxes": [dict(vm) for vm in self.vms.values()]}]
@@ -75,7 +79,10 @@ class FakeBoat:
             source = args[args.index("--from") + 1]
             if source in self.missing:
                 return types.SimpleNamespace(returncode=1, stdout="", stderr="no such snapshot"), []
-            self.vms["n"] = {"id": "n", "state": "ready", "type": "large", "ttlSeconds": bt.LEASE_SECONDS, "hydrated": True}
+            kind = args[args.index("--type") + 1]
+            if kind in self.too_small:
+                return types.SimpleNamespace(returncode=1, stdout="", stderr=""), [{"code": "deploy_failed", "error": f"This sandbox uses 87.3 GB of disk, which does not fit any available '{kind}' machine (largest budget: 76.0 GB).", "event": "error"}]
+            self.vms["n"] = {"id": "n", "state": "ready", "type": kind, "ttlSeconds": bt.LEASE_SECONDS, "hydrated": True}
             return OK, [{"event": "created", "id": "n"}]
         if command == "snapshot" or (command == "exec" and "source-revision" in args[-1]):
             return OK, []
@@ -130,13 +137,13 @@ class Harness(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.state = bt.State(self.root / "state")
-        self.saved = {name: getattr(bt, name) for name in ("boat", "remote", "quick", "deliver", "run_program", "wait_ready", "RENEW_SECONDS", "UPLOAD_CHUNKS")}
+        self.saved = {name: getattr(bt, name) for name in ("boat", "remote", "quick", "deliver", "run_program", "wait_ready", "info", "RENEW_SECONDS", "UPLOAD_CHUNKS")}
         self.now = 0.0
 
         def pause(seconds):
             self.now += seconds
 
-        bt.wait_ready = lambda vmid: self.saved["wait_ready"](vmid, clock=lambda: self.now, pause=pause)
+        bt.wait_ready = lambda vmid, spent=None: self.saved["wait_ready"](vmid, spent, clock=lambda: self.now, pause=pause)
 
     def tearDown(self):
         for name, value in self.saved.items():
@@ -169,6 +176,10 @@ class Rank(unittest.TestCase):
     def test_a_running_vm_still_hydrating_comes_after_the_hydrated_ones(self):
         states = {"a": vm("a", hydrated=False), "b": vm("b"), "c": vm("c", "stopped", hydrated=False), "d": vm("d", "stopped")}
         self.assertEqual(bt.rank(sorted(states), states, "c", "large", lambda _: False), ["b", "a", "c", "d"])
+
+    def test_a_vm_still_starting_comes_after_the_running_ones_and_before_the_stopped(self):
+        states = {"a": vm("a", "stopped"), "b": vm("b", "starting"), "c": vm("c"), "d": vm("d", "resuming"), "e": vm("e", "provisioning"), "f": vm("f", "cloning")}
+        self.assertEqual(bt.rank(sorted(states), states, None, "large", lambda _: False), ["c", "b", "d", "e", "f", "a"])
 
     def test_large_work_skips_running_default_vms_but_can_grow_stopped_ones(self):
         states = {"a": vm("a", "idle", "default"), "b": vm("b", "stopped", "default")}
@@ -569,6 +580,55 @@ class Acquire(Harness):
             self.state.lock(vmid).close()
         self.assertTrue(all("--no-wait" in call for call in fake.calls if call[0] == "resume"))
 
+    def test_readiness_records_each_stage_boat_reports_and_polls_faster_at_the_end(self):
+        fake = self.use(FakeBoat([vm("a", "stopped", hydrated=False)]))
+        fake.starting["a"] = 3
+        fake.hydrating["a"] = 6
+        pauses = []
+        bt.wait_ready = lambda vmid, spent=None: self.saved["wait_ready"](vmid, spent, clock=lambda: self.now, pause=lambda seconds: (pauses.append(seconds), setattr(self, "now", self.now + seconds)))
+        record = {}
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", record)
+        lease.end()
+        lock.close()
+        readiness = record["readiness"]
+        self.assertEqual(set(readiness), {"resume_call", "boot", "settling", "claim"})
+        self.assertEqual((readiness["boot"], readiness["settling"]), (2 * bt.POLL_SECONDS, 6 * bt.FINAL_POLL_SECONDS))
+        self.assertEqual(pauses, [bt.POLL_SECONDS] * 2 + [bt.FINAL_POLL_SECONDS] * 6)
+
+    def test_hydration_spends_its_stages_by_name_and_counts_its_entries(self):
+        phases = iter([("starting", {"phase": "folding"}), ("idle", {"phase": "hydrating", "percent": 40, "entriesTotal": 9}), ("idle", {"phase": "hydrating", "percent": 95, "entriesTotal": 9}), ("idle", None)])
+        bt.info = lambda vmid: (lambda state, hydration: {"state": state, "hydration": hydration, "hydrated": hydration is None})(*next(phases))
+        spent, pauses = {}, []
+        self.saved["wait_ready"]("a", spent, clock=lambda: self.now, pause=lambda seconds: (pauses.append(seconds), setattr(self, "now", self.now + seconds)))
+        self.assertEqual(spent, {"boot": 0, "folding": bt.POLL_SECONDS, "hydrating": bt.POLL_SECONDS + bt.FINAL_POLL_SECONDS, "entries": 9})
+        self.assertEqual(pauses, [bt.POLL_SECONDS, bt.POLL_SECONDS, bt.FINAL_POLL_SECONDS])
+
+    def test_hydration_that_crawls_fails_as_a_stall_while_one_that_changes_phase_does_not(self):
+        crawl = iter(range(10 ** 6))
+        bt.info = lambda vmid: {"state": "idle", "hydrated": False, "hydration": {"phase": "hydrating", "entriesDone": 10 * next(crawl), "entriesTotal": 100000}}
+        with self.assertRaisesRegex(bt.Failure, "stalled: .* entries in 180 s, under 0.5% of 100000, in its hydrating phase"):
+            self.saved["wait_ready"]("a", clock=lambda: self.now, pause=lambda seconds: setattr(self, "now", self.now + seconds))
+        self.assertLessEqual(self.now, bt.STALL_SECONDS + bt.POLL_SECONDS)
+        phases = iter(["sysdelta", "hydrating", "degraded", "reconciling", None])
+        bt.info = lambda vmid: (lambda phase: {"state": "idle", "hydrated": phase is None, "hydration": {"phase": phase, "entriesDone": 5, "entriesTotal": 100000}})(next(phases))
+        self.now = 0.0
+        self.saved["wait_ready"]("a", clock=lambda: self.now, pause=lambda seconds: setattr(self, "now", self.now + bt.STALL_SECONDS - 1))
+
+    def test_a_vm_woken_before_the_run_is_taken_while_it_starts_and_waited_for(self):
+        fake = self.use(FakeBoat([vm("a", "starting"), vm("b", "stopped")]))
+        fake.starting["a"] = 2
+        self.state.update("a", woken=time.time() - 30)
+        record = {}
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", record)
+        lease.end()
+        lock.close()
+        self.assertEqual(vmid, "a")
+        self.assertNotIn("resume", [call[0] for call in fake.calls])
+        self.assertGreaterEqual(record["woken"], 30)
+        self.assertIsNone(self.state.entry("a")["woken"])
+        self.assertNotIn("resumed", record)
+        self.assertIn("boot", record["readiness"])
+
     def test_a_refused_resume_passes_the_vm_by_without_cooling_it(self):
         fake = self.use(FakeBoat([vm("a", "stopped"), vm("b", "stopped")]))
         fake.refused.add("a")
@@ -578,6 +638,37 @@ class Acquire(Harness):
         lock.close()
         self.assertEqual((vmid, [item["vm"] for item in record["passed_over"]]), ("b", ["a"]))
         self.assertFalse(self.state.cooling("a", 0))
+
+    def test_an_image_too_big_for_the_size_asked_is_cloned_large_and_a_refusal_names_boats_reason(self):
+        fake = self.use(FakeBoat([]))
+        fake.too_small = {"default"}
+        record = {}
+        held = []
+        create = fake.boat
+
+        def boat(*args, **kwargs):
+            if args[0] == "new":
+                try:
+                    self.state.waking("lane").close()
+                    held.append(False)
+                except OSError:
+                    held.append(True)
+            return create(*args, **kwargs)
+
+        bt.boat = boat
+        with mock.patch.object(bt.time, "sleep") as sleep, mock.patch.object(bt.time, "time", lambda: 1000.0):
+            vmid, lock, lease, _ = bt.acquire(self.state, "lane", "default", "t", record)
+            lease.end()
+            lock.close()
+            self.assertEqual((vmid, record["vm_type"], record["created"]), ("n", "large", True))
+            self.assertEqual([call[call.index("--type") + 1] for call in fake.calls if call[0] == "new"], ["default", "large"])
+            self.assertEqual(held, [True, True])
+            self.assertEqual(len(sleep.call_args_list), 1)
+            self.assertAlmostEqual(sleep.call_args.args[0], bt.CREATE_SPACING_SECONDS, places=6)
+            fake = self.use(FakeBoat([]))
+            fake.too_small = {"default", "large"}
+            with self.assertRaisesRegex(bt.Failure, "as a large VM .*does not fit any available 'large' machine"):
+                bt.acquire(self.state, "lane", "default", "t", {})
 
     def test_resume_never_shrinks_a_large_vm(self):
         fake = self.use(FakeBoat([vm("a", "stopped", "large")]))
@@ -632,14 +723,96 @@ class Acquire(Harness):
         self.assertEqual(self.state.registered(), ["b"])
         self.assertEqual(fake.ttl_calls("a"), [bt.LEASE_SECONDS, bt.IDLE_SECONDS])
 
+    def test_a_vm_whose_toolchain_does_not_run_is_quarantined_and_one_that_fails_to_initialize_is_cooled(self):
+        fake = self.use(FakeBoat([vm("a"), vm("b"), vm("c")]))
+        for vmid in "abc":
+            self.state.update(vmid, used={"a": 0, "b": 1, "c": 2}[vmid])
+        fake.acquire_status.update(a=bt.BROKEN_TOOLCHAIN, b=127)
+        record = {}
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", record)
+        lease.end()
+        lock.close()
+        self.assertEqual(vmid, "c")
+        self.assertEqual([item["vm"] for item in record["passed_over"]], ["a", "b"])
+        self.assertTrue(all("claim" in item["readiness"] for item in record["passed_over"]))
+        self.assertEqual((self.state.quarantined(), self.state.registered()), (["a"], ["b", "c"]))
+        self.assertTrue(self.state.cooling("b", time.time()))
+        self.assertEqual([call[1:] for call in fake.remote_calls if call[1] == "release"], [("release", "t")])
+
+    def test_a_woken_vm_passed_by_keeps_its_wake_lead(self):
+        fake = self.use(FakeBoat([vm("a"), vm("b")]))
+        self.state.update("a", woken=time.time() - 30, used=0)
+        self.state.update("b", used=1)
+        fake.acquire_status["a"] = 127
+        record = {}
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", record)
+        lease.end()
+        lock.close()
+        self.assertEqual(vmid, "b")
+        self.assertGreaterEqual(record["passed_over"][0]["woken"], 30)
+        self.assertNotIn("woken", record)
+
+    def test_a_claim_step_that_fails_or_answers_garbage_passes_the_vm_by(self):
+        fake = self.use(FakeBoat([vm("a"), vm("b"), vm("c")]))
+        for index, vmid in enumerate("abc"):
+            self.state.update(vmid, used=index)
+        fake.acquire_output["b"] = "null"
+        install = bt.install_runner
+
+        def install_runner(state, vmid):
+            if vmid == "a":
+                raise bt.Failure("Boat exec failed (1): upload lost")
+            install(state, vmid)
+
+        record = {}
+        with mock.patch.object(bt, "install_runner", install_runner):
+            vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", record)
+        lease.end()
+        lock.close()
+        self.assertEqual(vmid, "c")
+        self.assertEqual([item["vm"] for item in record["passed_over"]], ["a", "b"])
+        self.assertIn("upload lost", record["passed_over"][0]["reason"])
+        self.assertTrue(all("claim" in item["readiness"] for item in record["passed_over"]))
+        self.assertTrue(self.state.cooling("a", time.time()) and self.state.cooling("b", time.time()))
+        self.assertEqual([call[0] for call in fake.remote_calls if call[1] == "release"], ["a", "b"])
+
+    def test_an_image_whose_clones_cannot_build_is_cloned_three_times_at_most(self):
+        fake = self.use(FakeBoat([]))
+        fake.acquire_status["n"] = bt.BROKEN_TOOLCHAIN
+        with mock.patch.object(bt.time, "sleep") as sleep, mock.patch.object(bt.time, "time", lambda: 1000.0), self.assertRaisesRegex(bt.Failure, "three attempts"):
+            bt.acquire(self.state, "lane", "large", "t", {})
+        self.assertEqual(sum(call[0] == "new" for call in fake.calls), 3)
+        self.assertEqual(len(sleep.call_args_list), 2)
+
+    def test_a_clone_its_wake_made_counts_like_one_the_run_made(self):
+        fake = self.use(FakeBoat([]))
+        fake.acquire_status["n"] = bt.BROKEN_TOOLCHAIN
+        with mock.patch.object(bt.time, "sleep"), mock.patch.object(bt.time, "time", lambda: 1000.0):
+            self.assertEqual(bt.wake(self.state, "lane", "large"), ("n", "cloned"))
+            with self.assertRaisesRegex(bt.Failure, "three attempts"):
+                bt.acquire(self.state, "lane", "large", "t", {})
+        self.assertEqual(sum(call[0] == "new" for call in fake.calls), 3)
+
+    def test_quarantined_vms_do_not_use_up_the_attempts(self):
+        fake = self.use(FakeBoat([vm(vmid) for vmid in "abcd"]))
+        for index, vmid in enumerate("abcd"):
+            self.state.update(vmid, used=index)
+        fake.acquire_status.update(a=bt.BROKEN_TOOLCHAIN, b=bt.BROKEN_TOOLCHAIN, c=bt.BROKEN_TOOLCHAIN)
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", {})
+        lease.end()
+        lock.close()
+        self.assertEqual((vmid, self.state.quarantined()), ("d", ["a", "b", "c"]))
+
     def test_a_vm_still_finishing_a_job_is_passed_by_and_stays_in_the_pool(self):
         fake = self.use(FakeBoat([vm("a"), vm("b")]))
         fake.acquire_status["a"] = bt.REMOTE_CLAIMED
         fake.acquire_output["a"] = "busy\n"
-        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", {})
+        record = {}
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", record)
         lease.end()
         lock.close()
         self.assertEqual(vmid, "b")
+        self.assertEqual([(item["vm"], "claim" in item["readiness"]) for item in record["passed_over"]], [("a", True)])
         self.assertEqual(self.state.quarantined(), [])
         self.assertEqual(self.state.registered(), ["a", "b"])
 
@@ -653,6 +826,212 @@ class Acquire(Harness):
         self.assertEqual(fake.ttl_calls("a")[-1], bt.IDLE_SECONDS)
         lease.thread.join()
         self.assertEqual(len(fake.calls), count)
+
+
+class Wake(Harness):
+    def test_resumes_the_vm_the_run_would_take_without_claiming_or_waiting(self):
+        fake = self.use(FakeBoat([vm("a", "stopped"), vm("b", "stopped"), vm("c", "stopped")]))
+        rebuilds = {"a": (5, 0), "b": (0, 0), "c": (0, 0)}.get
+        with self.state.lock("b"):
+            self.assertEqual(bt.wake(self.state, "lane", "large", rebuilds), ("c", "resuming"))
+        resume = next(call for call in fake.calls if call[0] == "resume")
+        self.assertEqual(resume[:4], ("resume", "c", "--ttl", str(bt.LEASE_SECONDS)))
+        self.assertEqual(fake.single, ["resume"])
+        self.assertIn("--no-wait", resume)
+        self.assertNotIn("info", [call[0] for call in fake.calls])
+        self.assertEqual(fake.remote_calls, [])
+        self.assertGreater(self.state.entry("c")["woken"], 0)
+        self.state.lock("c").close()
+
+    def test_clones_the_vm_the_run_would_clone_and_leaves_it_free(self):
+        fake = self.use(FakeBoat([vm("a", "stopping")]))
+        clock = [1000.0]
+        bt.atomic_json(self.state.claims / "create-schedule.json", {"next": 1120.0})
+        with mock.patch.object(bt.time, "time", lambda: clock[0]), mock.patch.object(bt.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+            self.assertEqual(bt.wake(self.state, "lane", "default"), ("n", "cloned"))
+        self.assertEqual(self.state.entry("n")["woken"], 1120.0)
+        self.state.lock("n").close()
+        self.state.allocator().close()
+        self.assertEqual(sum(call[0] == "new" for call in fake.calls), 1)
+
+    def test_a_run_that_would_clone_waits_for_the_vm_its_wake_is_starting(self):
+        fake = self.use(FakeBoat([]))
+        waking = self.state.waking("lane")
+
+        waited = []
+
+        def finish(seconds):
+            waited.append(seconds)
+            fake.vms["w"] = vm("w", hydrated=False)
+            bt.atomic_json(self.state.pool / "w.json", {"id": "w", "snapshot": bt.SNAPSHOT})
+            waking.close()
+
+        with mock.patch.object(bt.time, "sleep", finish):
+            vmid, _, lock, created = bt.choose(self.state, "lane", "large")
+        lock.close()
+        self.assertEqual(len(waited), 1)
+        self.assertEqual((vmid, created), ("w", False))
+        self.assertNotIn("new", [call[0] for call in fake.calls])
+
+    def test_a_wake_after_its_worktrees_run_began_starts_nothing(self):
+        fake = self.use(FakeBoat([vm("a", "stopped")]))
+        first, second = self.state.running("lane", "1"), self.state.running("lane", "2")
+        first.close()
+        self.assertEqual(bt.wake(self.state, "lane", "large"), (None, "a run of this worktree is under way"))
+        second.close()
+        self.assertEqual(fake.calls, [])
+        self.assertFalse(self.state.run_active("lane"))
+        self.assertEqual(list(self.state.lanes.glob("lane.running-*")), [])
+
+    def test_a_wake_whose_worktree_ran_since_it_began_starts_nothing(self):
+        fake = self.use(FakeBoat([vm("a")]))
+        bt.atomic_json(self.state.lanes / "lane.ended.json", {"at": 2000.0})
+        self.state.update("a", used=5000.0)
+        self.assertEqual(bt.wake(self.state, "lane", "large", begun=1000.0), (None, "a run of this worktree ended since the wake began"))
+        self.assertEqual(bt.wake(self.state, "lane", "large", begun=3000.0), ("a", "idle"))
+        self.assertEqual(fake.ttl_calls("a"), [bt.LEASE_SECONDS])
+        self.assertEqual(fake.single, ["extend"])
+
+    def test_a_run_takes_its_marker_from_a_check_holding_it_for_a_moment(self):
+        held = bt.Lock(self.state.lanes / "lane.running-t")
+        with mock.patch.object(bt.time, "sleep", lambda seconds: held.close()) :
+            self.state.running("lane", "t").close()
+
+    def test_a_run_about_to_resume_a_vm_waits_for_its_worktrees_wake(self):
+        fake = self.use(FakeBoat([vm("s", "stopped")]))
+        waking = self.state.waking("lane")
+
+        def finish(seconds):
+            fake.vms["w"] = vm("w", hydrated=False)
+            bt.atomic_json(self.state.pool / "w.json", {"id": "w", "snapshot": bt.SNAPSHOT})
+            waking.close()
+
+        with mock.patch.object(bt.time, "sleep", finish):
+            vmid, _, lock, created = bt.choose(self.state, "lane", "large")
+        lock.close()
+        self.assertEqual((vmid, created), ("w", False))
+
+    def test_a_refused_resume_wakes_the_next_vm(self):
+        fake = self.use(FakeBoat([vm("a", "stopped"), vm("b", "stopped")]))
+        self.state.update("a", used=0)
+        self.state.update("b", used=1)
+        fake.refused.add("a")
+        self.assertEqual(bt.wake(self.state, "lane", "large"), ("b", "resuming"))
+
+    def test_a_refused_extend_wakes_the_next_vm(self):
+        fake = self.use(FakeBoat([vm("a"), vm("b", "stopped")]))
+        extend = fake.boat
+
+        def boat(*args, **kwargs):
+            if args[0] == "extend" and args[1] == "a":
+                raise bt.Failure("Boat extend failed (1): refused")
+            return extend(*args, **kwargs)
+
+        bt.boat = boat
+        self.assertEqual(bt.wake(self.state, "lane", "large"), ("b", "resuming"))
+
+    def test_leaves_alone_a_vm_that_already_runs_or_starts(self):
+        for state in ("idle", "starting"):
+            fake = self.use(FakeBoat([vm("a", state), vm("b", "stopped")]))
+            self.assertEqual(bt.wake(self.state, "lane", "large"), ("a", state))
+            self.assertNotIn("resume", [call[0] for call in fake.calls])
+            self.assertEqual(fake.ttl_calls("a"), [bt.LEASE_SECONDS])
+
+    def test_the_command_takes_the_arguments_of_the_run_that_follows(self):
+        fake = self.use(FakeBoat([vm("a", "stopped")]))
+        repo = self.root / "repo"
+        (repo / "crates" / "x").mkdir(parents=True)
+        (repo / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/*"]\n')
+        (repo / "crates" / "x" / "Cargo.toml").write_text('[package]\nname = "x"\n')
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        cwd = os.getcwd()
+        os.chdir(repo)
+        os.environ["BOAT_STATE_DIR"] = str(self.state.root)
+        try:
+            self.assertEqual(bt.main(["wake", "check", "--all-targets", "-p", "x"]), 0)
+            self.assertEqual(bt.main(["wake", "snapshot"]), 2)
+            self.assertEqual(bt.main(["wake", "check", "-j", "4"]), 2)
+            with mock.patch.dict(os.environ, {"BOAT_MACHINE_TYPE": "larg"}):
+                self.assertEqual(bt.main(["wake", "ui"]), 2)
+        finally:
+            os.chdir(cwd)
+            del os.environ["BOAT_STATE_DIR"]
+        self.assertEqual([call[1] for call in fake.calls if call[0] == "resume"], ["a"])
+        self.assertFalse((self.state.logs / "timings.jsonl").exists())
+
+
+class ToolchainChannel(unittest.TestCase):
+    def test_the_channel_is_read_and_a_file_that_cannot_be_read_names_none(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "rust-toolchain.toml"
+            path.write_text('[toolchain]\nchannel = "1.96.0"\n', encoding="utf-8")
+            self.assertEqual(bt.toolchain_channel(Path(folder)), "1.96.0")
+            path.write_text('[toolchain]\nchannel = "1.96.0"\n', encoding="utf-16")
+            self.assertEqual(bt.toolchain_channel(Path(folder)), "")
+            path.unlink()
+            self.assertEqual(bt.toolchain_channel(Path(folder)), "")
+
+
+class AtomicJson(unittest.TestCase):
+    def test_a_replace_a_reader_blocks_for_a_moment_still_lands(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "entry.json"
+            replace, refusals = Path.replace, [PermissionError(5, "Access is denied")] * 2
+
+            def blocked(self, target):
+                if refusals:
+                    raise refusals.pop()
+                return replace(self, target)
+
+            with mock.patch.object(Path, "replace", blocked), mock.patch.object(bt.time, "sleep") as sleep:
+                bt.atomic_json(path, {"a": 1})
+            self.assertEqual((json.loads(path.read_text()), len(sleep.call_args_list)), ({"a": 1}, 2))
+
+
+class RemoteToolchain(unittest.TestCase):
+    """The claim's Cargo probe, from boat_remote.py's own definitions."""
+
+    def setUp(self):
+        text = (bt.TOOLS / "boat_remote.py").read_text(encoding="utf-8")
+        self.remote = {"__name__": "boat_remote_definitions"}
+        with mock.patch.dict(sys.modules, {"fcntl": types.ModuleType("fcntl")}):
+            exec(compile(text.split("\nmode = sys.argv[1]\n")[0], "boat_remote.py", "exec"), self.remote)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        (Path(self.temp.name) / "toolchains" / "1.96.0-x86_64-unknown-linux-gnu").mkdir(parents=True)
+
+    def probe(self, channel, returncode=0, stderr="", raises=None):
+        result = types.SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)
+        with mock.patch.dict(os.environ, {"RUSTUP_HOME": self.temp.name}), mock.patch.object(subprocess, "run", return_value=result, side_effect=raises) as run:
+            fault = self.remote["toolchain_fault"](channel)
+        self.assertTrue(all(call.args[0] == ["cargo", "--version"] for call in run.call_args_list))
+        return fault, [call.kwargs["env"]["RUSTUP_TOOLCHAIN"] for call in run.call_args_list]
+
+    def test_an_installed_toolchain_whose_cargo_fails_is_named_and_one_the_vm_lacks_is_rustups(self):
+        missing = "error: 'cargo' is not installed for the toolchain '1.96.0-x86_64-unknown-linux-gnu'."
+        broken = bt.BROKEN_TOOLCHAIN
+        self.assertEqual(self.probe("1.96.0", 1, missing), ((broken, missing), ["1.96.0"]))
+        self.assertEqual(self.probe("1.96.0-x86_64-unknown-linux-gnu", 1, missing), ((broken, missing), ["1.96.0-x86_64-unknown-linux-gnu"]))
+        self.assertEqual(self.probe("1.96.0", 1), ((broken, "exit 1"), ["1.96.0"]))
+        self.assertEqual(self.probe("1.96.0"), ((None, None), ["1.96.0"]))
+        self.assertEqual(self.probe("1.97.0", 1), ((None, None), []))
+        self.assertEqual(self.probe("", 1), ((None, None), []))
+
+    def test_a_linked_toolchain_is_probed_and_a_launch_that_fails_for_now_quarantines_nothing(self):
+        (Path(self.temp.name) / "toolchains" / "local-ci").mkdir()
+        broken, unproven = bt.BROKEN_TOOLCHAIN, self.remote["UNPROVEN_TOOLCHAIN"]
+        self.assertEqual(self.probe("local-ci", 1, "broken"), ((broken, "broken"), ["local-ci"]))
+        for error in (FileNotFoundError(2, "No such file", "cargo"), PermissionError(13, "Permission denied", "cargo"), OSError(8, "Exec format error", "cargo")):
+            self.assertEqual(self.probe("1.96.0", raises=error)[0], (broken, repr(error)))
+        for error in (BlockingIOError(11, "Resource temporarily unavailable"), OSError(12, "Cannot allocate memory")):
+            self.assertEqual(self.probe("1.96.0", raises=error)[0], (unproven, repr(error)))
+        self.assertEqual(self.probe("1.96.0", raises=subprocess.TimeoutExpired("cargo", 60))[0][0], unproven)
+        self.assertEqual(self.probe("1.96.0", -11), ((unproven, "cargo --version was killed by signal 11"), ["1.96.0"]))
+        self.assertNotIn(unproven, {bt.BROKEN_TOOLCHAIN, bt.REMOTE_CLAIMED, 0})
+
+    def test_an_exec_reply_without_output_reads_as_empty(self):
+        with mock.patch.object(bt, "boat", return_value=(OK, [{"exitCode": 0, "stdout": None}])):
+            self.assertEqual(bt.quick("a", "acquire", "t"), (0, ""))
 
 
 class Run(Harness):
@@ -679,12 +1058,18 @@ class Run(Harness):
     def test_compile_errors_pass_through_and_leave_the_vm_idle(self):
         fake = self.use(FakeBoat([vm("a")]))
         fake.cargo_exit = 101
+        (self.repo / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.96.0"\n')
         self.assertEqual(bt.main(["check", "-p", "x", "-p", "y"]), 101)
+        self.assertIn(("a", "acquire", fake.remote_calls[0][2], "1.96.0"), fake.remote_calls)
+        self.assertEqual(list(self.state.lanes.glob("*.running-*")), [])
         record = self.last_record()
         self.assertEqual((record["exit"], record["cargo_exit"], record["completed"], record["vm"]), (101, 101, True, "a"))
         self.assertEqual(set(record["phases"]), {"allocate", "sync", "run"})
         self.assertEqual(fake.ttl_calls("a")[-1], bt.IDLE_SECONDS)
         self.state.lock("a").close()
+        fake.remote_calls.clear()
+        self.assertEqual(bt.main(["ui"]), 0)
+        self.assertEqual([len(call) for call in fake.remote_calls if call[1] == "acquire"], [3])
 
     def test_a_failed_sync_is_a_boat_failure_whose_job_released_the_claim(self):
         fake = self.use(FakeBoat([vm("a")]))
