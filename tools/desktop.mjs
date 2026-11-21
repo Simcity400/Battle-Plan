@@ -150,10 +150,12 @@ try {
       "../../tools/sign-release.ps1", "%1"] };
     const desktop = metadata.packages.find((member) => path.relative(path.join(root, "crates", "desktop"), path.dirname(member.manifest_path)) === "");
     if (!desktop) throw new Error("Cargo metadata names no package in crates/desktop.");
+    const nightly = desktop.version.includes("-nightly.");
+    const windows = { ...(authenticode ? { signCommand } : {}), ...(nightly ? { nsis: { installerIcon: "icons/nightly.ico" } } : {}) };
     config = { build: { beforeBuildCommand: null }, bundle: { resources,
-      ...(desktop.version.includes("-nightly.") ? { icon: ["icons/nightly.ico", "icons/nightly.png"] } : {}),
+      ...(nightly ? { icon: ["icons/nightly.ico", "icons/nightly.png"] } : {}),
       ...(updaterArtifacts ? { createUpdaterArtifacts: true } : {}),
-      ...(authenticode ? { windows: { signCommand } } : {}) } };
+      ...(Object.keys(windows).length ? { windows } : {}) } };
   }
   const args = mode === "build"
     ? [...cliArgs, ...(separator < 0 && forwardedRunnerArgs.length === 0 ? [] : ["--", ...forwardedRunnerArgs])]
