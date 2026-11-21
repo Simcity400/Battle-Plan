@@ -129,6 +129,8 @@ const MOVED_EMPTY: i32 = 506;
 const DELAYED_BLOCKED: i32 = 538;
 const DELAYED_UNREAD: i32 = 539;
 const DELAYED: i32 = 540;
+const RETOTALLED_BLOCKED: i32 = 562;
+const RETOTALLED: i32 = 563;
 const NO_CHANGES: i32 = 26;
 
 fn put_daily(store: &mut Store, hour: i32, row: &CountryPowerDailyRow) {
@@ -148,9 +150,9 @@ fn edit(store: &mut Store, hour: i32) {
             testing::put(store, TableId::CountryCommandPower, &CountryCommandPowerRow { canonical_slot: slot, ..Default::default() }, TEXTS).unwrap();
         }
     }
-    if matches!(hour, GROWN_BLOCKED | SHRUNK_BLOCKED | OVERNIGHT_BLOCKED | REPLACED_BLOCKED | REVISED_BLOCKED | DEFERRED_BLOCKED | CONTRADICTED_BLOCKED | DELAYED_BLOCKED) {
+    if matches!(hour, GROWN_BLOCKED | SHRUNK_BLOCKED | OVERNIGHT_BLOCKED | REPLACED_BLOCKED | REVISED_BLOCKED | DEFERRED_BLOCKED | CONTRADICTED_BLOCKED | DELAYED_BLOCKED | RETOTALLED_BLOCKED) {
         store.status(TableId::CountryLinks.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
-    } else if matches!(hour, GROWN | SHRUNK | OVERNIGHT | REPLACED | REVISED | DEFERRED | CONTRADICTED | DELAYED_UNREAD) {
+    } else if matches!(hour, GROWN | SHRUNK | OVERNIGHT | REPLACED | REVISED | DEFERRED | CONTRADICTED | DELAYED_UNREAD | RETOTALLED) {
         complete(store, TableId::CountryLinks);
     }
     if hour == DEFERRED {
@@ -158,7 +160,7 @@ fn edit(store: &mut Store, hour: i32) {
     } else if hour == DEFERRED + 1 {
         complete(store, TableId::CountryPowerDailyCosts);
     }
-    if hour == DELAYED_UNREAD {
+    if matches!(hour, DELAYED_UNREAD | RETOTALLED) {
         store.status(TableId::CountryPowerDaily.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
     } else if matches!(hour, GROWN | SHRUNK | OVERNIGHT | CONTRADICTED | DELAYED) {
         complete(store, TableId::CountryPowerDaily);
@@ -340,7 +342,7 @@ fn edit(store: &mut Store, hour: i32) {
             put_daily(store, hour, &daily(168, 3 * Q, Q / 2 + Q / 10, 168));
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(168, 1, PowerDailyCostKind::MioResearch, Q / 10, 168), TEXTS).unwrap();
         }
-        192 | 216 | 240 | 288 | REPLACED | 336 | 384 | 408 | 456 | 480 | 504 | 528 => {
+        192 | 216 | 240 | 288 | REPLACED | 336 | 384 | 408 | 456 | 480 | 504 | 528 | 552 => {
             put_daily(store, hour, &daily(hour, 3 * Q, Q / 2 + Q / 10, hour as u64));
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(hour, 0, PowerDailyCostKind::Relation, Q / 2, hour as u64), TEXTS).unwrap();
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(hour, 1, PowerDailyCostKind::MioResearch, Q / 10, hour as u64), TEXTS).unwrap();
@@ -364,6 +366,7 @@ fn edit(store: &mut Store, hour: i32) {
                 testing::put(store, TableId::CountryLinks, &CountryLinkRow { id, canonical_slot: slot }, TEXTS).unwrap();
             }
         }
+        RETOTALLED_BLOCKED => put_daily(store, hour, &daily(552, 3 * Q, Q / 5, 552)),
         EMPTIED_KEPT => {
             testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32).unwrap();
             testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
@@ -748,6 +751,9 @@ fn a_country_that_changes_holders_mid_day_takes_its_open_batch_with_it() {
     assert_eq!((delayed_part(&unread, 0), delayed_part(&unread, 1)), (None, None), "rows gone during a gap with no daily application read to confirm them leave the parts unknown");
     let (delayed, _) = through(0..=DELAYED);
     assert_eq!((delayed_part(&delayed, 0), delayed_part(&delayed, 1)), (None, None), "and a later daily read gives them back no amount");
+    let (retotalled, _) = through(0..=RETOTALLED);
+    assert_eq!((delayed_part(&retotalled, 0), delayed_part(&retotalled, 1)), (Some(Q / 2), Some(Q / 10)), "unchanged rows keep their parts");
+    assert_eq!(cell::<Coverage>(&retotalled, TableId::PowerSpendCoverage, 60, "daily_mismatch"), Some(i64::from(Coverage::STEADY_MISMATCH)), "but a daily total changed during the gap names the holder's mismatch");
 }
 
 #[test]

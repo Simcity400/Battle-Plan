@@ -609,7 +609,7 @@ impl PowerLedger {
                     Recorded::NotRecorded => None,
                 });
                 let agrees = applied.is_some_and(|daily| held_sum.is_some() && daily.pp_cost_raw.map(i128::from) == held_sum);
-                let contradicted = applied.is_some() && !agrees;
+                let contradicted = applied.is_some_and(|daily| held_sum.zip(daily.pp_cost_raw).is_some_and(|(sum, cost)| sum != i128::from(cost)));
                 match found.remove(&sequence) {
                     Some((raw, rows)) if !ambiguous.contains(&sequence) => {
                         self.reconcile_batch(hour, own, witnesses, pending, Batch { holder, day, sole, moved: moved.contains(&raw), raw, rows, held })?;
@@ -676,6 +676,9 @@ impl PowerLedger {
             }
         }
         if !changed {
+            if !matched {
+                pending.daily.insert(holder, raw);
+            }
             return Ok(());
         }
         if moved {
