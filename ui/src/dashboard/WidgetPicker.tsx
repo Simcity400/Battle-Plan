@@ -104,7 +104,7 @@ function Catalogue({ open, placed, ...shared }: Shared & { open: boolean; placed
     if (event.key === '/' && event.target !== search.current) { event.preventDefault(); search.current?.focus(); }
   }}>
     <label className="widget-catalogue-search"><Icon name="search" />
-      <input ref={search} type="search" data-popover-autofocus aria-label="Search widgets" placeholder={`Search ${total === 1 ? '1 widget' : `${total} widgets`}…`}
+      <input ref={search} type="search" data-popover-autofocus aria-label="Search widgets" placeholder={`Search ${total === 1 ? '1 widget' : `${total} widgets`}`}
         value={query} onChange={event => { setQuery(event.currentTarget.value); setCategory(view => view === ON_PAGE ? view : null); }}
         onKeyDown={event => { if (event.key === 'Escape' && query) { event.preventDefault(); event.stopPropagation(); setQuery(''); } }} />
       <kbd aria-hidden="true">/</kbd></label>

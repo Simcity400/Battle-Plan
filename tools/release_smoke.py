@@ -1,5 +1,5 @@
 """The release smoke (Python 3.11+): the installer's layout holds exactly the shipped files, and the
-installed Battle Plan opens a recording and draws its map. Main's CI runs the layout on each release
+installed BattlePlan opens a recording and draws its map. Main's CI runs the layout on each release
 candidate (`--layout-only`: a hosted runner has no game to draw from), and tools/release.py runs it
 again on the signed installer it publishes.
 

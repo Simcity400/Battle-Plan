@@ -32,12 +32,15 @@ test('choices keep the first entry per tag, sort by name and filter by a precomp
     { id: '1', tag: 'GER', name: 'Germany', observedBranchId: '2', observedHour: 1 },
     { id: '2', tag: 'ENG', name: 'United Kingdom', observedBranchId: '1', observedHour: 5 },
     { id: '3', tag: 'D01', name: '', observedBranchId: '1', observedHour: 5 },
+    { id: '4', tag: 'TUR', name: '', observedBranchId: '1', observedHour: 5 },
   ]);
-  assert.deepEqual(choices.map(({ country }) => country.tag), ['D01', 'GER', 'ENG']);
+  assert.deepEqual(choices.map(({ country }) => country.tag), ['D01', 'GER', 'TUR', 'ENG'], 'a country with no recorded name sorts by its tag');
   assert.equal(choices[1].country.observedBranchId, '1');
   assert.deepEqual(filterChoices(choices, '  kingdom ').map(({ country }) => country.tag), ['ENG']);
   assert.deepEqual(filterChoices(choices, 'd01').map(({ country }) => country.tag), ['D01']);
   assert.equal(filterChoices(choices, ''), choices);
+  const shown = ({ country }: { country: { tag: string } }) => country.tag === 'GER' ? 'German Reich' : '';
+  assert.deepEqual(filterChoices(choices, 'reich', shown).map(({ country }) => country.tag), ['GER'], 'the name shown at the playback date is searchable too');
   const many = countryChoices(Array.from({ length: 5_000 }, (_, index) => country(index)));
   assert.deepEqual(filterChoices(many, 'westmarch-4999').map(({ country }) => country.tag), ['T4999']);
 });

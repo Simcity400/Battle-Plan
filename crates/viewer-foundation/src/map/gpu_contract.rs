@@ -537,7 +537,7 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
     }
     let features = adapter.features() & wanted;
     wgpu::DeviceDescriptor {
-        label: Some("Battle Plan viewer"),
+        label: Some("BattlePlan viewer"),
         required_features: features,
         required_limits: required_limits(&limits, base_limits),
         ..Default::default()

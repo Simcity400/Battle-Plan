@@ -51,7 +51,7 @@ import ci_results
 ROOT = Path(__file__).resolve().parents[1]
 WORKTREE = REPORTS = MARKER = E2E_APP = E2E_STATE = None
 RUNNER_MARK = "daily-tests-runner"
-TASK = "Battle Plan daily tests"
+TASK = "BattlePlan daily tests"
 DEADLINE = datetime.timedelta(hours=18)
 GIT_TIMEOUT = 600
 CLEANUP = 120
@@ -959,7 +959,7 @@ def run(args):
 TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Tests Battle Plan's main branch once a day (tools/daily_tests.py).</Description>
+    <Description>Tests BattlePlan's main branch once a day (tools/daily_tests.py).</Description>
   </RegistrationInfo>
   <Triggers>
     <CalendarTrigger>

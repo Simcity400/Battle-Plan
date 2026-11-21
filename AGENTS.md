@@ -1,6 +1,6 @@
-# Working on Battle Plan
+# Working on BattlePlan
 
-Battle Plan records campaigns and replays them in a Windows app. The recording is the product: if it is wrong or silently incomplete, everything built on it is wrong.
+BattlePlan records campaigns and replays them in a Windows app. The recording is the product: if it is wrong or silently incomplete, everything built on it is wrong.
 
 Prefer simple systems and honest data. Understand the real constraint, then build the smallest model that makes correct behaviour unsurprising. Don't keep complexity because it exists, and don't add machinery because it looks thorough. Fight scope creep: do the task, completely, and no more.
 
@@ -14,7 +14,7 @@ If a rule here fights the task in front of you, say so and get a human sign-off 
 
 Use these words for these things.
 
-- **you** is the agent reading this file. **we** and **maintainers** are the people building Battle Plan. **user** is the person recording and watching campaigns.
+- **you** is the agent reading this file. **we** and **maintainers** are the people building BattlePlan. **user** is the person recording and watching campaigns.
 - **game** is the supported strategy game. **mod stack** is the mods and DLC a recording was made with.
 - **collector** is `collector.dll`, loaded into the game; it only reads game memory. **recorder** is the command-line recorder (`recorder.exe`) or the tray app (`battle-plan-recorder.exe`) that attaches the collector and writes the recording.
 - **spool** is the recoverable file written while recording. **recording** (or **replay**) is the published, indexed `.battleplan` file. **branch** is a continuous stretch of history; a load, a new session or a jump in time starts a new one.
@@ -87,7 +87,7 @@ All Rust is in `crates/`; names group by prefix.
 - A logic, data or format bug gets a failing test first, then the fix. A recording bug gets a `recorder-oracle-*` case that fails before the fix. A purely visual bug gets before/after captures and no test.
 - Tests never wait on sleeps or wall-clock time. Flaky tests are fixed, not retried. A skipped test needs a tracking issue on the line above: `// quarantine: #1234 why`.
 - Never run a suite. Run only the test you added or changed, where it needs no local Rust compile. GitHub CI runs the affected crates' tests; `ci check` runs them here only while `[local] heavy` is `run`.
-- Tests run once a day on this machine: the Windows task `Battle Plan daily tests` runs `tools/daily_tests.py` on `main` at 03:00. That run is the judge.
+- Tests run once a day on this machine: the Windows task `BattlePlan daily tests` runs `tools/daily_tests.py` on `main` at 03:00. That run is the judge.
 - A user-visible UI change gets one pass in the running app (`npm.cmd run dev`), done once by the primary agent after integrating. Subagents don't launch their own.
 
 ## Code

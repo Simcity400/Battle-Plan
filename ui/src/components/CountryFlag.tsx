@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { Icon } from './Icons';
+import './CountryFlag.css';
 import type { CountryFlagSize } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource } from '../dashboard/client';
 import { isFailedFact } from '../dashboard/countryFacts.ts';
@@ -50,7 +52,22 @@ export function showFlag(element: HTMLCanvasElement, image: FlagImage): () => vo
   return () => { live = false; resized?.unobserve(element); shown.delete(element); };
 }
 
-export function CountryFlag({ image }: { image?: FlagImage }) {
+interface Placeholder { tag?: string | null; name?: string | null; pending?: boolean; decorative?: boolean }
+
+function FlagPlaceholder({ tag, name, pending = false, decorative = false, className = '', detail, tooltip }: Placeholder & {
+  className?: string; detail?: string; tooltip?: string;
+}) {
+  const who = name?.trim() || tag?.trim();
+  const label = who ? `${who} flag ${pending ? 'loading' : 'unavailable'}` : tooltip;
+  const named = !!tag?.trim();
+  return <span className={`country-flag country-flag-unavailable${named ? ' has-tag' : ''} ${className}`.trimEnd()}
+    data-detail={detail} data-tooltip={tooltip}
+    {...decorative || !label ? { 'aria-hidden': true } : { role: 'img', 'aria-label': label }}>
+    {named ? <span className="country-flag-tag" aria-hidden="true">{tag!.trim()}</span> : <Icon name="flag" className="country-flag-glyph" />}
+  </span>;
+}
+
+export function CountryFlag({ image, ...placeholder }: { image?: FlagImage } & Placeholder) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const element = canvas.current;
@@ -58,17 +75,17 @@ export function CountryFlag({ image }: { image?: FlagImage }) {
     return showFlag(element, image);
   }, [image]);
   return image ? <canvas ref={canvas} className="country-flag country-flag-art" width={image.width} height={image.height} aria-hidden="true" />
-    : <span className="country-flag country-flag-unavailable" aria-hidden="true" />;
+    : <FlagPlaceholder {...placeholder} />;
 }
 
-export function CountryFlagUrl({ url, reason, detail, pending, className = '' }: {
+export function CountryFlagUrl({ url, reason, detail, pending, className = '', tag, name }: {
   url?: string; reason?: string; detail?: string; pending?: boolean; className?: string;
-  fixedSize?: boolean;
+  fixedSize?: boolean; tag?: string | null; name?: string | null;
 }) {
   const [failed, setFailed] = useState<string>();
   if (url && failed !== url) return <img className={`country-flag-art ${className}`} src={url} alt="" onError={() => setFailed(url)} />;
   const { text: tooltip } = countryFlagUnavailable(reason, pending, !!url && failed === url);
-  return <span className={`country-flag country-flag-unavailable ${className}`} role="img" data-detail={detail} aria-label={tooltip} data-tooltip={tooltip} />;
+  return <FlagPlaceholder className={className} tag={tag} name={name} pending={pending} detail={detail} tooltip={tooltip} />;
 }
 
 
@@ -79,5 +96,5 @@ export function SourceFlag({ client, source, tag, size = 'panel' }: { client: Da
   const read = tag && branch && hour != null ? { tag, branchId: branch.id, hour } : null;
   const flags = useFlagReads(client, source, read ? [read] : [], true, size);
   const flag = read ? flags.get(flagReadKey(read)) : undefined;
-  return <CountryFlag image={flag && !isFailedFact(flag) ? flag.image : undefined} />;
+  return <CountryFlag image={flag && !isFailedFact(flag) ? flag.image : undefined} tag={tag} name={country?.name} pending={!!read && flag === undefined} decorative />;
 }

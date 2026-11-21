@@ -1,5 +1,6 @@
 
-!define HOI_RECORDER "the game Recorder"
+!define HOI_RECORDER "BattlePlan Recorder"
+!define HOI_LEGACY_RECORDER "the game Recorder"
 !define HOI_RECORDER_EXE "battle-plan-recorder.exe"
 !define HOI_APP_EXE "replay-desktop.exe"
 !define HOI_RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
@@ -21,12 +22,12 @@ Var HoiStateFile
   System::Call 'kernel32::CreateMutexW(p 0, i 1, w "${HOI_GUARD}") p .r0 ?e'
   Pop $1
   ${If} $0 == 0
-    MessageBox MB_ICONEXCLAMATION|MB_OK "Setup could not claim Battle Plan's install (error $1), so it stopped." /SD IDOK
+    MessageBox MB_ICONEXCLAMATION|MB_OK "Setup couldn’t claim BattlePlan’s install (error $1), so it stopped." /SD IDOK
     Abort
   ${EndIf}
   ${If} $1 = 183
     System::Call 'kernel32::CloseHandle(p r0)'
-    MessageBox MB_ICONEXCLAMATION|MB_OK "Another Battle Plan setup is running. Let it finish, then run this one again." /SD IDOK
+    MessageBox MB_ICONEXCLAMATION|MB_OK "Another BattlePlan setup is running. Let it finish, then run this one again." /SD IDOK
     Abort
   ${EndIf}
   StrCpy $HoiGuard $0
@@ -114,16 +115,18 @@ Function HoiAbort
   ${EndIf}
 FunctionEnd
 
-!define MUI_WELCOMEPAGE_TEXT "This installs Battle Plan and Battle Plan Recorder for your Windows account. No administrator rights are needed.$\r$\n$\r$\nBattle Plan Recorder records your campaigns while the game runs.$\r$\n$\r$\n$_CLICK"
+!define MUI_WELCOMEPAGE_TEXT "This installs BattlePlan and BattlePlan Recorder for your Windows account. No administrator rights are needed.$\r$\n$\r$\nBattlePlan Recorder records your campaigns while the game runs.$\r$\n$\r$\n$_CLICK"
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW HoiWelcomeShow
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE HoiWelcomeLeave
 
 Function HoiWelcomeShow
-  ${NSD_CreateCheckbox} 120u 172u 195u 12u "Start Battle Plan Recorder when Windows starts"
+  ${NSD_CreateCheckbox} 120u 172u 195u 12u "Start BattlePlan Recorder when Windows starts"
   Pop $HoiStartCheckbox
   SetCtlColors $HoiStartCheckbox "" "${MUI_BGCOLOR}"
   ReadRegStr $0 HKCU "${HOI_RUN_KEY}" "${HOI_RECORDER}"
+  ReadRegStr $1 HKCU "${HOI_RUN_KEY}" "${HOI_LEGACY_RECORDER}"
   ${If} $0 != ""
+  ${OrIf} $1 != ""
   ${OrIfNot} ${FileExists} "$INSTDIR\${HOI_RECORDER_EXE}"
     ${NSD_Check} $HoiStartCheckbox
   ${EndIf}
@@ -133,7 +136,7 @@ Function HoiWelcomeLeave
   ${NSD_GetState} $HoiStartCheckbox $HoiStartRecorder
 FunctionEnd
 
-!macro HOI_CLOSE role exe name
+!macro HOI_CLOSE role exe name busy
   StrCpy $HoiRunning 0
   StrCpy $HoiAppClosed 0
   nsis_tauri_utils::FindProcessCurrentUser "${exe}"
@@ -163,14 +166,14 @@ FunctionEnd
         ${EndIf}
         ${If} $9 <> 0
         ${AndIf} $7 = 78
-          MessageBox MB_ICONEXCLAMATION|MB_OK "${name} is recording, saving a recording or attached to the game, so setup stopped. Run it again once ${name} is idle." /SD IDOK
+          MessageBox MB_ICONEXCLAMATION|MB_OK "${busy}" /SD IDOK
           Abort
         ${EndIf}
       ${EndIf}
       Sleep 500
       IntOp $5 $5 + 1
       ${If} $5 > 240
-        MessageBox MB_ICONEXCLAMATION|MB_OK "${name} did not close, so setup stopped. Close it, then run setup again." /SD IDOK
+        MessageBox MB_ICONEXCLAMATION|MB_OK "${name} didn’t close, so setup stopped. Close it, then run setup again." /SD IDOK
         Abort
       ${EndIf}
     ${Loop}
@@ -208,9 +211,9 @@ FunctionEnd
   !insertmacro HOI_TAKE_GUARD
   StrCpy $HoiClosing 1
   !insertmacro HOI_READ_STATE
-  !insertmacro HOI_CLOSE "recorder" "${HOI_RECORDER_EXE}" "${HOI_RECORDER}"
+  !insertmacro HOI_CLOSE "recorder" "${HOI_RECORDER_EXE}" "${HOI_RECORDER}" "${HOI_RECORDER} is recording, saving a recording or attached to the game, so setup stopped. Run it again once ${HOI_RECORDER} is idle."
   ${IfThen} $HoiRunning == 1 ${|} StrCpy $HoiRecorderRan 1 ${|}
-  !insertmacro HOI_CLOSE "dashboard" "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  !insertmacro HOI_CLOSE "dashboard" "${MAINBINARYNAME}.exe" "${PRODUCTNAME}" "${PRODUCTNAME} has unsaved changes, so setup stopped. Save or discard them in ${PRODUCTNAME}, then run setup again."
   ${IfThen} $HoiAppClosed == 1 ${|} StrCpy $HoiReplayRan 1 ${|}
 !macroend
 
@@ -218,9 +221,19 @@ FunctionEnd
   Delete "$INSTDIR\viewer.exe"
   RMDir /r "$INSTDIR\shader-tools"
   !insertmacro HOI_REMOVE_LICENSES
+  ${If} ${FileExists} "$SMPROGRAMS\${HOI_LEGACY_RECORDER}.lnk"
+    Delete "$SMPROGRAMS\${HOI_LEGACY_RECORDER}.lnk"
+    CreateShortcut "$SMPROGRAMS\${HOI_RECORDER}.lnk" "$INSTDIR\${HOI_RECORDER_EXE}"
+  ${EndIf}
   ${If} $UpdateMode <> 1
   ${AndIf} $NoShortcutMode <> 1
     CreateShortcut "$SMPROGRAMS\${HOI_RECORDER}.lnk" "$INSTDIR\${HOI_RECORDER_EXE}"
+  ${EndIf}
+  ReadRegStr $0 HKCU "${HOI_RUN_KEY}" "${HOI_LEGACY_RECORDER}"
+  DeleteRegValue HKCU "${HOI_RUN_KEY}" "${HOI_LEGACY_RECORDER}"
+  ${If} $HoiStartRecorder == ""
+  ${AndIf} $0 != ""
+    StrCpy $HoiStartRecorder 1
   ${EndIf}
   ${If} $HoiStartRecorder == 1
     WriteRegStr HKCU "${HOI_RUN_KEY}" "${HOI_RECORDER}" '"$INSTDIR\${HOI_RECORDER_EXE}"'
@@ -249,13 +262,13 @@ FunctionEnd
   ReadEnvStr $HoiStateFile "${HOI_STATE}"
   !insertmacro HOI_TAKE_GUARD
   StrCpy $HoiClosing 1
-  !insertmacro HOI_CLOSE "recorder" "${HOI_RECORDER_EXE}" "${HOI_RECORDER}"
+  !insertmacro HOI_CLOSE "recorder" "${HOI_RECORDER_EXE}" "${HOI_RECORDER}" "${HOI_RECORDER} is recording, saving a recording or attached to the game, so setup stopped. Run it again once ${HOI_RECORDER} is idle."
   StrCpy $HoiRecorderRan $HoiRunning
   ${If} $HoiRunning == 1
   ${AndIf} $HoiStateFile != ""
     WriteINIStr "$HoiStateFile" "closed" "recorder" "1"
   ${EndIf}
-  !insertmacro HOI_CLOSE "dashboard" "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  !insertmacro HOI_CLOSE "dashboard" "${MAINBINARYNAME}.exe" "${PRODUCTNAME}" "${PRODUCTNAME} has unsaved changes, so setup stopped. Save or discard them in ${PRODUCTNAME}, then run setup again."
   ${If} $HoiAppClosed == 1
   ${AndIf} $HoiStateFile != ""
     WriteINIStr "$HoiStateFile" "closed" "app" "1"
@@ -266,6 +279,8 @@ FunctionEnd
 !macro NSIS_HOOK_POSTUNINSTALL
   ${If} $UpdateMode <> 1
     Delete "$SMPROGRAMS\${HOI_RECORDER}.lnk"
+    Delete "$SMPROGRAMS\${HOI_LEGACY_RECORDER}.lnk"
     DeleteRegValue HKCU "${HOI_RUN_KEY}" "${HOI_RECORDER}"
+    DeleteRegValue HKCU "${HOI_RUN_KEY}" "${HOI_LEGACY_RECORDER}"
   ${EndIf}
 !macroend

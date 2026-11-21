@@ -98,7 +98,7 @@ impl Inner {
 
     fn ask_export(&mut self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<Result<String, String>>, String> {
         if self.map.is_none() || !self.status.ready || self.shutting_down {
-            return Err("The native map is not ready".into());
+            return Err("The map isn’t ready yet".into());
         }
         self.pending.action_room()?;
         let request = self.export_requests + 1;
@@ -172,7 +172,7 @@ impl NativeHost {
     pub fn select_view(&self, dashboard: bool) -> Result<(), String> {
         let mut inner = self.shared.lock().map_err(|error| error.to_string())?;
         if inner.shutting_down {
-            return Err("The application is closing".into());
+            return Err("BattlePlan is closing.".into());
         }
         inner.active_dashboard = dashboard;
         if dashboard {
@@ -203,7 +203,7 @@ impl NativeHost {
         {
             let mut inner = self.shared.lock().map_err(|error| error.to_string())?;
             if inner.shutting_down {
-                return Err("The application is closing".into());
+                return Err("BattlePlan is closing.".into());
             }
             inner.dashboard_views = Some(views.to_vec());
             if !inner.active_dashboard {
@@ -254,7 +254,7 @@ impl NativeHost {
             return Ok(());
         }
         if !inner.status.ready || inner.shutting_down {
-            return Err("The native map is not ready".into());
+            return Err("The map isn’t ready yet".into());
         }
         if matches!(
             action,
@@ -450,7 +450,7 @@ impl NativeHost {
         if let Some(playback) = playback {
             playback.validate()?;
         }
-        branch.parse::<u64>().map_err(|_| "Invalid replay branch")?;
+        branch.parse::<u64>().map_err(|_| "Invalid campaign history")?;
         if revision.is_empty() || revision.len() > 128 {
             return Err("A map seek must carry the revision its analysis read".into());
         }

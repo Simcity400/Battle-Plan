@@ -23,7 +23,7 @@ fn main() {
     if first.is_some_and(|arg| arg == replay::recorder_settings::STARTED_WITH_REPLAY) && startup::held_by_a_job() {
         return;
     }
-    if app_update::refused_during_setup("Battle Plan Recorder") {
+    if app_update::refused_during_setup("BattlePlan Recorder") {
         return;
     }
     let Some(_instance) = startup::single_instance() else {
@@ -68,7 +68,7 @@ fn main() {
             commands::choose_save_folder,
             commands::set_user_folder,
             commands::open_recordings_folder,
-            commands::open_details,
+            commands::show_session_files,
             commands::open_replay,
             commands::recordings,
             commands::act_on_waiting,
@@ -82,7 +82,7 @@ fn main() {
             app_update::commands::app_update_open_release,
         ])
         .build(tauri::generate_context!())
-        .expect("Could not start Battle Plan Recorder");
+        .expect("Could not start BattlePlan Recorder");
     app.run(|_, event| {
         if let tauri::RunEvent::ExitRequested {
             code: None, api, ..

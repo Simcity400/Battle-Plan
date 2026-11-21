@@ -58,25 +58,29 @@ fn walk(
 ) -> Result<PathBuf, String> {
     checkpoint()?;
     let root =
-        std::fs::canonicalize(folder).map_err(|e| format!("Cannot read replay folder: {e}"))?;
+        std::fs::canonicalize(folder).map_err(|e| format!("Couldn’t read the recordings folder: {e}"))?;
     let mut pending = vec![root.clone()];
     let mut visited = 0;
     while let Some(directory) = pending.pop() {
         checkpoint()?;
         for entry in
-            std::fs::read_dir(&directory).map_err(|e| format!("Cannot read replay folder: {e}"))?
+            std::fs::read_dir(&directory).map_err(|e| format!("Couldn’t read the recordings folder: {e}"))?
         {
             checkpoint()?;
-            let entry = entry.map_err(|e| e.to_string())?;
+            let entry = entry.map_err(|e| format!("Couldn’t read the recordings folder: {e}"))?;
             visited += 1;
             if visited > 50_000 {
                 return Err(
-                    "This folder is too large. Choose a folder containing only your replays."
+                    "This folder is too large. Choose a folder that holds only your recordings."
                         .into(),
                 );
             }
-            let kind = entry.file_type().map_err(|e| e.to_string())?;
-            let metadata = entry.metadata().map_err(|e| e.to_string())?;
+            let kind = entry
+                .file_type()
+                .map_err(|e| format!("Couldn’t read the recordings folder: {e}"))?;
+            let metadata = entry
+                .metadata()
+                .map_err(|e| format!("Couldn’t read the recordings folder: {e}"))?;
             if kind.is_symlink()
                 || entry.file_name().to_string_lossy().starts_with('.')
                 || hidden(&metadata)
@@ -109,7 +113,7 @@ fn hidden(metadata: &std::fs::Metadata) -> bool {
 pub(super) fn configured_folder() -> Result<PathBuf, String> {
     RecorderSettings::load()
         .map(|shared| shared.effective_save_folder())
-        .map_err(|error| format!("Recorder settings could not be read: {error}"))
+        .map_err(|error| format!("Recorder settings couldn’t be read: {error}"))
 }
 
 #[tauri::command]
@@ -117,7 +121,8 @@ pub async fn replay_library() -> Result<ReplayLibrary, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let folder = configured_folder()?;
         if folder == replay::recorder_settings::default_save_folder() {
-            std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(&folder)
+                .map_err(|e| format!("Couldn’t create the recordings folder: {e}"))?;
         }
         scan(&folder)
     })
@@ -149,12 +154,12 @@ fn stamp(folder: &Path) -> Result<String, String> {
 pub async fn set_replay_folder(folder: String) -> Result<ReplayLibrary, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if folder.is_empty() || folder.len() > 32_000 {
-            return Err("Choose a replay folder.".into());
+            return Err("Choose a recordings folder.".into());
         }
         let library = scan(Path::new(&folder))?;
         let chosen = PathBuf::from(folder);
         RecorderSettings::update(|shared| shared.choose_save_folder(chosen))
-            .map_err(|error| format!("Recorder settings could not be saved: {error}"))?;
+            .map_err(|error| format!("Recorder settings couldn’t be saved: {error}"))?;
         Ok(library)
     })
     .await
@@ -169,7 +174,7 @@ pub async fn choose_replay_folder(
     tauri::async_runtime::spawn_blocking(move || {
         let mut dialog = rfd::FileDialog::new()
             .set_parent(&window)
-            .set_title("Choose your replay folder");
+            .set_title("Choose your recordings folder");
         if let Some(initial) = initial
             && let Ok(directory) = std::fs::canonicalize(initial)
             && directory.is_dir()
@@ -190,7 +195,7 @@ pub async fn choose_recording(window: WebviewWindow) -> Result<Option<String>, S
         rfd::FileDialog::new()
             .set_parent(&window)
             .set_title("Open recording")
-            .add_filter("Battle Plan", &["battleplan", "hoi4replay"])
+            .add_filter("BattlePlan", &["battleplan", "hoi4replay"])
             .pick_file()
             .map(|path| path.to_string_lossy().into_owned())
     })

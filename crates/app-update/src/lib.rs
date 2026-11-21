@@ -5,7 +5,6 @@ mod feed;
 mod install;
 
 pub use channel::Channel;
-pub use control::install_blocked;
 
 use serde::Serialize;
 use std::{
@@ -38,10 +37,17 @@ impl Role {
         }
     }
 
+    fn other(self) -> Self {
+        match self {
+            Self::Dashboard => Self::Recorder,
+            Self::Recorder => Self::Dashboard,
+        }
+    }
+
     fn app(self) -> &'static str {
         match self {
-            Self::Dashboard => "Battle Plan",
-            Self::Recorder => "Battle Plan Recorder",
+            Self::Dashboard => "BattlePlan",
+            Self::Recorder => "BattlePlan Recorder",
         }
     }
 
@@ -56,7 +62,12 @@ impl Role {
 pub type Launch = Box<dyn FnOnce() -> Result<(), String> + Send>;
 
 pub trait Host: Send + Sync + 'static {
-    fn install_blocked(&self) -> Option<String>;
+    fn install_blocked(&self) -> Option<String> {
+        None
+    }
+    fn busy(&self) -> Option<String> {
+        self.install_blocked()
+    }
     fn install(&self, launch: Launch) -> Result<(), String>;
     fn close_for_update(&self) -> Result<(), String>;
     fn closed_for_update(&self) {}
@@ -270,7 +281,7 @@ pub fn init(app: &AppHandle, role: Role, host: Arc<dyn Host>) -> std::io::Result
         .err()
         .map(|error| {
             format!(
-                "Setup could not ask {} to close, so it cannot be updated now: {error}",
+                "Setup couldn’t ask {} to close, so it can’t be updated now: {error}",
                 role.app()
             )
         });
@@ -311,8 +322,8 @@ impl control::Answer for Answering {
         self.0.closed_for_update()
     }
 
-    fn install_blocked(&self) -> Option<String> {
-        self.0.install_blocked()
+    fn busy(&self) -> Option<String> {
+        self.0.busy()
     }
 }
 
@@ -458,12 +469,12 @@ impl Updates {
         })?;
         let result = match (saved, feed(channel), &self.client) {
             (Err(error), _, _) | (_, Err(error), _) => Err(error),
-            (_, _, None) => Err("The update client did not start.".to_owned()),
+            (_, _, None) => Err("The update client didn’t start.".to_owned()),
             (Ok(_), Ok(url), Some(client)) => feed::newer(client, &url, &self.current)
                 .await
                 .map_err(|error| {
                     format!(
-                        "The {} update feed could not be read: {error}.",
+                        "The {} update feed couldn’t be read: {error}.",
                         channel.name()
                     )
                 }),
@@ -515,6 +526,7 @@ impl Updates {
         self.control_error
             .clone()
             .or_else(|| self.host.install_blocked())
+            .or_else(|| control::install_blocked(self.role.other()))
     }
 
     fn reconcile_channel(&self, inner: &mut Inner) -> Result<(), String> {
@@ -579,7 +591,7 @@ impl Updates {
         };
         let result = match &self.client {
             Some(client) => feed::download(client, &update, progress).await,
-            None => Err("the update client did not start".to_owned()),
+            None => Err("the update client didn’t start".to_owned()),
         };
         let blocked = result.as_ref().ok().and_then(|_| self.blocked());
         let state = self.finish(app, |inner| {
@@ -594,8 +606,10 @@ impl Updates {
                 Err(error) => {
                     inner.state.status = Status::Error;
                     inner.state.error_context = Some(Action::Download);
-                    inner.state.message =
-                        Some(format!("Update {} failed: {error}.", update.version));
+                    inner.state.message = Some(format!(
+                        "Update {} couldn’t be downloaded: {error}.",
+                        update.version
+                    ));
                 }
             }
         });

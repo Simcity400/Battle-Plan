@@ -57,7 +57,7 @@ impl super::Inner {
                 return true;
             }
             Ending::DeviceLost(reason) => {
-                format!("{reason}, again before the map was ready, so it was not started again")
+                format!("The map lost its graphics device again before it was ready, so it wasn’t started again: {reason}")
             }
             Ending::Closed => "The map closed".to_owned(),
             Ending::Failed(reason) => reason,
@@ -95,7 +95,7 @@ impl super::Inner {
             return Ok(false);
         }
         if self.shutting_down {
-            return Err("The application is closing".into());
+            return Err("BattlePlan is closing.".into());
         }
         self.starting = true;
         self.status.running = true;
@@ -195,7 +195,7 @@ impl NativeHost {
             .runtime(window.app_handle())?;
         let parent = match &self.shared.lock().map_err(|e| e.to_string())?.popout {
             Some(window) => window.parent,
-            None => own.unwrap_or_else(|| Err("The map's window has no handle".into()))?,
+            None => own.unwrap_or_else(|| Err("Couldn’t find the map’s window.".into()))?,
         };
         let (made, created) = std::sync::mpsc::sync_channel(1);
         window
@@ -205,12 +205,12 @@ impl NativeHost {
             .map_err(|error| error.to_string())?;
         let (map_window, inputs) = created
             .recv()
-            .map_err(|_| "The app's thread made no map window".to_owned())?
-            .map_err(|error| format!("The map's window: {error}"))?;
+            .map_err(|_| "Couldn’t create the map’s window.".to_owned())?
+            .map_err(|error| format!("Couldn’t create the map’s window: {error}"))?;
         let mut inner = self.shared.lock().map_err(|e| e.to_string())?;
         if inner.shutting_down {
             map_window.destroy();
-            return Err("The application is closing".into());
+            return Err("BattlePlan is closing.".into());
         }
         let mut args: Vec<std::ffi::OsString> = if inner.popout.is_some() {
             std::env::args_os()
@@ -267,7 +267,7 @@ impl NativeHost {
         })
         .map_err(|error| {
             closing.destroy();
-            format!("Could not start the map: {error}")
+            format!("Couldn’t start the map: {error}")
         })?;
         inner.map = Some(map);
         inner.flush();
@@ -496,26 +496,26 @@ mod tests {
     #[test]
     fn a_lost_device_starts_a_new_map_at_the_hour_the_last_showed() {
         let mut inner = showing("A");
-        assert!(inner.map_ended(Ending::DeviceLost("The map's GPU device was lost (Unknown: removed)".into())));
+        assert!(inner.map_ended(Ending::DeviceLost("The map lost its graphics device: Removed".into())));
         assert_eq!(inner.generation, 4);
         assert!(!inner.status.running && !inner.status.ready && inner.status.error.is_none());
         inner.restore_commands();
         assert_eq!(inner.pending.open, Some(("A".into(), Some("v1".into()))));
         assert_eq!(inner.pending.seek.as_ref().map(|seek| seek.hour), Some(12));
-        assert!(!inner.map_ended(Ending::DeviceLost("The map's GPU device was lost (Unknown: hung)".into())));
+        assert!(!inner.map_ended(Ending::DeviceLost("The map lost its graphics device: Hung".into())));
         assert_eq!(
             inner.status.error.as_deref(),
-            Some("The map's GPU device was lost (Unknown: hung), again before the map was ready, so it was not started again: The map's GPU device was lost (Unknown: removed)")
+            Some("The map lost its graphics device again before it was ready, so it wasn’t started again: The map lost its graphics device: Hung: The map lost its graphics device: Removed")
         );
     }
 
     #[test]
     fn a_map_that_stopped_is_shown_by_name_and_reopens_where_it_was() {
         let mut inner = showing("A");
-        assert!(!inner.map_ended(Ending::Failed("The map stopped: the picture's layer list is empty".into())));
+        assert!(!inner.map_ended(Ending::Failed("The map stopped: the picture’s layer list is empty".into())));
         assert_eq!(
             inner.status.error.as_deref(),
-            Some("The map stopped: the picture's layer list is empty")
+            Some("The map stopped: the picture’s layer list is empty")
         );
         assert!(!inner.status.running);
         inner.restore_commands();
@@ -566,7 +566,7 @@ mod tests {
     fn a_replacement_map_never_runs_an_export_whose_asker_was_refused() {
         let mut inner = showing("A");
         let mut refused = asked(&mut inner, "map.png");
-        assert!(inner.map_ended(Ending::DeviceLost("The map's GPU device was lost (Unknown: removed)".into())));
+        assert!(inner.map_ended(Ending::DeviceLost("The map lost its graphics device: Removed".into())));
         assert_eq!(refused.try_recv(), Ok(Err("The map stopped before the export finished".into())));
         assert!(!inner.pending.actions.iter().any(|action| matches!(action, dashboard::protocol::MapAction::Export { .. })), "{:?}", inner.pending.actions);
         let mut next = asked(&mut inner, "map.png");
@@ -581,7 +581,7 @@ mod tests {
         let mut inner = Inner::default();
         assert_eq!(inner.begin_launch(), Ok(true));
         inner.status.ready = true;
-        assert!(inner.map_ended(Ending::DeviceLost("The map's GPU device was lost (Unknown: removed)".into())));
+        assert!(inner.map_ended(Ending::DeviceLost("The map lost its graphics device: Removed".into())));
         assert_eq!(inner.begin_launch(), Ok(false), "a launch is still finishing");
         assert_eq!(inner.launch_finished(Ok(())), Launched::Again);
         assert!(inner.starting && inner.status.running && inner.status.error.is_none());

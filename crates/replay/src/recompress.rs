@@ -39,7 +39,7 @@ pub enum Kept {
 impl fmt::Display for Kept {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Recording => formatter.write_str("still being written by Battle Plan Recorder"),
+            Self::Recording => formatter.write_str("still being written by BattlePlan Recorder"),
             Self::OpenElsewhere => formatter.write_str("open in the desktop app or another program"),
             Self::Changed => formatter.write_str("it changed while it was being compressed"),
             Self::Stopped => formatter.write_str("stopped before the smaller file was whole"),

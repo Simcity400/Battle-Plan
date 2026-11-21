@@ -53,10 +53,11 @@ impl Config {
     }
 
     pub fn resolve_options(&self) -> io::Result<ResolveOptions> {
-        if !self.game_dir.join("hoi4.exe").is_file() || !self.user_dir.is_dir() {
-            return Err(invalid(
-                "Choose game folder and the Paradox user folder.",
-            ));
+        if !self.game_dir.join("hoi4.exe").is_file() {
+            return Err(invalid("Choose the game folder that contains hoi4.exe."));
+        }
+        if !self.user_dir.is_dir() {
+            return Err(invalid("This Paradox user folder doesn’t exist."));
         }
         Ok(ResolveOptions {
             game_dir: self.game_dir.clone(),
@@ -148,6 +149,33 @@ mod tests {
             assert_eq!(saved.game_dir, Path::new(&format!("G{round}")));
             assert_eq!(saved.user_dir, Path::new(&format!("U{round}")));
         }
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn a_folder_refusal_names_the_folder_that_is_wrong() {
+        let folder = folder();
+        let game = folder.join("game");
+        std::fs::create_dir(&game).unwrap();
+        let refusal = |game_dir: &Path, user_dir: &Path| {
+            Config {
+                game_dir: game_dir.into(),
+                user_dir: user_dir.into(),
+                older_game_dirs: Vec::new(),
+            }
+            .resolve_options()
+            .unwrap_err()
+            .to_string()
+        };
+        assert_eq!(
+            refusal(&folder, &folder),
+            "Choose the game folder that contains hoi4.exe."
+        );
+        std::fs::write(game.join("hoi4.exe"), b"").unwrap();
+        assert_eq!(
+            refusal(&game, &folder.join("missing")),
+            "This Paradox user folder doesn’t exist."
+        );
         std::fs::remove_dir_all(&folder).unwrap();
     }
 

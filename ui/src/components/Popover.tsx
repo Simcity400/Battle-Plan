@@ -44,7 +44,12 @@ export function usePopover(align: 'start' | 'end' = 'end') {
     window.addEventListener('scroll', position, true);
     return () => { observer.disconnect(); window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); };
   }, [state, place]);
-  const close = useCallback(() => { popup.current?.hidePopover(); trigger.current?.focus({ preventScroll: true }); }, []);
+  const opener = useRef<HTMLElement | null>(null);
+  const close = useCallback(() => {
+    const target = opener.current?.isConnected ? opener.current : trigger.current;
+    popup.current?.hidePopover();
+    target?.focus({ preventScroll: true });
+  }, []);
   const openAt = useCallback((anchor: AnchorRect | (() => AnchorRect | null)) => {
     anchorRect.current = typeof anchor === 'function' ? anchor : () => anchor;
     const panel = popup.current;
@@ -52,7 +57,7 @@ export function usePopover(align: 'start' | 'end' = 'end') {
     if (panel.matches(':popover-open')) setState({ open: true });
     else panel.showPopover();
   }, []);
-  return useMemo(() => ({ trigger, popup, open, setState, close, openAt, opening }), [open, close, openAt, opening]);
+  return useMemo(() => ({ trigger, popup, opener, open, setState, close, openAt, opening }), [open, close, openAt, opening]);
 }
 
 export const PopoverBody = memo(function PopoverBody({ open, children }: { open: boolean; children: () => ReactNode }) {
@@ -69,12 +74,13 @@ export function Popover({ menu, portal = true, manual = false, className = '', o
     if (popup.current?.isConnected) popup.current.hidePopover();
     setState(closed);
   }, [popup, setState]);
-  const panel = <div {...props} ref={menu.popup} popover={manual ? 'manual' : 'auto'} role="dialog" className={`ui-popover ${className}`}
+  const panel = <div {...props} ref={menu.popup} popover={manual ? 'manual' : 'auto'} role={props.role ?? 'dialog'} className={`ui-popover ${className}`}
     onBeforeToggle={event => {
       if (event.target === event.currentTarget && event.newState === 'open' && !menu.opening(event.currentTarget)) event.currentTarget.style.visibility = 'hidden';
     }}
     onToggle={event => {
       if (event.target !== event.currentTarget) return;
+      if (event.newState !== 'open') menu.opener.current = null;
       menu.setState(event.newState === 'open' ? { open: true } : closed);
       onToggle?.(event);
     }}

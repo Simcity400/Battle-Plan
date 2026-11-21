@@ -189,7 +189,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
   };
   const withinRoot = async (relative: string) => {
     if (pages.isImport(relative)) return { target: await realpath(relative) };
-    if (!recordingsRoot) throw new Error('Choose a replay folder in Settings.');
+    if (!recordingsRoot) throw new Error('Choose a recordings folder in Settings.');
     const base = await realpath(recordingsRoot);
     const target = await realpath(path.resolve(base, relative));
     const childPath = path.relative(base, target);
@@ -246,7 +246,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
           if (new URL(request.url ?? '/', 'http://localhost').pathname === '/import' && request.method === 'POST') {
             if (request.headers['content-type'] !== 'application/octet-stream') throw new Error('Expected a recording file');
             const name = path.basename(decodeURIComponent(String(request.headers['x-recording-name'] ?? ''))).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
-            if (!(/\.(?:battleplan|hoi4replay)$/i.test(name)) || name.length > 180) throw new Error('Choose a .battleplan recording');
+            if (!(/\.(?:battleplan|hoi4replay)$/i.test(name)) || name.length > 180) throw new Error('Choose a BattlePlan recording.');
             const page = pageId(request.headers['x-recording-page']);
             const target = path.join(importsOwned, randomUUID(), name);
             await mkdir(path.dirname(target), { recursive: true });
@@ -282,7 +282,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             let sourceId: string | undefined;
             try {
               const location = await withinRoot(String(input.path));
-              if (!(/\.(?:battleplan|hoi4replay)$/i.test(location.target)) || !(await stat(location.target)).isFile()) throw new Error('Choose a .battleplan recording');
+              if (!(/\.(?:battleplan|hoi4replay)$/i.test(location.target)) || !(await stat(location.target)).isFile()) throw new Error('Choose a BattlePlan recording.');
               const source = await send({ type: 'open', path: location.target, revision: '' }, controller.signal);
               const id = (source as { id?: unknown } | null)?.id;
               if (typeof id === 'string') sourceId = id;
@@ -322,7 +322,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             response.end(JSON.stringify(value)); return;
           }
           if (input.type === 'setReplayFolder') {
-            if (typeof input.folder !== 'string' || input.folder.length > 32000) throw new Error('Choose a replay folder.');
+            if (typeof input.folder !== 'string' || input.folder.length > 32000) throw new Error('Choose a recordings folder.');
             const library = await saveReplayFolder(input.folder);
             recordingsRoot = library.folder!;
             response.end(JSON.stringify(await recordingSummaries(library, controller.signal))); return;

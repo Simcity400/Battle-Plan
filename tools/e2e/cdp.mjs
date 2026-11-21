@@ -47,7 +47,7 @@ export async function connect(port, { timeoutMs = 120_000 } = {}) {
   while (!target) {
     try {
       const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(5000) })).json();
-      target = targets.find(t => t.type === 'page' && APP_PAGE.test(t.url) && t.title === 'Battle Plan') ?? null;
+      target = targets.find(t => t.type === 'page' && APP_PAGE.test(t.url) && t.title === 'BattlePlan') ?? null;
     } catch {   }
     if (!target) {
       if (Date.now() > deadline) throw new Error(`no desktop app page on port ${port} within ${timeoutMs / 1000} s`);

@@ -1,6 +1,10 @@
 use crate::flags::{BackgroundPriority, FlagImage};
 use recorder::controller::{self, Waiting, WaitingCampaign, WaitingName, WaitingNames};
-use replay::{campaign::Replay, recorder_settings::RecorderSettings, recording_files};
+use replay::{
+    campaign::Replay,
+    recorder_settings::{self, RecorderSettings},
+    recording_files,
+};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -44,11 +48,19 @@ pub struct Saved {
     pub job: Option<crate::compress::Job>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Unreadable {
+    pub whole: bool,
+    pub detail: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Recordings {
     pub unsaved: Vec<Unsaved>,
     pub saved: Vec<Saved>,
+    pub unreadable: Option<Unreadable>,
 }
 
 pub struct Live<'a> {
@@ -104,14 +116,19 @@ struct WaitingRevision {
 fn waiting_revision(session: &Path) -> WaitingRevision {
     WaitingRevision {
         session: session.to_owned(),
-        files: ["completed.json", "admitted.json", "bin/recorder.json", "bin/collector.json"]
-            .into_iter()
-            .map(|path| {
-                let path = session.join(path);
-                let stamp = version(&path);
-                (path, stamp)
-            })
-            .collect(),
+        files: [
+            "completed.json",
+            "admitted.json",
+            "bin/recorder.json",
+            "bin/collector.json",
+        ]
+        .into_iter()
+        .map(|path| {
+            let path = session.join(path);
+            let stamp = version(&path);
+            (path, stamp)
+        })
+        .collect(),
     }
 }
 
@@ -351,6 +368,7 @@ impl Library {
         changed: impl FnOnce() + Send + 'static,
     ) -> Recordings {
         let root = settings.effective_save_folder();
+        let made_when_needed = recorder_settings::same_path(&root, &recorder_settings::default_save_folder());
         let root = root.canonicalize().unwrap_or(root);
         let flag = |campaign: &str| {
             flags
@@ -590,7 +608,8 @@ impl Library {
             .collect();
         let unsaved = unsaved.into_iter().map(|(_, _, row)| row).collect();
         let mut saved = Vec::new();
-        for path in saved_files(&root) {
+        let (files, unreadable) = saved_files(&root, made_when_needed);
+        for path in files {
             let Ok(metadata) = fs::metadata(&path) else {
                 continue;
             };
@@ -638,39 +657,95 @@ impl Library {
         Recordings {
             unsaved,
             saved: saved.into_iter().map(|(_, saved)| saved).collect(),
+            unreadable,
         }
     }
 }
 
-pub(crate) fn saved_files(root: &Path) -> Vec<PathBuf> {
-    let recordings = |folder: &Path| -> Vec<PathBuf> {
-        fs::read_dir(folder)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("battleplan") || extension.eq_ignore_ascii_case("hoi4replay"))
-            })
-            .collect()
-    };
-    recording_folders(root).iter().flat_map(|folder| recordings(folder)).collect()
+fn is_recording(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("battleplan") || extension.eq_ignore_ascii_case("hoi4replay")
+    })
+}
+
+fn hidden(entry: &fs::DirEntry) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+    entry
+        .metadata()
+        .is_ok_and(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0)
+}
+
+fn recording_folder(entry: &fs::DirEntry) -> bool {
+    let name = entry.file_name();
+    name != "sessions" && !name.to_string_lossy().starts_with('.') && !hidden(entry)
 }
 
 pub(crate) fn recording_folders(root: &Path) -> Vec<PathBuf> {
     let mut folders = vec![root.to_path_buf()];
     for entry in fs::read_dir(root).into_iter().flatten().flatten() {
-        let name = entry.file_name();
-        if entry.file_type().is_ok_and(|kind| kind.is_dir())
-            && name != "sessions"
-            && !name.to_string_lossy().starts_with('.')
-        {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) && recording_folder(&entry) {
             folders.push(entry.path());
         }
     }
     folders
+}
+
+fn recordings_in(folder: &Path, files: &mut Vec<PathBuf>) -> Option<std::io::Error> {
+    let entries = match fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(error) => return Some(error),
+    };
+    let mut failed = None;
+    for entry in entries {
+        match entry.and_then(|entry| Ok((entry.file_type()?, entry.path()))) {
+            Ok((kind, path)) if kind.is_file() && is_recording(&path) => files.push(path),
+            Ok(_) => {}
+            Err(error) => {
+                failed.get_or_insert(error);
+            }
+        }
+    }
+    failed
+}
+
+pub(crate) fn saved_files(root: &Path, made_when_needed: bool) -> (Vec<PathBuf>, Option<Unreadable>) {
+    let mut files = Vec::new();
+    let failure = |whole: bool, folder: &Path, error: std::io::Error| Unreadable {
+        whole,
+        detail: format!("{}: {error}", folder.display()),
+    };
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if made_when_needed && error.kind() == std::io::ErrorKind::NotFound => {
+            return (files, None);
+        }
+        Err(error) => return (files, Some(failure(true, root, error))),
+    };
+    let mut unreadable = None;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                unreadable.get_or_insert_with(|| failure(false, root, error));
+                continue;
+            }
+        };
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(kind) if kind.is_file() && is_recording(&path) => files.push(path),
+            Ok(kind) if kind.is_dir() && recording_folder(&entry) => {
+                if let Some(error) = recordings_in(&path, &mut files) {
+                    unreadable.get_or_insert_with(|| failure(false, &path, error));
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                unreadable.get_or_insert_with(|| failure(false, &path, error));
+            }
+        }
+    }
+    (files, unreadable)
 }
 
 #[cfg(test)]
@@ -701,7 +776,9 @@ mod tests {
     fn journal(campaign: &Path, segment: u32, bytes: usize) {
         let mut name = [0; replay::columnar_journal::SEGMENT_NAME_BYTES];
         write(
-            &campaign.join(replay::columnar_journal::segment_name(0, segment, &mut name)),
+            &campaign.join(replay::columnar_journal::segment_name(
+                0, segment, &mut name,
+            )),
             bytes,
         );
     }
@@ -869,7 +946,11 @@ mod tests {
                 .earlier_save_folders,
             [earlier.clone()]
         );
-        fs::write(earlier.join("sessions").join("3-3").join("completed.json"), b"{}").unwrap();
+        fs::write(
+            earlier.join("sessions").join("3-3").join("completed.json"),
+            b"{}",
+        )
+        .unwrap();
         forget_settled(&path, std::slice::from_ref(&earlier)).unwrap();
         assert!(
             RecorderSettings::load_from(&path)
@@ -877,6 +958,24 @@ mod tests {
                 .earlier_save_folders
                 .is_empty()
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_or_missing_chosen_folder_is_reported_and_a_default_not_made_yet_is_empty() {
+        let root = scratch();
+        let file = root.join("not a folder");
+        write(&file, 1);
+        let (files, unreadable) = saved_files(&file, true);
+        assert!(files.is_empty());
+        assert!(unreadable.is_some_and(|failure| failure.whole));
+        let missing = root.join("missing");
+        assert_eq!(saved_files(&missing, true), (Vec::new(), None));
+        let (files, unreadable) = saved_files(&missing, false);
+        assert!(files.is_empty());
+        let unreadable = unreadable.expect("a chosen folder that's gone is a failure, not an empty list");
+        assert!(unreadable.whole);
+        assert!(unreadable.detail.starts_with(&missing.display().to_string()));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -970,6 +1069,7 @@ mod tests {
         let mut sizes: Vec<_> = listed.saved.iter().map(|saved| saved.bytes).collect();
         sizes.sort();
         assert_eq!(sizes, [2000, 3000]);
+        assert_eq!(listed.unreadable, None);
         assert!(listed.saved.iter().all(|saved| saved.first_hour.is_none()));
         assert_eq!(
             listed

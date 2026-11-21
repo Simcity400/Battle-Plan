@@ -54,6 +54,10 @@ if (!(rate >= 1 && Number.isFinite(rate) && PLAY_SECONDS > 0 && Number.isFinite(
 const TRACE_SPEED = 1440;
 const TRACE_SECONDS = 4;
 const CATALOGUE_PAGE = 'Intelligence';
+const discardLayout = async () => {
+  await s.click('button[aria-label="Discard layout changes"]');
+  if (await s.until(`document.querySelector('.layout-discard-menu:popover-open')`, 1500)) await s.click('.layout-discard-menu:popover-open button.is-danger');
+};
 
 const app = await connect(port);
 if (fixture) {
@@ -122,7 +126,7 @@ const setSpeed = async speed => {
 
 app.setCase('startup');
 const loadRow = '.sidebar-menu button.sidebar-row[aria-label^="Load "]';
-const shelf = 'button.sidebar-shelf-toggle[aria-expanded="false"]';
+const shelf = '.sidebar-library button.sidebar-group-toggle[aria-expanded="false"]';
 for (let waited = 0; !await app.evaluate(`document.querySelectorAll(${JSON.stringify(loadRow)}).length > 0`).catch(() => false); waited++) {
   if (waited >= 120) throw new Error(`the library never listed the fixture: ${(await app.evaluate('document.body.innerText').catch(() => '')).slice(0, 400)}`);
   if (await app.evaluate(`!!document.querySelector(${JSON.stringify(shelf)})`).catch(() => false)) await s.click(shelf);
@@ -252,8 +256,8 @@ await phase('visual', async () => {
   const states = [
     ['speed menu', '.header-speed', '.playback-speed-menu'],
     ['date picker', '.header-date button.date-time-trigger', '.date-time-popover'],
-    ['country picker', '.header-workspace-bar button[aria-label="Choose country"]', '.country-picker'],
-    ['saved layouts', '.header-layout .select-trigger', '.select-menu'],
+    ['country picker', '.header-workspace-bar button[aria-label^="Choose country"]', '.country-picker'],
+    ['saved layouts', '.header-layout-trigger', '.header-layout-menu'],
     ['widget settings', 'article.dash-widget:not(.kind-map) [data-widget-settings]', '.widget-settings-menu'],
     ['map settings', 'article.dash-widget.kind-map button[aria-label="Map settings"]', '.map-controls-menu'],
   ];
@@ -332,9 +336,9 @@ const traceWindow = async page => {
     stop = await startTrace(app);
     const from = s.epoch + await app.evaluate(`(performance.mark(${JSON.stringify(TRACE_MARKS.from)}), performance.now())`);
     await replies?.mark('play', { page, speed: TRACE_SPEED, trace: true });
-    await s.click('button[aria-label="Play recording"]');
+    await s.click('button.header-play[aria-label="Play"]');
     await sleep(TRACE_SECONDS * 1000);
-    await s.click('button[aria-label="Pause playback"]');
+    await s.click('button.header-play[aria-label="Pause"]');
     await replies?.mark('pause', { page, speed: TRACE_SPEED, trace: true });
     const to = s.epoch + await app.evaluate(`(performance.mark(${JSON.stringify(TRACE_MARKS.to)}), performance.now())`);
     const events = await stop();
@@ -349,7 +353,7 @@ const traceWindow = async page => {
     await s.record({ area: 'trace', item: page, label: null, pass: true, reasons, from, to, speed: TRACE_SPEED, page, trace: summary, file, screenshot: false });
   } catch (error) {
     if (stop) await stop().catch(() => {});
-    const pause = 'button[aria-label="Pause playback"]';
+    const pause = 'button.header-play[aria-label="Pause"]';
     if (await app.evaluate(`!!document.querySelector(${JSON.stringify(pause)})`).catch(() => false)) await s.click(pause).catch(() => {});
     await app.evaluate('window.__perf.stop()', 120_000).catch(() => {});
     await s.record({ area: 'trace', item: page, label: null, pass: false, reasons: [`the browser trace could not be taken: ${error.message}`], page, speed: TRACE_SPEED, screenshot: false });
@@ -506,7 +510,7 @@ async function playbackInputs() {
     }
     await s.escape();
   } else await mark('pin', 'no widget offers a pinnable time setting');
-  await s.click('button[aria-label="Play recording"]');
+  await s.click('button.header-play[aria-label="Play"]');
   await mark('speed'); await setSpeed(168); await s.frames(5);
   const selector = await s.app.evaluate(`(() => {
     for (const node of document.querySelectorAll('[data-e2e-scroll]')) node.removeAttribute('data-e2e-scroll');
@@ -532,8 +536,8 @@ async function playbackInputs() {
       throw new Error('Playback scroll target did not move');
   } else await mark('scroll', 'nothing to scroll');
   await s.frames(5);
-  await mark('pause'); await s.click('button[aria-label="Pause playback"]');
-  if (!await s.until("document.querySelector('button[aria-label=\"Play recording\"]')", 10_000))
+  await mark('pause'); await s.click('button.header-play[aria-label="Pause"]');
+  if (!await s.until("document.querySelector('button.header-play[aria-label=\"Play\"]')", 10_000))
     throw new Error('Playback pause did not stop the clock');
   await s.frames(5);
   const inputs = await app.evaluate('__e2e.endInputs()');
@@ -640,7 +644,7 @@ await phase('playback', async () => {
         if (dated) { await playbackVisibility(); await s.frames(2); }
         await settledForReplies();
         await replies?.mark('play', { page, speed });
-        await s.click('button[aria-label="Play recording"]');
+        await s.click('button.header-play[aria-label="Play"]');
         await s.frames(2);
         const widgets = await app.evaluate(DASHBOARD_INVENTORY);
         const expectedWidgets = fixture?.pages[page]?.widgets
@@ -652,7 +656,7 @@ await phase('playback', async () => {
           if (endHour > line.max || !await s.until(`${Session.CLOCK_HOUR} >= ${endHour}`, 2 * PLAY_SECONDS * 1000 + 5000))
             throw new Error('Playback did not cover the requested game hours');
         } else await sleep(PLAY_SECONDS * 1000);
-        await s.click('button[aria-label="Pause playback"]');
+        await s.click('button.header-play[aria-label="Pause"]');
         await replies?.mark('pause', { page, speed });
         const to = s.epoch + await app.evaluate('performance.now()');
         const playbackReasons = await s.unwatch();
@@ -668,11 +672,11 @@ await phase('playback', async () => {
           await writeFile(path.join(out, `dated-playback-compositor-${page.replace(/[^\w.-]+/g, '_')}-${scroll}.json.gz`), await promisify(gzip)(JSON.stringify(events)));
           pressureMerges = await app.evaluate('window.__perf.pressureMerges()') - pressureBefore;
           await setSpeed(1);
-          await s.click('button[aria-label="Play recording"]');
+          await s.click('button.header-play[aria-label="Play"]');
           const start = await app.evaluate('performance.timeOrigin + performance.now()');
           await s.frames(120);
           idleCost = { from: start, to: await app.evaluate('performance.timeOrigin + performance.now()') };
-          await s.click('button[aria-label="Pause playback"]');
+          await s.click('button.header-play[aria-label="Pause"]');
           audit = [];
           let auditDone = false;
           while (!auditDone) {
@@ -701,7 +705,7 @@ await phase('catalogue', async () => {
   await s.until(`!document.querySelector('.sidebar-page-list input')`, 3000);
   if (await app.evaluate(`document.querySelectorAll('article.dash-widget').length`)) throw new Error('a new page is not empty');
   await seekTo(PICTURE_SEEK[1]);
-  const editing = `document.querySelector('button[aria-label="Done arranging"]')`;
+  const editing = `document.querySelector('button[aria-label="Done editing"]')`;
   const catalogueOpen = `document.querySelector('.widget-catalogue:popover-open')`;
   const empty = `document.querySelectorAll('article.dash-widget').length === 0`;
   let openedThisEdit = false;
@@ -740,7 +744,7 @@ await phase('catalogue', async () => {
     await s.escape();
     const map = await s.holds(`document.querySelector('article.dash-widget.kind-map')`);
     if (map && added.widget) {
-      const shown = await s.step('catalogue', item, 'show map', () => s.click('button[aria-label="Done arranging"]'),
+      const shown = await s.step('catalogue', item, 'show map', () => s.click('button[aria-label="Done editing"]'),
         { done: `__e2e.mapState(${JSON.stringify(added.widget)}, __e2e.t0Epoch, x => !x.loading && !x.error && x.hour === ${added.hour})`, timeout: 10_000, quiet: 300 });
       shown.drawnAt = await app.evaluate(`__e2e.mapState(${JSON.stringify(added.widget)}, __e2e.t0Epoch, x => !x.loading && !x.error && x.hour === ${added.hour})?.drawnAt ?? null`);
       added.shownFrom = shown.input;
@@ -752,7 +756,7 @@ await phase('catalogue', async () => {
       await s.click('article.dash-widget button[aria-label="Map settings"]');
       await s.until(`document.querySelector('.map-controls-menu:popover-open button[aria-label="Delete widget"]')`, 3000);
       await s.step('catalogue', 'setup', 'delete', () => s.click('.map-controls-menu:popover-open button[aria-label="Delete widget"]'), { done: empty, extra });
-      await s.step('catalogue', 'setup', 'done', () => s.click('button[aria-label="Done arranging"]'),
+      await s.step('catalogue', 'setup', 'done', () => s.click('button[aria-label="Done editing"]'),
         { done: `${empty} && document.querySelector('button[aria-label="Edit layout"]')`, extra });
     } else {
       const remove = ':is(.widget-settings-menu, .map-controls-menu):popover-open button[aria-label="Delete widget"]';
@@ -763,12 +767,12 @@ await phase('catalogue', async () => {
         if (!offered) await s.escape();
       }
       if (offered) await s.step('catalogue', 'setup', 'delete', () => s.click(remove), { done: `${empty} && ${editing}`, extra });
-      else await s.step('catalogue', 'setup', 'discard', () => s.click('button[aria-label="Cancel layout changes"]'),
+      else await s.step('catalogue', 'setup', 'discard', () => discardLayout(),
         { done: `${empty} && document.querySelector('button[aria-label="Edit layout"]')`, extra });
     }
     if ((index + 1) % 10 === 0) await save();
   }
-  if (await s.holds(editing)) await s.step('catalogue', 'setup', 'done', () => s.click('button[aria-label="Done arranging"]'),
+  if (await s.holds(editing)) await s.step('catalogue', 'setup', 'done', () => s.click('button[aria-label="Done editing"]'),
     { done: `${empty} && document.querySelector('button[aria-label="Edit layout"]')` });
 });
 
@@ -792,7 +796,7 @@ async function controls() {
       }
       await s.escape();
       await s.escape();
-      if (await s.holds(`document.querySelector('button[aria-label="Done arranging"]')`)) await s.click('button[aria-label="Cancel layout changes"]').catch(() => {});
+      if (await s.holds(`document.querySelector('button[aria-label="Done editing"]')`)) await discardLayout().catch(() => {});
       await save();
     }
   }

@@ -78,12 +78,12 @@ struct Leaving {
 
 const LEAVE_WAIT: Duration = Duration::from_secs(30);
 const SAVING_FOR_UPDATE: &str =
-    "Battle Plan Recorder is saving a recording. Restart to update once it has saved.";
+    "BattlePlan Recorder is saving a recording. Restart to update once it has saved.";
 const RECORDING_FOR_UPDATE: &str =
-    "Battle Plan Recorder is recording. Restart to update once the recording stops.";
-const ATTACHED_FOR_UPDATE: &str =
-    "Battle Plan Recorder is attached to HOI4. Restart to update once the game has closed.";
-const CLOSING_FOR_UPDATE: &str = "Battle Plan Recorder is closing for an update.";
+    "BattlePlan Recorder is recording. Restart to update once the recording stops.";
+const CONNECTED_FOR_UPDATE: &str =
+    "BattlePlan Recorder is connected to the game. Restart to update once the game has closed.";
+const CLOSING_FOR_UPDATE: &str = "BattlePlan Recorder is closing for an update.";
 
 fn update_busy(inner: &Inner) -> Option<&'static str> {
     if inner.unloading || inner.acting > 0 || inner.snapshot.phase == Phase::Saving {
@@ -91,7 +91,7 @@ fn update_busy(inner: &Inner) -> Option<&'static str> {
     } else if inner.capturing && inner.snapshot.phase == Phase::Recording {
         Some(RECORDING_FOR_UPDATE)
     } else if inner.capturing {
-        Some(ATTACHED_FOR_UPDATE)
+        Some(CONNECTED_FOR_UPDATE)
     } else {
         None
     }
@@ -614,11 +614,11 @@ impl Recorder {
             Err(_) => {
                 if self.lock().leaving.take().is_some() {
                     return Err(
-                        "Battle Plan Recorder stayed busy, so it did not close for the update.".into(),
+                        "BattlePlan Recorder stayed busy, so it didn’t close for the update.".into(),
                     );
                 }
                 answer.recv().unwrap_or_else(|_| {
-                    Err("Battle Plan Recorder stopped before it answered the update.".into())
+                    Err("BattlePlan Recorder stopped before it answered the update.".into())
                 })
             }
         }
@@ -738,10 +738,10 @@ impl Recorder {
                     &settings,
                     true,
                     None,
-                    Some(Problem {
-                        text: controller::problem_text(&error, false).into(),
-                        detail: error,
-                    }),
+                    Some(Problem::failure(
+                        controller::problem_text(&error, false),
+                        error,
+                    )),
                 ),
                 Ok(Discovery::None) => self.idle(app, &settings, false, None, None),
                 Ok(Discovery::Several(several)) => self.idle(
@@ -749,10 +749,7 @@ impl Recorder {
                     &settings,
                     true,
                     None,
-                    Some(Problem {
-                        text: several.to_string(),
-                        detail: several.to_string(),
-                    }),
+                    Some(Problem::failure(several.to_string(), several.to_string())),
                 ),
                 Ok(Discovery::One(selected)) => {
                     let start = selected.start_time;
@@ -1121,10 +1118,7 @@ impl Recorder {
                 inner.set_aside = waiting.to_vec();
             }
             if let Some(error) = failure {
-                let problem = Problem {
-                    text: controller::problem_text(&error, true).into(),
-                    detail: error,
-                };
+                let problem = Problem::failure(controller::problem_text(&error, true), error);
                 inner.sticky = Some(problem.clone());
                 inner.snapshot.problem = Some(problem);
             }
@@ -1245,13 +1239,17 @@ impl Recorder {
             .as_ref()
             .is_some_and(|campaign| outcome.waiting.contains(campaign));
         let saved = saved.filter(|_| !unsaved);
-        let unrenamed = (!outcome.unrenamed.is_empty()).then(|| Problem {
-            text: "Saved, but the file kept its old name. It's renamed at the next save.".into(),
-            detail: outcome.unrenamed.join("\n"),
+        let unrenamed = (!outcome.unrenamed.is_empty()).then(|| {
+            Problem::caveat(
+                "Saved, but the file kept its old name. It’s renamed at the next save.",
+                outcome.unrenamed.join("\n"),
+            )
         });
-        let kept = outcome.undiscarded.then(|| Problem {
-            text: "Nothing was discarded: the campaign in progress couldn't be identified.".into(),
-            detail: "Stop couldn't read which campaign was loaded; every hour was kept.".into(),
+        let kept = outcome.undiscarded.then(|| {
+            Problem::failure(
+                "Nothing was discarded: the campaign in progress couldn’t be identified.",
+                "Stop couldn’t read which campaign was loaded; every hour was kept.",
+            )
         });
         match saved {
             Some(path) => {
@@ -1316,7 +1314,7 @@ impl Recorder {
             });
         if let Err(error) = spawned {
             self.update(app, |inner| unload_finished(inner, Err(format!(
-                "Collector unload observation could not start: {error}; quit the game before recording again"
+                "Couldn’t confirm the game released the recorder: {error}. Quit the game before recording again."
             ))));
             self.wake.notify_all();
         }
@@ -1324,10 +1322,7 @@ impl Recorder {
 
     fn fail(&self, app: &AppHandle, error: String, started: bool) {
         eprintln!("Recording: {error}");
-        let problem = Problem {
-            text: controller::problem_text(&error, started).into(),
-            detail: error,
-        };
+        let problem = Problem::failure(controller::problem_text(&error, started), error);
         recordings_changed(app);
         self.update(app, |inner| {
             inner.capturing = false;
@@ -1344,16 +1339,13 @@ impl Recorder {
 }
 
 fn discarded_failure(report: &Path) -> Problem {
-    Problem {
-        text: format!(
-            "Session discarded. The capture had failed, so a failure report was kept in {}.",
-            report.display()
-        ),
-        detail: format!(
+    Problem::caveat(
+        "Session discarded. The capture had failed, so a failure report was kept.",
+        format!(
             "Nothing of the session was kept. The failure report holds only its diagnostics: {}",
             report.display()
         ),
-    }
+    )
 }
 
 fn accept_stop(inner: &mut Inner, control: &Control, discard: bool) -> bool {
@@ -1426,10 +1418,7 @@ fn unload_finished(inner: &mut Inner, result: Result<(), String>) {
             .problem
             .clone()
             .or_else(|| inner.sticky.clone())
-            .unwrap_or(Problem {
-                text: "Recording finished with a collector warning.".into(),
-                detail: String::new(),
-            });
+            .unwrap_or(Problem::caveat("Recording finished with a warning.", ""));
         if !problem.detail.is_empty() {
             problem.detail.push('\n');
         }
@@ -1551,10 +1540,10 @@ mod tests {
             inner.unloading = true;
             inner.record_requested = true;
             if warning {
-                inner.snapshot.problem = Some(Problem {
-                    text: "Earlier capture failure".into(),
-                    detail: "synthetic drain failure".into(),
-                });
+                inner.snapshot.problem = Some(Problem::failure(
+                    "Earlier capture failure",
+                    "synthetic drain failure",
+                ));
             }
             unload_finished(
                 &mut inner,

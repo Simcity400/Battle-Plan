@@ -39,7 +39,7 @@ try {
   root.innerHTML = ${JSON.stringify(markup)};
   document.body.append(root);
   const footer = root.querySelector('.recorder-foot');
-  const natural = root.firstElementChild.getBoundingClientRect().height;
+  const natural = root.querySelector('.recorder').getBoundingClientRect().height;
   const unscrolled = footer.getBoundingClientRect();
   root.scrollTop = root.scrollHeight;
   const sections = root.querySelectorAll('.recorder-section');

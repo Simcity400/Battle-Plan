@@ -31,10 +31,11 @@ export const fixture = {
     button('Export map image')!.click();
     await settle(12);
     const shown = panel()!.matches(':popover-open');
-    const said = panel()!.querySelector('.map-menu-error')?.textContent ?? null;
+    const said = panel()!.querySelector('.map-menu-error > span')?.textContent ?? null;
+    const retry = panel()!.querySelector('.map-menu-error button')?.textContent ?? null;
     if (shown) panel()!.hidePopover();
     await settle();
-    return { opened, asked: asked.splice(0), shown, said };
+    return { opened, asked: asked.splice(0), shown, said, retry };
   },
 };
 Object.assign(window, { mapControls: fixture });

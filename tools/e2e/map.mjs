@@ -113,7 +113,7 @@ export async function interactions(s, input, dpr, speedIndex, { label = null, on
         const line = await s.timeline();
         await s.app.click(Session.timelineX(line, 0.1), line.y);
         await sleep(1000);
-        await s.click('button[aria-label="Play recording"]');
+        await s.click('button.header-play[aria-label="Play"]');
         await sleep(1000);
       }
       for (const entry of cases) {
@@ -149,7 +149,7 @@ export async function interactions(s, input, dpr, speedIndex, { label = null, on
         }
       }
       if (playing) {
-        await s.click('button[aria-label="Pause playback"]');
+        await s.click('button.header-play[aria-label="Pause"]');
         await s.click('.header-speed');
         await s.until(`document.querySelector('.playback-speed-menu:popover-open .playback-speed-presets button')`, 3000);
         await s.click('.playback-speed-menu:popover-open .playback-speed-presets button', { index: 1 });

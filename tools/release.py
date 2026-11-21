@@ -1,4 +1,4 @@
-"""Release Battle Plan and Battle Plan Recorder, which share one version (Python 3.11+).
+"""Release BattlePlan and BattlePlan Recorder, which share one version (Python 3.11+).
 
 The steps of the release workflows (docs/adr/0001-release-channels.md). Main's CI builds one
 release candidate per commit (.github/workflows/release-candidate.yml). The release workflow
@@ -140,7 +140,7 @@ def candidate_version(channel, base, built, position, stable=None):
 
 def release_name(channel, version):
     label = {"stable": "", "nightly": " Nightly", "preview": " Preview (pipeline test, do not install)"}[channel]
-    return f"Battle Plan{label} {version}"
+    return f"BattlePlan{label} {version}"
 
 
 
@@ -866,7 +866,7 @@ def publish(args):
             if not args.draft and not released(repo, channel):
                 run(["gh", "release", "create", channel, "--repo", repo, "--target", commit, "--prerelease", "--latest=false",
                      "--title", f"{channel.capitalize()} update feed", "--notes",
-                     f"latest.json, which Battle Plan and Battle Plan Recorder on the {channel} channel check for updates. Not an installer."])
+                     f"latest.json, which BattlePlan and BattlePlan Recorder on the {channel} channel check for updates. Not an installer."])
             run(["gh", "release", "upload", feed_release, "--repo", repo, "--clobber", work / "latest.json"])
             page = verify_published(repo, feed_release, args.draft, [work / "latest.json"])
         if not args.draft:

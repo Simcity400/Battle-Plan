@@ -1,4 +1,3 @@
-
 use replay::{compression::Compression, recompress, recorder_settings::RecorderSettings};
 use serde::Serialize;
 use std::{
@@ -68,7 +67,10 @@ impl Line {
             return Some(Self::Unconfirmed(reason.into()));
         }
         let (units, total) = text.strip_prefix("progress ")?.split_once(' ')?;
-        Some(Self::Progress { units: units.parse().ok()?, total: total.parse().ok()? })
+        Some(Self::Progress {
+            units: units.parse().ok()?,
+            total: total.parse().ok()?,
+        })
     }
 }
 
@@ -78,7 +80,10 @@ pub fn job(path: &Path, below_normal: bool, mut tell: impl FnMut(Line)) -> Resul
         let percent = progress.units * 100 / progress.total.max(1);
         if shown != Some(percent) {
             shown = Some(percent);
-            tell(Line::Progress { units: progress.units, total: progress.total });
+            tell(Line::Progress {
+                units: progress.units,
+                total: progress.total,
+            });
         }
         true
     });
@@ -92,7 +97,10 @@ pub fn job(path: &Path, below_normal: bool, mut tell: impl FnMut(Line)) -> Resul
             Ok(())
         }
         Err(kept) => {
-            let reason = kept.to_string();
+            let reason = match kept {
+                recompress::Kept::Failed(why) => format!("compression couldn’t finish: {why}"),
+                kept => kept.to_string(),
+            };
             tell(Line::Kept(reason.clone()));
             Err(Job::Kept { reason })
         }
@@ -149,7 +157,7 @@ impl Drop for Bound {
 
 fn run(path: &Path, bound: &Bound, mut tell: impl FnMut(Line)) -> Result<(), Job> {
     let kept = |reason: String| Job::Kept { reason };
-    let program = std::env::current_exe().map_err(|error| kept(format!("Battle Plan Recorder could not find itself to compress with: {error}")))?;
+    let program = std::env::current_exe().map_err(|error| kept(format!("compression couldn’t start: BattlePlan Recorder couldn’t find itself: {error}")))?;
     let mut child = Command::new(program)
         .arg(ARGUMENT)
         .arg(path)
@@ -158,11 +166,11 @@ fn run(path: &Path, bound: &Bound, mut tell: impl FnMut(Line)) -> Result<(), Job
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS)
         .spawn()
-        .map_err(|error| kept(format!("the compress could not start: {error}")))?;
+        .map_err(|error| kept(format!("compression couldn’t start: {error}")))?;
     if let Err(error) = bound.bind(&child) {
         let _ = child.kill();
         let _ = child.wait();
-        return Err(kept(format!("the compress could not be tied to Battle Plan Recorder: {error}")));
+        return Err(kept(format!("compression couldn’t start: it couldn’t be tied to BattlePlan Recorder: {error}")));
     }
     let mut ended = None;
     if let Some(output) = child.stdout.take() {
@@ -174,15 +182,15 @@ fn run(path: &Path, bound: &Bound, mut tell: impl FnMut(Line)) -> Result<(), Job
             }
         }
     }
-    let status = child.wait().map_err(|error| kept(format!("the compress could not be waited for: {error}")))?;
+    let status = child.wait().map_err(|error| kept(format!("compression couldn’t finish: {error}")))?;
     match ended {
         Some(Line::Done) if status.success() => Ok(()),
         Some(Line::Kept(reason)) => Err(Job::Kept { reason }),
         Some(Line::Unconfirmed(reason)) => Err(Job::Unconfirmed { reason }),
         _ => match recompress::level_of(path) {
-            Ok(Some(level)) if level == LEVEL => Err(Job::Unconfirmed { reason: format!("the compress ended before it confirmed the smaller file ({status})") }),
-            Ok(_) => Err(kept(format!("the compress stopped before it finished ({status})"))),
-            Err(error) => Err(Job::Unconfirmed { reason: format!("the compress ended without saying whether it replaced the recording, which could not be read: {error}") }),
+            Ok(Some(level)) if level == LEVEL => Err(Job::Unconfirmed { reason: format!("compression ended before it confirmed the smaller file ({status})") }),
+            Ok(_) => Err(kept(format!("compression couldn’t finish: the compressor stopped early ({status})"))),
+            Err(error) => Err(Job::Unconfirmed { reason: format!("compression ended without saying whether it replaced the recording, which couldn’t be read: {error}") }),
         },
     }
 }
@@ -202,13 +210,20 @@ struct State {
 
 impl Jobs {
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn request(&self, path: &Path) -> Result<(), String> {
-        let path = path.canonicalize().map_err(|error| format!("Cannot compress {}: {error}", path.display()))?;
+        let path = path.canonicalize().map_err(|error| {
+            format!(
+                "Couldn’t compress that recording: {}: {error}",
+                path.display()
+            )
+        })?;
         if !path.is_file() || !replay::recording_files::is_recording(&path) {
-            return Err("Choose a .battleplan recording to compress".into());
+            return Err("Choose a BattlePlan recording to compress.".into());
         }
         let mut state = self.lock();
         state.ended.remove(&path);
@@ -233,7 +248,10 @@ impl Jobs {
         if let Some((running, units, total)) = &state.running
             && running == path
         {
-            return Some(Job::Compressing { units: *units, total: *total });
+            return Some(Job::Compressing {
+                units: *units,
+                total: *total,
+            });
         }
         if state.queue.iter().any(|queued| queued == path) {
             return Some(Job::Queued);
@@ -248,7 +266,10 @@ impl Jobs {
                 state.running = Some((path.clone(), 0, 0));
                 return path;
             }
-            state = self.wake.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = self
+                .wake
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
@@ -267,7 +288,7 @@ impl Jobs {
     }
 
     pub fn take_up(&self, root: &Path, settings: &RecorderSettings) {
-        let saved = crate::recordings::saved_files(root);
+        let saved = crate::recordings::saved_files(root, true).0;
         for folder in crate::recordings::recording_folders(root) {
             let recordings = saved.iter().filter(|path| path.parent() == Some(folder.as_path()));
             let leftovers = recompress::leftovers(&folder).unwrap_or_default();
@@ -294,25 +315,27 @@ impl Jobs {
 
     pub fn serve(self: &Arc<Self>, changed: impl Fn() + Send + 'static) -> io::Result<()> {
         let jobs = Arc::clone(self);
-        std::thread::Builder::new().name("recording-compress".into()).spawn(move || {
-            let bound = match Bound::new() {
-                Ok(bound) => bound,
-                Err(error) => {
-                    eprintln!("Recordings cannot be compressed: {error}");
-                    return;
-                }
-            };
-            loop {
-                let path = jobs.next();
-                changed();
-                let result = run(&path, &bound, |line| {
-                    jobs.told(&path, &line);
+        std::thread::Builder::new()
+            .name("recording-compress".into())
+            .spawn(move || {
+                let bound = match Bound::new() {
+                    Ok(bound) => bound,
+                    Err(error) => {
+                        eprintln!("Recordings cannot be compressed: {error}");
+                        return;
+                    }
+                };
+                loop {
+                    let path = jobs.next();
                     changed();
-                });
-                jobs.ended(&path, result);
-                changed();
-            }
-        })?;
+                    let result = run(&path, &bound, |line| {
+                        jobs.told(&path, &line);
+                        changed();
+                    });
+                    jobs.ended(&path, result);
+                    changed();
+                }
+            })?;
         Ok(())
     }
 }
@@ -324,7 +347,11 @@ mod tests {
 
     #[test]
     fn auto_compress_does_nothing_while_compression_is_high() {
-        let with = |compression, auto_compress| RecorderSettings { compression, auto_compress, ..RecorderSettings::default() };
+        let with = |compression, auto_compress| RecorderSettings {
+            compression,
+            auto_compress,
+            ..RecorderSettings::default()
+        };
         assert!(auto(&with(Compression::Low, true)));
         assert!(!auto(&with(Compression::High, true)));
         assert!(!auto(&with(Compression::Low, false)));
@@ -341,7 +368,8 @@ mod tests {
 
     #[test]
     fn a_recording_open_elsewhere_when_its_job_finishes_is_kept_as_recorded() {
-        let folder = std::env::temp_dir().join(format!("recorder-app-compress-{}", std::process::id()));
+        let folder =
+            std::env::temp_dir().join(format!("recorder-app-compress-{}", std::process::id()));
         let _ = fs::remove_dir_all(&folder);
         fs::create_dir_all(&folder).unwrap();
         let path = folder.join("Germany 1936.battleplan");
@@ -350,7 +378,10 @@ mod tests {
         let jobs = Jobs::default();
         jobs.request(&path).unwrap();
         let path = jobs.next();
-        assert_eq!(jobs.job(&path), Some(Job::Compressing { units: 0, total: 0 }));
+        assert_eq!(
+            jobs.job(&path),
+            Some(Job::Compressing { units: 0, total: 0 })
+        );
         let mut desktop = None;
         let result = job(&path, false, |line| {
             if matches!(line, Line::Progress { .. }) {
@@ -359,7 +390,12 @@ mod tests {
             jobs.told(&path, &line);
         });
         jobs.ended(&path, result);
-        assert_eq!(jobs.job(&path), Some(Job::Kept { reason: "open in the desktop app or another program".into() }));
+        assert_eq!(
+            jobs.job(&path),
+            Some(Job::Kept {
+                reason: "open in the desktop app or another program".into()
+            })
+        );
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert_eq!(recompress::level_of(&path).unwrap(), Some(7), "kept at its live level, so Compress is offered");
         assert!(recompress::partials(&path).unwrap().is_empty());

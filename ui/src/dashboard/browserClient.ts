@@ -33,7 +33,7 @@ function chooseRecording(): Promise<string | null> {
     input.addEventListener('change', () => {
       const file = input.files?.[0]; input.remove();
       if (!file) { resolve(null); return; }
-      if (!(/\.(?:battleplan|hoi4replay)$/i.test(file.name))) { reject(new Error('Choose a .battleplan recording')); return; }
+      if (!(/\.(?:battleplan|hoi4replay)$/i.test(file.name))) { reject(new Error('Choose a BattlePlan recording.')); return; }
       if (file.size > 2 * 1024 * 1024 * 1024) { reject(new Error('Open recordings larger than 2 GB in the desktop app.')); return; }
       ownRecordings();
       void requests.run('history', async signal => {

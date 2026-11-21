@@ -1,24 +1,36 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { DashboardClient } from '../dashboard/client';
 import type { ReplayLibraryState } from '../dashboard/replayLibrary';
-import { Icon } from '../components/Icons';
+import { FolderField } from './GameFolderSettings';
+import { actionFailure } from '../dashboard/queryError';
+import { errorMessage } from './api';
 
-export default function ReplayFolderSetting({ library, client, compact = false }: { compact?: boolean; library: ReplayLibraryState; client: DashboardClient }) {
+type Failed = { message: string; fallback: string; retry: () => void };
+
+export default function ReplayFolderSetting({ library, client }: { library: ReplayLibraryState; client: DashboardClient }) {
   const [folder, setFolder] = useState(library.folder ?? '');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<Failed | null>(null);
   const [picking, setPicking] = useState(false);
   useEffect(() => setFolder(library.folder ?? ''), [library.folder]);
-  const save = async (folder: string) => { setError(null); try { const saved = await library.setFolder(folder.trim()); if (saved) setFolder(saved.folder ?? ''); } catch (error) { setError(String(error)); } };
-  return <form className={`replay-folder-form${compact ? ' compact-folder-form' : ''}`} onSubmit={event => { event.preventDefault(); void save(folder); }}>
-    <label className="field"><span className="folder-field-title">Replay folder<span className="folder-info" role="img" tabIndex={0} aria-label="About Replay folder" data-tooltip="Replays in this folder and its subfolders appear in your library."><Icon name="info" /></span></span><input aria-label="Replay folder" value={folder} disabled={library.loading || picking} placeholder="Folder containing your replays" onChange={event => setFolder(event.currentTarget.value)} data-tooltip={folder || undefined} /></label>
-    <div className="button-row">
-      {client.chooseReplayFolder && <button type="button" className="button" aria-label="Browse replay folder" data-tooltip="Choose folder" disabled={library.loading || picking} onClick={() => {
-        setPicking(true); setError(null);
-        void client.chooseReplayFolder!(folder).then(async chosen => { if (chosen) { setFolder(chosen); await save(chosen); } }).catch(error => setError(String(error))).finally(() => setPicking(false));
-      }}>{compact ? <Icon name="folder" /> : 'Browse…'}</button>}
-      {(!compact || folder.trim() !== (library.folder ?? '')) && <button type="submit" className="button" disabled={library.loading || picking || !folder.trim() || folder.trim() === library.folder}>Use folder</button>}
-    </div>
-    {!client.nativeMaps && !compact && <p className="settings-help">Folder on the computer running Battle Plan.</p>}
-    {(error || library.error) && <p className="dash-inline-warning" role="alert">{error || library.error}</p>}
-  </form>;
+  const saving = useRef(false);
+  const save = async (next: string) => {
+    const path = next.trim();
+    if (saving.current) return;
+    if (!path || path === (library.folder ?? '')) { setError(null); if (!path) setFolder(library.folder ?? ''); return; }
+    saving.current = true; setError(null);
+    try { const saved = await library.setFolder(path); if (saved) setFolder(saved.folder ?? ''); }
+    catch (cause) { setError({ message: errorMessage(cause), fallback: 'Couldn’t use this folder.', retry: () => { setFolder(path); void save(path); } }); }
+    finally { saving.current = false; }
+  };
+  const browse = () => {
+    setPicking(true); setError(null);
+    void client.chooseReplayFolder!(folder).then(async chosen => { if (chosen) { setFolder(chosen); await save(chosen); } })
+      .catch(cause => setError({ message: errorMessage(cause), fallback: 'Couldn’t open the folder picker.', retry: browse })).finally(() => setPicking(false));
+  };
+  const shown: Failed | null = error ?? (library.error ? { message: library.error, fallback: 'Couldn’t read the recordings folder.', retry: () => void library.refresh() } : null);
+  const failure = shown ? actionFailure(shown.fallback, shown.message) : null;
+  return <FolderField label="Recordings folder" help="Recordings in this folder and its subfolders appear in your library." value={folder}
+    placeholder={client.nativeMaps ? 'Folder containing your recordings' : 'Folder on the computer running BattlePlan'} disabled={library.loading || picking}
+    error={failure && { ...failure, field: null }} onRetry={failure?.detail ? shown?.retry : undefined}
+    onChange={setFolder} onCommit={() => void save(folder)} onBrowse={client.chooseReplayFolder ? browse : undefined} />;
 }

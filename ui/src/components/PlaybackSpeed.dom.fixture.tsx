@@ -17,7 +17,7 @@ createRoot(document.body.appendChild(document.createElement('div'))).render(<Hos
 
 const trigger = () => document.querySelector<HTMLButtonElement>('.header-speed')!;
 const panel = () => document.querySelector<HTMLElement>('.playback-speed-menu')!;
-const presets = () => [...panel().querySelectorAll<HTMLButtonElement>('.playback-speed-presets button')];
+const presets = () => [...panel().querySelectorAll<HTMLButtonElement>('.playback-speed-presets button[data-preset]')];
 
 export const fixture = {
   async ready() { await settle(); return trigger() !== null; },

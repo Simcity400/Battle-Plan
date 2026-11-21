@@ -59,7 +59,7 @@ pub fn app_update_open_release(version: String) -> Result<(), String> {
     let releases = RELEASES.ok_or("This build has no release page.")?;
     let version_like = |byte: u8| byte.is_ascii_alphanumeric() || b".-".contains(&byte);
     if version.is_empty() || !version.bytes().all(version_like) {
-        return Err("That is not a release version.".into());
+        return Err("That isn’t a release version.".into());
     }
     install::browse(&format!("{releases}/tag/v{version}"))
 }

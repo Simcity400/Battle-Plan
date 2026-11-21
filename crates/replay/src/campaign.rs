@@ -108,11 +108,11 @@ fn refuse_older(header: &[u8]) -> io::Result<()> {
             .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]));
         let text = match format {
             Some(format) => format!(
-                "This recording was saved by an older Battle Plan (row format {format}), with its \
+                "This recording was saved by an older BattlePlan (row format {format}), with its \
                  native files in a folder beside it. This build reads one-file recordings only \
                  and has no upgrader for older ones."
             ),
-            None => "This recording was saved by an older Battle Plan, with its native files in a \
+            None => "This recording was saved by an older BattlePlan, with its native files in a \
                      folder beside it. This build reads one-file recordings only and has no \
                      upgrader for older ones."
                 .to_owned(),

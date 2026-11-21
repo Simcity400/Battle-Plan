@@ -18,7 +18,8 @@ use windows_sys::Win32::{
 
 const INSTANCE_MUTEX: &str = replay::recorder_settings::RECORDER_INSTANCE;
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const RUN_VALUE: &str = "the game Recorder";
+const RUN_VALUE: &str = "BattlePlan Recorder";
+const LEGACY_RUN_VALUE: &str = "the game Recorder";
 const PERSONALIZE_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
 
 fn wide(value: &OsStr) -> Vec<u16> {
@@ -42,7 +43,7 @@ pub fn single_instance() -> Option<Instance> {
     let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
     if handle.is_null() {
         eprintln!(
-            "Battle Plan Recorder could not check for another instance: {}",
+            "BattlePlan Recorder could not check for another instance: {}",
             std::io::Error::last_os_error()
         );
         return Some(Instance(handle));
@@ -56,9 +57,9 @@ pub fn single_instance() -> Option<Instance> {
     Some(Instance(handle))
 }
 
-pub fn starts_with_windows() -> Result<bool, String> {
+fn run_value_set(name: &str) -> Result<bool, String> {
     let key = wide(OsStr::new(RUN_KEY));
-    let value = wide(OsStr::new(RUN_VALUE));
+    let value = wide(OsStr::new(name));
     let mut size = 0_u32;
     let status = unsafe {
         RegGetValueW(
@@ -75,21 +76,33 @@ pub fn starts_with_windows() -> Result<bool, String> {
         ERROR_SUCCESS => Ok(true),
         ERROR_FILE_NOT_FOUND => Ok(false),
         status => Err(format!(
-            "Start with Windows could not be read: {}",
+            "Start with Windows couldn’t be read: {}",
             std::io::Error::from_raw_os_error(status as i32)
         )),
     }
 }
 
+pub fn starts_with_windows() -> Result<bool, String> {
+    Ok(run_value_set(RUN_VALUE)? || run_value_set(LEGACY_RUN_VALUE)?)
+}
+
+fn remove_run_value(key: &[u16], name: &str) -> u32 {
+    let value = wide(OsStr::new(name));
+    match unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr()) } {
+        ERROR_FILE_NOT_FOUND => ERROR_SUCCESS,
+        status => status,
+    }
+}
+
 pub fn set_start_with_windows(enabled: bool) -> Result<(), String> {
     let key = wide(OsStr::new(RUN_KEY));
-    let value = wide(OsStr::new(RUN_VALUE));
     let status = if enabled {
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
         let mut command = OsString::from("\"");
         command.push(executable.as_os_str());
         command.push("\"");
         let data = wide(&command);
+        let value = wide(OsStr::new(RUN_VALUE));
         unsafe {
             RegSetKeyValueW(
                 HKEY_CURRENT_USER,
@@ -101,16 +114,17 @@ pub fn set_start_with_windows(enabled: bool) -> Result<(), String> {
             )
         }
     } else {
-        match unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr()) } {
-            ERROR_FILE_NOT_FOUND => ERROR_SUCCESS,
-            status => status,
-        }
+        remove_run_value(&key, RUN_VALUE)
+    };
+    let status = match status {
+        ERROR_SUCCESS => remove_run_value(&key, LEGACY_RUN_VALUE),
+        failed => failed,
     };
     if status == ERROR_SUCCESS {
         Ok(())
     } else {
         Err(format!(
-            "Start with Windows could not be changed: {}",
+            "Start with Windows couldn’t be changed: {}",
             std::io::Error::from_raw_os_error(status as i32)
         ))
     }

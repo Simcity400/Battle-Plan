@@ -5,6 +5,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 're
 import type { CountryMetadata } from '../shell/api';
 import { Icon } from './Icons';
 import { CountryFlag } from './CountryFlag';
+import { FailureLine } from './FailureLine';
 import { loadProduct } from '../dashboard/products';
 import { isFailedFact } from '../dashboard/countryFacts.ts';
 import { flagReadKey, retryFlags, useFlagReads } from '../dashboard/countryFlags';
@@ -74,10 +75,9 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const byTag = useMemo(() => new Map(choices.map(({ country }) => [country.tag, country])), [choices]);
   const selected = useMemo(() => selectedTag == null ? countries.find((country) => country.id === playerCountryId)
     : byTag.get(selectedTag) ?? countries.find((country) => country.tag === selectedTag), [countries, playerCountryId, selectedTag, byTag]);
-  const filtered = useMemo(() => filterChoices(choices, query), [choices, query]);
-  const range = visibleRange(filtered.length, view.scrollTop, view.height);
-  const visible = open ? filtered.slice(range.start, range.end) : [];
-  const named = open && query.trim() ? choices : visible;
+  const searching = !!query.trim();
+  const unfiltered = visibleRange(choices.length, view.scrollTop, view.height);
+  const named = !open ? [] : searching ? choices : choices.slice(unfiltered.start, unfiltered.end);
   const datedRoster = !allowedTags && choiceReads === undefined && !!flagAt;
   const wantedChoices = allowedTags || choiceReads !== undefined || datedRoster ? [...new Set([...named.map(choice => choice.country.tag), ...(selected ? [selected.tag] : [])])]
     .flatMap(displayTag => { const read = choiceRead(displayTag); return read ? [{ displayTag, ...read }] : []; }) : [];
@@ -109,6 +109,11 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     return current?.kind === 'loading' ? held ?? current : current ?? held ?? ABSENT_NAME;
   };
   const countryName = (country: CountryOption) => nameReadMetadata(countryNameRead(country)).name;
+  const filtered = filterChoices(choices, query, choice => countryName(choice.country));
+  const range = visibleRange(filtered.length, view.scrollTop, view.height);
+  const visible = open ? filtered.slice(range.start, range.end) : [];
+  const sole = searching && filtered.length === 1 ? 0 : -1;
+  const shownActive = active >= 0 ? active : sole;
   const displayHeaderTag = addLabel ? null : selected?.tag ?? selectedTag;
   const headerRead = displayHeaderTag ? choiceRead(displayHeaderTag) : null;
   const headerTag = choiceReads === undefined ? displayHeaderTag : headerRead?.tag ?? null;
@@ -175,7 +180,9 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     });
     return () => controller.abort();
   }, [sourceKey, client, onCountries, retry, allowedTags]);
+  const revealSelected = useRef(false);
   useLayoutEffect(() => {
+    revealSelected.current = open && !chosen;
     if (open && list.current) setView(listView(list.current.scrollTop, list.current.clientHeight || LIST_HEIGHT));
   }, [open]);
   const scrollTo = (scrollTop: number) => {
@@ -183,6 +190,15 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     setView(previous => listView(scrollTop, previous.height)(previous));
   };
   const reset = () => { setActive(-1); scrollTo(0); };
+  useLayoutEffect(() => {
+    if (!revealSelected.current || query) return;
+    const at = selected ? filtered.findIndex(({ country }) => country.tag === selected.tag) : -1;
+    if (at < 0) return;
+    revealSelected.current = false;
+    const height = list.current?.clientHeight || LIST_HEIGHT;
+    scrollTo(Math.max(0, at * COUNTRY_ROW_HEIGHT - (height - COUNTRY_ROW_HEIGHT) / 2));
+    setActive(at);
+  }, [open, filtered, selected?.tag, query]);
   const moveTo = (index: number) => {
     setActive(index);
     scrollTo(revealRow(index, list.current?.scrollTop ?? view.scrollTop, list.current?.clientHeight || view.height));
@@ -197,16 +213,18 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     if (!inline) menu.close();
   };
   const body = <>
-        <div className="country-picker-search"><Icon name="search" /><input data-popover-autofocus aria-label="Search countries" placeholder="Search countries or tags" aria-controls={listId} value={query}
+        <div className="country-picker-search"><Icon name="search" /><input type="search" data-popover-autofocus aria-label="Search countries" placeholder="Search countries or tags" aria-controls={listId} value={query}
+          aria-activedescendant={sole >= 0 ? optionId(sole) : undefined}
           onChange={(event) => { setQuery(event.currentTarget.value); reset(); }}
           onKeyDown={(event) => {
             if (event.key === 'ArrowDown' && filtered.length) { event.preventDefault(); listbox.current?.focus({ preventScroll: true }); moveTo(0); }
+            else if (event.key === 'Enter' && sole >= 0) { event.preventDefault(); choose(filtered[sole].country); }
           }} /></div>
         <div ref={list} className="country-picker-list" onScroll={(event) => {
           const { scrollTop, clientHeight } = event.currentTarget;
           setView(listView(scrollTop, clientHeight || LIST_HEIGHT));
         }}>
-          <div ref={listbox} id={listId} role="listbox" aria-label="Countries" aria-multiselectable={chosen !== undefined} tabIndex={filtered.length ? 0 : -1} className="country-picker-options"
+          <div ref={listbox} id={listId} role="listbox" aria-label="Countries" data-tooltip-side="right" aria-multiselectable={chosen !== undefined} tabIndex={filtered.length ? 0 : -1} className="country-picker-options"
             aria-activedescendant={active >= range.start && active < range.end ? optionId(active) : undefined}
             style={{ height: filtered.length * COUNTRY_ROW_HEIGHT }}
             onFocus={(event) => { if (event.target === event.currentTarget && active < 0 && filtered.length) setActive(Math.min(filtered.length - 1, Math.ceil(view.scrollTop / COUNTRY_ROW_HEIGHT))); }}
@@ -222,28 +240,40 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
             {visible.map(({ country }, offset) => {
               const index = range.start + offset;
               const ticked = chosen ? chosen.includes(country.tag) : selected?.tag === country.tag;
+              const name = countryName(country).trim();
               return <div key={country.tag} id={optionId(index)} role="option" aria-selected={ticked} aria-setsize={filtered.length} aria-posinset={index + 1}
-                data-detail={nameReadFailure(countryNameRead(country))?.message} className="country-picker-option" data-active={index === active || undefined} style={{ top: index * COUNTRY_ROW_HEIGHT }}
+                data-detail={nameReadFailure(countryNameRead(country))?.message} data-tooltip-overflow={name || undefined} className="country-picker-option" data-active={index === shownActive || undefined} data-sole={index === sole && active < 0 || undefined} style={{ top: index * COUNTRY_ROW_HEIGHT }}
                 onClick={() => choose(country)}>
-                <CountryFlag image={flagOf(country)} /><span>{countryName(country)}</span><small>{country.tag}</small>{ticked && <Icon name="check" className="country-selected-mark" />}
+                <CountryFlag image={flagOf(country)} tag={country.tag} decorative />
+                {name ? <span data-overflow-label>{name}</span> : <span className="country-picker-unnamed">{country.tag}<small>name not recorded</small></span>}
+                {name && <small>{country.tag}</small>}
+                {ticked && <Icon name="check" className="country-selected-mark" />}
               </div>;
             })}
           </div>
           {loading && <p className="country-picker-empty" role="status"><span className="spinner" />Loading countries…</p>}
-          {!allowedTags && !loading && roster.error ? <div className="country-picker-note"><Icon name="alert" /><span data-detail={roster.error.message}>{failureText(roster.error, 'Couldn’t load countries.')}</span><button type="button" className="button small quiet" onClick={retryCountries}>Retry</button></div>
-            : flagFailed && <div className="country-picker-note"><Icon name="alert" /><span data-detail={flagFailure?.message}>{failureText(flagFailure, 'Couldn’t load flags.')}</span><button type="button" className="button small quiet" onClick={retryCountries}>Retry</button></div>}
-          {!loading && (allowedTags || !roster.error) && !filtered.length && <p className="country-picker-empty">{query ? 'No matching countries' : 'No countries available'}</p>}
+          {!allowedTags && !loading && roster.error ? <FailureLine className="country-picker-note" detail={roster.error.message} message={failureText(roster.error, 'Couldn’t load countries.')} onRetry={retryCountries} />
+            : flagFailed && <FailureLine className="country-picker-note" detail={flagFailure?.message} message={failureText(flagFailure, 'Couldn’t load flags.')} onRetry={retryCountries} />}
+          {!loading && (allowedTags || !roster.error) && !filtered.length && <p className="country-picker-empty">{query ? 'No matching countries.' : 'No countries available.'}</p>}
         </div>
   </>;
   if (inline) return <div className="country-picker country-picker-inline">{body}</div>;
+  const triggerDisabled = !source || disabled;
+  const shownTag = selected?.tag ?? selectedTag;
+  const shownName = (field ? selected ? countryName(selected) : '' : datedHeaderName ?? (selected ? countryName(selected) : '')).trim();
+  const flagPending = !!headerFlagAt && headerFlag === undefined && !headerImage;
   return <div data-detail={failureDetails([...heldNames.values(), headerNameRead, headerName?.name].map(nameReadFailure))} className={field ? 'field widget-country-field' : 'header-control header-country'}>
     <span className={field ? undefined : 'sr-only'}>Country</span>
-    <button ref={trigger} type="button" className={field ? 'widget-country-trigger' : 'header-country-trigger'} disabled={!source || disabled} popoverTarget={id}
-      aria-label={addLabel ?? (field ? 'Widget country' : 'Choose country')} aria-haspopup="dialog" aria-expanded={open}>
-      {addLabel ? <Icon name="plus" /> : <CountryFlag image={headerImage} />}
-      {addLabel ? <span>{addLabel}</span> : field ? <span>{(selected ? countryName(selected) : selectedTag) ?? 'Choose country'}</span>
-        : <span className="header-country-text"><strong>{datedHeaderName ?? (selected ? countryName(selected) : selectedTag) ?? (source ? 'Choose country' : 'No campaign')}</strong></span>}
-      <Icon name="chevron-down" />
+    <button ref={trigger} type="button" className={field ? 'widget-country-trigger' : 'header-country-trigger'} disabled={triggerDisabled} popoverTarget={id}
+      aria-label={addLabel ?? `${field ? 'Widget country' : 'Choose country'}${shownName || shownTag ? `, currently ${shownName || shownTag}` : ''}`} aria-haspopup="dialog" aria-expanded={open}
+      aria-description={!addLabel && (field || source) && !headerImage ? `Flag ${flagPending ? 'loading' : 'unavailable'}` : undefined}
+      data-tooltip-overflow={!addLabel && shownName ? shownName : undefined}>
+      {addLabel ? <Icon name="plus" /> : (field || source) && <CountryFlag image={headerImage} tag={shownTag} name={shownName || null}
+        pending={flagPending} decorative />}
+      {addLabel ? <span>{addLabel}</span> : field ? <span data-overflow-label>{shownName || shownTag || 'Choose country'}</span>
+        : <span className="header-country-text"><strong data-overflow-label>{shownName || shownTag || (source ? 'Choose country' : 'No campaign')}</strong>
+          {!shownName && shownTag && <small>name not recorded</small>}</span>}
+      {!triggerDisabled && <Icon name="chevron-down" />}
     </button>
     <Popover menu={menu} portal={!field} id={id} aria-label="Choose country" className="country-picker"
       onToggle={(event) => { if (event.newState === 'closed') { setQuery(''); reset(); } }}>

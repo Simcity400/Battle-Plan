@@ -11,8 +11,12 @@ import { timelineGaps, timelineHourAt } from './timelineGaps';
 import CountryPicker from '../components/CountryPicker';
 import { countryNameAt, useSlotTags } from './countrySlots.ts';
 import { useMapMuted } from '../shell/muteSetting';
+import { desktopAvailable } from '../shell/api';
+import { Popover, usePopover } from '../components/Popover';
+import { menuKeys } from '../components/ContextMenu';
 import { commitZone } from '../shell/commitCount';
 import { attachDateFace } from '../draw/dateFaceHost.ts';
+import { gapText } from '../shell/recordingNotice';
 
 export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }: { clock: PlaybackController; track: BoundTrack | undefined; selectedSlot: number | null }
   & Omit<ComponentProps<typeof CountryPicker>, 'flagAt'>) {
@@ -32,11 +36,43 @@ export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }:
 }
 
 function MapMuteButton() {
-  const { muted, error, set } = useMapMuted();
-  if (muted == null && !error) return null;
+  const { muted, error, set, retry } = useMapMuted();
+  if (!desktopAvailable) return null;
+  if (muted == null && !error) return <span className="header-mute-slot" aria-hidden="true" />;
+  if (muted == null) return <button type="button" className="icon-button header-mute is-unavailable" onClick={retry}
+    aria-label="Map audio unavailable. Try again" data-detail={error ?? undefined} data-tooltip="Map audio unavailable · Try again">
+    <Icon name="volume" /><span className="header-mute-alert" aria-hidden="true" /></button>;
   const label = muted ? 'Unmute map audio' : 'Mute map audio';
-  return <button type="button" className="icon-button" aria-pressed={!!muted} onClick={() => set(!muted)}
-    aria-label={label} data-tooltip={error ?? label}><Icon name={muted ? 'volume-off' : 'volume'} /></button>;
+  return <button type="button" className="icon-button header-mute" aria-pressed={muted} onClick={() => set(!muted)}
+    aria-label={label} aria-description={error ? 'Couldn’t change map audio.' : undefined} data-detail={error ?? undefined}
+    data-tooltip={error ? `${label} · Couldn’t change map audio` : label}><Icon name={muted ? 'volume-off' : 'volume'} /></button>;
+}
+
+export function LayoutMenu({ layouts, activeId, disabled, onChoose, onEdit }: {
+  layouts: readonly { id: string; name: string }[]; activeId: string; disabled: boolean; onChoose: (id: string) => void; onEdit: () => void;
+}) {
+  const id = useId();
+  const menu = usePopover();
+  const active = layouts.find(layout => layout.id === activeId);
+  const name = active?.name ?? 'Layout';
+  return <>
+    <button ref={menu.trigger} type="button" className="header-layout-trigger" popoverTarget={id} aria-haspopup="menu" aria-expanded={menu.open}
+      aria-label={`Layout: ${name}`} data-tooltip-overflow={name}>
+      <Icon name="layers" /><span className="header-layout-name" data-overflow-label>{name}</span><Icon name="chevron-down" className="header-layout-chevron" /></button>
+    <Popover menu={menu} id={id} role="menu" className="header-layout-menu" aria-label="Layout" onKeyDownCapture={menuKeys}>
+      <div className="group-label" id={`${id}-label`}>Saved layouts</div>
+      <div role="group" className="header-layout-list" aria-labelledby={`${id}-label`} data-tooltip-side="left">
+        {layouts.map(layout => <button key={layout.id} type="button" role="menuitemradio" className="menu-item" disabled={disabled}
+          aria-checked={layout.id === activeId} data-popover-autofocus={layout.id === activeId || undefined} data-tooltip-overflow={layout.name}
+          onClick={() => { menu.close(); if (layout.id !== activeId) onChoose(layout.id); }}>
+          <span className="menu-item-icon-slot" aria-hidden="true" />
+          <span className="menu-item-label" data-overflow-label>{layout.name}</span>{layout.id === activeId && <Icon name="check" />}</button>)}
+      </div>
+      <hr />
+      <button type="button" role="menuitem" className="menu-item" data-popover-autofocus={!active || undefined} onClick={() => { menu.close(); onEdit(); }}>
+        <Icon name="edit" /><span className="menu-item-label">Edit layout</span></button>
+    </Popover>
+  </>;
 }
 
 export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
@@ -49,7 +85,7 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   useSyncExternalStore(clock.subscribe, controlsKey, controlsKey);
   const snapshot = clock.getSnapshot();
   const [dateDraft, setDateDraft] = useState<{ reference: string; hour: number | null } | null>(null);
-  const [hover, setHover] = useState<{ left: number; hour: number } | null>(null);
+  const [hover, setHover] = useState<{ left: number; hour: number; flipped: boolean } | null>(null);
   const helpId = useId();
   const reference = tracks.find((track) => track.roleId === defaultRoleId);
   const referenceKey = JSON.stringify(reference && [reference.id, reference.source.id, reference.source.revision,
@@ -107,7 +143,7 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
     input.value = String(hour);
     const raw = reference ? hour + reference.axisOffset : null;
     const gap = raw == null ? undefined : reference?.branch.gaps?.find(item => item.firstHour <= raw && item.lastHour >= raw);
-    input.setAttribute('aria-valuetext', raw == null ? 'No recording selected' : `${formatDateTime(raw)}${gap ? `; reported recording gap: ${gap.reason}` : ''}`);
+    input.setAttribute('aria-valuetext', raw == null ? 'No campaign' : `${formatDateTime(raw)}${gap ? '; not recorded' : ''}`);
   };
   useLayoutEffect(() => { painted.current = ''; settle.current(true); place.current(); });
   useLayoutEffect(() => {
@@ -123,20 +159,20 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   };
   const trackHover = (event: PointerEvent<HTMLInputElement>) => {
     const at = pointerAt(event);
-    if (at && reference) setHover({ left: at.left, hour: at.hour + reference.axisOffset });
+    if (at && reference) setHover({ left: at.left, hour: at.hour + reference.axisOffset, flipped: at.left > event.currentTarget.clientWidth - 140 });
   };
   const press = (event: PointerEvent<HTMLInputElement>) => { pointer.current.pressed = true; pointerAt(event); };
   const release = () => { pointer.current.pressed = false; };
   return <>
-    <section className="header-playback" aria-label="Playback">
+    <section className="header-playback" aria-label="Playback" data-empty={!reference || undefined}>
       <div className={`header-date${draft != null ? ' has-date-draft' : ''}`}>
         <DateTimePicker key={referenceKey} label="Date" hideLabel value={draft ?? rawHour} live={draft == null ? liveDate : undefined} disabled={!reference}
-          otherValue={null} min={reference?.branch.firstHour ?? 0} max={reference?.branch.lastHour ?? 0} describedBy={helpId} onChange={setDraft} />
-        {draft != null && reference && <button type="button" className="button primary small" onClick={() => { clock.seek(draft - reference.axisOffset); setDraft(null); }}>Go</button>}
+          otherValue={null} min={reference?.branch.firstHour ?? 0} max={reference?.branch.lastHour ?? 0} describedBy={helpId} onChange={setDraft}
+          commitLabel="Go to date" onCommit={hour => { if (reference) clock.seek(hour - reference.axisOffset); setDraft(null); }} onCancel={() => setDraft(null)} />
       </div>
       <div className="header-transport" aria-label="Playback controls">
         <button type="button" ref={previous} className="icon-button" onClick={() => { setDraft(null); clock.step(-1); }} aria-label="Previous hour" data-tooltip="Previous hour"><Icon name="chevrons-left" /></button>
-        <button type="button" ref={play} className={`header-play${snapshot.playing ? ' is-playing' : ''}`} onClick={() => { setDraft(null); clock.setPlaying(!clock.getSnapshot().playing); }} aria-label={snapshot.playing ? 'Pause playback' : 'Play recording'} data-tooltip={snapshot.playing ? 'Pause' : 'Play'}>
+        <button type="button" ref={play} className={`header-play${snapshot.playing ? ' is-playing' : ''}`} onClick={() => { setDraft(null); clock.setPlaying(!clock.getSnapshot().playing); }} aria-label={snapshot.playing ? 'Pause' : 'Play'} data-tooltip={snapshot.playing ? 'Pause' : 'Play'}>
           <Icon name={snapshot.playing ? 'pause' : 'play'} />
         </button>
         <button type="button" ref={next} className="icon-button" onClick={() => { setDraft(null); clock.step(1); }} aria-label="Next hour" data-tooltip="Next hour"><Icon name="chevrons-right" /></button>
@@ -152,11 +188,11 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
           onChange={(event) => { setDraft(null); clock.seek(pointer.current.pressed && pointer.current.hour !== null ? pointer.current.hour : Number(event.currentTarget.value)); }} />
         <div className="timeline-progress" aria-hidden="true"><span ref={fill} className="timeline-fill" /><span ref={knob} className="timeline-knob" /></div>
         <div className="timeline-gap-markers">{gaps.map((gap, index) => <span key={index} className="timeline-gap" style={{ left: `${gap.left}%`, width: `${gap.width}%` }}
-          data-tooltip={`Reported recording gap · ${formatDateTime(gap.firstHour)} to ${formatDateTime(gap.lastHour)} · ${gap.reason}`} />)}</div>
-        {hover && <span className="timeline-hover" style={{ left: hover.left }} aria-hidden="true">{formatDateTime(hover.hour)}</span>}
+          data-tooltip={gapText(gap)} />)}</div>
+        {hover && <span className={`timeline-hover${hover.flipped ? ' is-flipped' : ''}`} style={{ left: hover.left }} aria-hidden="true">{formatDateTime(hover.hour)}</span>}
       </div>
     </div>
-    <p className="sr-only" id={helpId}>Date browsing is a draft until Go. {alignment === 'anchors' ? 'The date uses the selected reference track; playback aligns by track anchors.' : 'Tracks share the game-calendar date.'} Only views following playback move with these controls.</p>
+    <p className="sr-only" id={helpId}>A date picked in the calendar is a draft until Go to date, or Enter on a day. {alignment === 'anchors' ? 'The date uses the selected reference track; playback aligns by track anchors.' : 'Tracks share the game-calendar date.'} Only views following playback move with these controls.</p>
   </>;
 }
 

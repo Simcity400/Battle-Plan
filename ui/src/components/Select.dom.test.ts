@@ -124,19 +124,20 @@ test('mounted Select preserves authored choices, focus and label layout', async 
         assert.equal((await snapshot()).menuWidth, sized.menuWidth, 'scrolling does not collapse the menu width');
         await press('End'); assert.equal((await snapshot()).activeValue, 'v4999');
       });
-      await context.test('native Tab follows every enabled logical option and exits only at the list edges', async () => {
+      await context.test('Tab and Shift+Tab leave the open select without choosing; arrows move between choices', async () => {
         await act('mount(false, 5000)'); await act('open()');
-        await act('replaceChoices(selectFixture.choices(5000).map(option => ({...option, disabled:option.value === "v101"})))');
-        await press('Tab'); assert.equal((await snapshot()).activeValue, 'v102');
-        await press('Tab', true); assert.equal((await snapshot()).activeValue, 'saved');
-        for (let index = 0; index < 25; index++) await press('Tab');
-        const advanced = await snapshot();
-        assert.equal(advanced.activeValue, 'v126', 'Tab reaches beyond the original mounted window');
-        assert.ok(advanced.rows.length < 40, 'the full roster stays virtual');
-        await press('End'); await press('Tab');
-        assert.notEqual((await snapshot()).activeRole, 'option', 'Tab leaves the final enabled choice');
-        await act('mount(false, 5000)'); await act('open()'); await press('Home'); await press('Tab', true);
-        assert.notEqual((await snapshot()).activeRole, 'option', 'Shift+Tab leaves the first enabled choice');
+        const first = (await snapshot()).activeValue;
+        await press('ArrowDown'); assert.notEqual((await snapshot()).activeValue, first, 'arrows move between choices');
+        await press('Tab');
+        const left = await snapshot();
+        assert.equal(left.open, false, 'Tab closes the menu');
+        assert.notEqual(left.activeRole, 'option', 'Tab moves on from the select');
+        assert.equal(left.chosen, null, 'leaving does not choose');
+        await act('open()'); await press('Tab', true);
+        const back = await snapshot();
+        assert.equal(back.open, false, 'Shift+Tab closes the menu');
+        assert.notEqual(back.activeRole, 'option', 'Shift+Tab moves back from the select');
+        assert.equal(back.chosen, null);
       });
       await context.test('narrow viewports wrap and measure long rows while preserving keyboard access', async () => {
         const viewport = new WebSocket(page);

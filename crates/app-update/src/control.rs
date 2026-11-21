@@ -26,7 +26,7 @@ const BUSY: u8 = b'B';
 pub trait Answer: Send + Sync + 'static {
     fn close_for_update(&self) -> Result<(), String>;
     fn closed_for_update(&self) {}
-    fn install_blocked(&self) -> Option<String>;
+    fn busy(&self) -> Option<String>;
 }
 
 fn pipe_name(role: Role) -> io::Result<Vec<u16>> {
@@ -95,7 +95,7 @@ pub fn serve(role: Role, answer: Arc<dyn Answer>) -> io::Result<()> {
                             }
                             Err(_) => REFUSED,
                         }],
-                        QUERY => match answer.install_blocked() {
+                        QUERY => match answer.busy() {
                             None => vec![FREE],
                             Some(reason) => [&[BUSY], reason.as_bytes()].concat(),
                         },
@@ -130,12 +130,12 @@ pub fn serve(role: Role, answer: Arc<dyn Answer>) -> io::Result<()> {
         })
 }
 
-pub fn install_blocked(role: Role) -> Option<String> {
+pub(crate) fn install_blocked(role: Role) -> Option<String> {
     let name = match pipe_name(role) {
         Ok(name) => name,
         Err(error) => {
             return Some(format!(
-                "{} could not be asked whether it is busy: {error}",
+                "{} isn’t responding, so the update can’t start yet. Try again in a moment: {error}",
                 role.app()
             ));
         }
@@ -160,7 +160,7 @@ pub fn install_blocked(role: Role) -> Option<String> {
             return None;
         }
         return Some(format!(
-            "{} did not answer whether it is busy: {}",
+            "{} isn’t responding, so the update can’t start yet. Try again in a moment: {}",
             role.app(),
             io::Error::from_raw_os_error(error as i32)
         ));
@@ -169,7 +169,7 @@ pub fn install_blocked(role: Role) -> Option<String> {
         Some((&FREE, _)) => None,
         Some((&BUSY, reason)) => Some(String::from_utf8_lossy(reason).into_owned()),
         _ => Some(format!(
-            "{} gave an answer this version does not understand.",
+            "{} gave an answer this version doesn’t understand.",
             role.app()
         )),
     }

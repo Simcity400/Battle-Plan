@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Battle Plan",
+  "productName": "BattlePlan",
   "identifier": "local.hoi4.replay",
   "build": {
     "beforeDevCommand": { "script": "npm run dev:ui", "cwd": "../.." },
@@ -11,7 +11,7 @@
   "app": {
     "windows": [{
       "label": "main",
-      "title": "Battle Plan",
+      "title": "BattlePlan",
       "width": 1500,
       "height": 950,
       "minWidth": 1000,
@@ -29,11 +29,11 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "publisher": "Battle Plan",
+    "publisher": "BattlePlan",
     "shortDescription": "Campaign replays and analytics",
     "icon": ["icons/icon.ico", "icons/icon.png"],
     "fileAssociations": [
-      { "ext": ["battleplan", "hoi4replay"], "name": "Battle Plan recording", "description": "Battle Plan recording", "role": "Viewer" }
+      { "ext": ["battleplan", "hoi4replay"], "name": "BattlePlan recording", "description": "BattlePlan recording", "role": "Viewer" }
     ],
     "windows": {
       "nsis": {

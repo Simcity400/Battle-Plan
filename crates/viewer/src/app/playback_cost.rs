@@ -524,7 +524,7 @@ fn window_state(
     crate::renderer_host::WindowSurface,
 )> {
     let (state, surface) = crate::host::driver::map_device(Some(window)).map_err(io::Error::other)?;
-    let surface = surface.ok_or_else(|| io::Error::other("The map's window gave no surface"))?;
+    let surface = surface.ok_or_else(|| io::Error::other("The map’s window gave no surface"))?;
     crate::renderer_host::bind(&state);
     Ok((state, crate::renderer_host::WindowSurface::new(surface)))
 }

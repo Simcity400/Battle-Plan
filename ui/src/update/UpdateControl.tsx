@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
+import { FailureLine } from '../components/FailureLine';
 import { Icon } from '../components/Icons';
 import { Popover, PopoverBody, usePopover } from '../components/Popover';
 import { errorMessage } from '../shell/errors';
 import * as api from './api';
 import type { UpdateState } from './api';
-import { confirmInstall, shownNotes, updateAction, updateDisabled, updateTooltip } from './logic';
+import { actionFailure } from '../dashboard/queryError';
+import { blockedReason, confirmInstall, restartQuestion, shownNotes, updateAction, updateDisabled, updateFailure, updateNews, updateTooltip } from './logic';
 import './update.css';
 
 const RING_RADIUS = 14;
@@ -22,29 +24,47 @@ export function UpdateIcon({ state }: { state: UpdateState | null }) {
       <Icon name="download" />
     </span>;
   }
-  if (action === 'install') return <span className="update-icon"><Icon name="refresh-cw" /><span className="update-badge is-ready"><Icon name="check" /></span></span>;
-  if (action === 'download') return <span className="update-icon"><Icon name="download" /><span className="update-badge is-dot" /></span>;
-  const failed = state?.status === 'error';
+  const failed = updateFailure(state) != null;
+  const offered = !failed && (action === 'install' || action === 'download');
   return <span className={`update-icon${state?.status === 'checking' ? ' is-checking' : ''}`}>
-    <Icon name="refresh-cw" />{failed && <span className="update-badge is-alert" />}</span>;
+    <Icon name="download" />{offered && <span className="update-badge update-dot" />}{failed && <span className="update-badge is-alert" />}</span>;
 }
+
+export interface ActionFailure { text: string; detail?: string; retry(): void }
+
+export type RestartGuard = (restart: () => Promise<boolean>, opener: HTMLElement | null) => void;
+
+export const RestartGuardContext = createContext<RestartGuard | null>(null);
+
+export function useGuardedRestart(): RestartGuard {
+  const guard = useContext(RestartGuardContext);
+  return (restart, opener) => { if (guard) guard(restart, opener); else void restart(); };
+}
+
+const shownByState = (state: UpdateState) => updateFailure(state) != null;
 
 export function useUpdateActions() {
   const [pending, setPending] = useState(false);
-  const [failure, setFailure] = useState<{ title: string; detail: string } | null>(null);
-  const run = async (title: string, work: () => Promise<unknown>) => {
+  const [failure, setFailure] = useState<ActionFailure | null>(null);
+  const guard = useGuardedRestart();
+  const run = async (title: string, work: () => Promise<unknown>, tracked = false, again?: () => void): Promise<boolean> => {
     setPending(true);
     setFailure(null);
     try { await work(); return true; }
-    catch (cause) { setFailure({ title, detail: errorMessage(cause) }); return false; }
+    catch (cause) {
+      const shown = tracked && await api.updateState().then(shownByState, () => false);
+      if (!shown) setFailure({ ...actionFailure(title, errorMessage(cause)), retry: again ?? (() => void run(title, work, tracked)) });
+      return false;
+    }
     finally { setPending(false); }
   };
+  const install = (opener: HTMLElement | null = null): void =>
+    guard(() => run('Couldn’t install the update.', api.installUpdate, true, () => install(opener)), opener);
   return {
-    pending, failure, run, dismiss: () => setFailure(null),
-    check: () => run('Could not check for updates', api.checkForUpdate),
-    download: () => run('Could not download the update', api.downloadUpdate),
-    install: () => run('Could not install the update', api.installUpdate),
-    openRelease: (version: string) => run('Could not open the release notes', () => api.openRelease(version)),
+    pending, failure, run, install, dismiss: () => setFailure(null),
+    check: () => run('Couldn’t check for updates.', api.checkForUpdate, true),
+    download: () => run('Couldn’t download the update.', api.downloadUpdate, true),
+    openRelease: (version: string) => run('Couldn’t open the release notes.', () => api.openRelease(version)),
   };
 }
 
@@ -72,7 +92,7 @@ export function UpdateButton({ state }: { state: UpdateState | null }) {
     setNotice(null);
     if (!actions.failure) menu.close();
   }, [stale, actions.failure, menu]);
-  if (!api.updatesAvailable) return null;
+  if (!api.updatesAvailable || !(updateNews(state) || menu.open || actions.pending || actions.failure || notice)) return null;
   const click = () => {
     if (disabled) return;
     if (action === 'check') void actions.check();
@@ -88,28 +108,29 @@ export function UpdateButton({ state }: { state: UpdateState | null }) {
     </button>
     <Popover menu={menu} className="update-popover" aria-label="Update">
       <PopoverBody open={menu.open}>{() => {
-        if (actions.failure) return <>
-          <strong className="update-popover-title">{actions.failure.title}</strong>
-          <p className="update-popover-text" role="alert">{actions.failure.detail}</p>
-          <div className="update-popover-actions">
-            <button type="button" className="button small quiet" onClick={() => { actions.dismiss(); menu.close(); }}>Close</button>
-            {action !== 'none' && !updateDisabled(state) && <button type="button" className="button small primary" data-popover-autofocus
-              onClick={() => { actions.dismiss(); menu.close(); click(); }}>Try again</button>}
-          </div>
-        </>;
+        if (actions.failure) {
+          const { retry } = actions.failure;
+          return <>
+            <FailureLine className="update-popover-failure" message={actions.failure.text} detail={actions.failure.detail}
+              onRetry={() => { actions.dismiss(); menu.close(); retry(); }} retryDisabled={actions.pending} />
+            <div className="update-popover-actions">
+              <button type="button" className="button small quiet" data-popover-autofocus onClick={() => { actions.dismiss(); menu.close(); }}>Close</button>
+            </div>
+          </>;
+        }
         if (!state || !notice || stale) return null;
         const { version } = notice;
         const blocked = state.installBlocked;
         return <>
-          <strong className="update-popover-title">{notice.kind === 'downloaded' ? `Update ${version} downloaded` : `Restart to update to ${version}?`}</strong>
-          <p className="update-popover-text">{blocked ?? (notice.kind === 'downloaded' ? 'Restart from the update button to install it in both apps.' : confirmInstall(version))}</p>
+          <strong className="update-popover-title">{restartQuestion(version)}</strong>
+          <p className="update-popover-text">{blocked ? blockedReason(state) : confirmInstall(version)}</p>
           <UpdateNotes state={state} />
           <div className="update-popover-actions">
             {state.enabled && <button type="button" className="button small quiet update-popover-link" onClick={() => void actions.openRelease(version)}>Release notes</button>}
             <span className="update-grow" />
-            <button type="button" className="button small quiet" onClick={menu.close}>{notice.kind === 'downloaded' ? 'Later' : 'Cancel'}</button>
-            <button type="button" className="button small primary" data-popover-autofocus disabled={blocked != null || actions.pending}
-              onClick={() => { menu.close(); void actions.install(); }}>Restart to update</button>
+            <button type="button" className="button small quiet" data-popover-autofocus onClick={menu.close}>{notice.kind === 'downloaded' ? 'Later' : 'Cancel'}</button>
+            <button type="button" className="button small primary" disabled={blocked != null || actions.pending}
+              onClick={() => { menu.close(); actions.install(menu.trigger.current); }}>Restart to update</button>
           </div>
         </>;
       }}</PopoverBody>

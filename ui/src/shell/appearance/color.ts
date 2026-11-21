@@ -42,6 +42,13 @@ export function normalizeColor(value: unknown, under?: string): string | null {
   return toHex(base && parsed.alpha < 1 ? mixRgb(base, parsed.rgb, parsed.alpha) : parsed.rgb);
 }
 
+export const HEX_HINT = 'Use a hex colour like #346bf1.';
+
+export function colorInput(text: string): string | null {
+  const trimmed = text.trim();
+  return normalizeColor(/^[0-9a-f]{3,8}$/i.test(trimmed) ? `#${trimmed}` : trimmed);
+}
+
 export function mixRgb(from: Rgb, to: Rgb, amount: number): Rgb {
   const t = clamp(amount);
   return { r: from.r + (to.r - from.r) * t, g: from.g + (to.g - from.g) * t, b: from.b + (to.b - from.b) * t };
