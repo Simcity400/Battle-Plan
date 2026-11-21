@@ -17,6 +17,8 @@ const LAST: i32 = 55;
 const DAILY_READS: [i32; 2] = [28, 52];
 const PROJECTS_READ: i32 = 30;
 const UNHELD: i32 = 45;
+const LATE_READ: i32 = 50;
+const LATE_ITERATION: i32 = 48;
 
 fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     *frame.tables[table.index()] = TableView::Complete(rows);
@@ -49,6 +51,9 @@ fn frame(hour: i32) -> DecodedFrame {
             ProjectHistoryRow { owner: 9001, project: 3, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: PROJECTS_READ, ..Default::default() },
             ProjectHistoryRow { owner: 9001, project: 3, ordinal: 1, prototype_reward_handle: COMPLETION_MARKER, option_handle: COMPLETION_MARKER, date: PROJECTS_READ, ..Default::default() },
         ]
+        .into_iter()
+        .chain((hour >= LATE_READ).then_some(ProjectHistoryRow { owner: 9001, project: 3, ordinal: 2, prototype_reward_handle: 41, option_handle: 42, date: LATE_ITERATION, ..Default::default() }))
+        .collect()
     } else {
         Vec::new()
     }));
@@ -142,4 +147,21 @@ fn effects_without_the_recorded_content_are_refused_by_name() {
         dashboard_core::QueryError::Refused { text } => assert!(text.contains("content"), "{text}"),
         dashboard_core::QueryError::Failed { message } => panic!("not a refusal: {message}"),
     }
+}
+
+#[test]
+fn an_iteration_is_read_at_its_own_hour_and_names_what_was_not_recorded() {
+    let source = recording();
+    let iteration = |ordinal: u32, hour: i32| asked::<SpecialProjectIterationAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": ordinal, "hour": hour }));
+    let refused = |result: Result<Value, dashboard_core::QueryError>| match result {
+        Err(dashboard_core::QueryError::Refused { text }) => text,
+        other => panic!("not a refusal: {other:?}"),
+    };
+    assert!(refused(iteration(0, FIRST - 1)).contains("hour is not recorded"), "an hour outside the recording is named, never guessed");
+    let unavailable = |ordinal, hour| iteration(ordinal, hour).unwrap()["unavailable"].as_str().unwrap().to_owned();
+    assert_eq!(unavailable(0, PROJECTS_READ + 1), "The asked hour is not this iteration's hour");
+    assert_eq!(unavailable(1, PROJECTS_READ), "This history entry is the project's completion, not an iteration");
+    assert_eq!(unavailable(9, 40), "This iteration's choice was not read within a day of its hour");
+    assert!(refused(iteration(0, PROJECTS_READ)).contains("content"), "an iteration read at its hour goes on to the recorded content");
+    assert!(refused(iteration(2, LATE_ITERATION)).contains("content"), "a choice first read later in its day is still found for its own hour");
 }

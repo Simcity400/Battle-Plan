@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { detailsStructure, detailTexts, validateProjectDetails, validateProjectEffects } from './projectDetailsData.ts';
+import { detailsStructure, detailTexts, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData.ts';
 import type { SpecialProjectDetails } from '../../generated/dashboard';
 
 const person = { assigned: true, id: 7, name: 'Scientist', portrait: null, missing: null };
@@ -30,12 +30,25 @@ test('project details keep duplicate traits, supporting assignments, pending cho
   assert.throws(() => validateProjectDetails({ ...reply, programs: [{ ...reply.programs[0], readHour: 25 }] }), /Invalid/);
   assert.throws(() => validateProjectDetails({ ...reply, projects: [{ ...reply.projects[0], pendingKnown: false }] }), /Invalid/);
   assert.throws(() => validateProjectDetails({ ...reply, warnings: undefined }), /Invalid/);
-  const effects = { hour: 24, output: { text: 'Output', refusals: { 'Scope unavailable': 1 } }, options: [{ text: '', refusals: {} }],
-    iterations: [{ ordinal: 0, effects: { text: 'Gained a bonus', refusals: {} } }], unavailable: null, warnings: [] };
+  const effects = { hour: 24, output: { text: 'Output', refusals: { 'Scope unavailable': 1 } }, options: [{ text: '', refusals: {} }], unavailable: null, warnings: [] };
   assert.equal(validateProjectEffects(effects), effects);
   assert.throws(() => validateProjectEffects({ ...effects, output: { text: 'Output', refusals: { reason: 0 } } }), /Invalid/);
-  assert.throws(() => validateProjectEffects({ ...effects, iterations: [{ ordinal: -1, effects: effects.iterations[0].effects }] }), /Invalid/);
-  assert.throws(() => validateProjectEffects({ ...effects, iterations: undefined }), /Invalid/);
+});
+
+test('an iteration reply is the game\'s headed output read at that iteration\'s own hour, and names what it could not show', () => {
+  const text = (value: string, tone: string | null = null) => ({ kind: 'text' as const, text: value, tone });
+  const iteration = { hour: 23, heading: [text('Output(s)')], refusals: { 'special-project iteration effect scientist effects: Unknown scientist reference type': 1 },
+    sections: [
+      { heading: null, runs: [text('Support Ships', 'H'), text('('), { kind: 'flag' as const, tag: 'ENG' }, text(')\n  Add '), text('15.00%', 'H')] },
+      { heading: [text('Equipment(s)')], runs: [{ kind: 'link' as const, entity: 'equipment' as const, token: 'mod_equipment', text: 'Rifle', tone: null }] },
+    ], unavailable: null, warnings: [] };
+  assert.equal(validateProjectIteration(iteration, 23), iteration);
+  assert.throws(() => validateProjectIteration(iteration, 24), /Invalid/, 'a reply read at another hour is not this iteration\'s');
+  assert.throws(() => validateProjectIteration({ ...iteration, sections: [] }, 23), /Invalid/, 'no output carries no heading');
+  assert.throws(() => validateProjectIteration({ ...iteration, sections: [{ heading: null, runs: [{ kind: 'link', entity: 'equipment', token: '', text: 'Rifle', tone: null }] }] }, 23), /Invalid/);
+  assert.throws(() => validateProjectIteration({ ...iteration, refusals: { reason: 0 } }, 23), /Invalid/);
+  const missing = { hour: 23, heading: null, sections: [], refusals: {}, unavailable: 'This iteration\'s choice was not read within a day of its hour', warnings: [] };
+  assert.equal(validateProjectIteration(missing, 23), missing, 'not recorded is a named state, never an empty output');
 });
 
 test('a daily read moves only painted texts: its read date, counts and values never change the structure that renders', () => {

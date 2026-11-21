@@ -1,6 +1,7 @@
 import { dayLabel } from '../../charts/draw.ts';
 import { researchNumber } from '../research/researchBreakdown.ts';
-import type { ProjectLabel, ProjectPerson, ScientistDetails, SpecialProjectDetails, SpecialProjectEffects } from '../../generated/dashboard';
+import { validGameRuns } from '../research/gameRuns.ts';
+import type { ProjectLabel, ProjectPerson, ScientistDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration } from '../../generated/dashboard';
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value);
@@ -50,14 +51,23 @@ export function validateProjectDetails(value: unknown): SpecialProjectDetails {
 
 export function validateProjectEffects(value: unknown): SpecialProjectEffects {
   if (!object(value) || !integer(value.hour) || !(value.output === null || effects(value.output)) || !Array.isArray(value.options) || !value.options.every(effects)
-    || !Array.isArray(value.iterations) || !value.iterations.every(item => object(item) && uint(item.ordinal) && effects(item.effects))
     || !nullable(value.unavailable) || !strings(value.warnings)) throw new Error('Invalid special-project effects');
   return value as unknown as SpecialProjectEffects;
 }
 
+const heading = (value: unknown) => value === null || validGameRuns(value);
+
+export function validateProjectIteration(value: unknown, hour: number): SpecialProjectIteration {
+  if (!object(value) || value.hour !== hour || !heading(value.heading)
+    || !Array.isArray(value.sections) || !value.sections.every(section => object(section) && heading(section.heading) && validGameRuns(section.runs))
+    || (value.heading !== null && value.sections.length === 0)
+    || !counts(value.refusals) || !nullable(value.unavailable) || !strings(value.warnings)) throw new Error('Invalid special-project iteration');
+  return value as unknown as SpecialProjectIteration;
+}
+
 export function effectsStructure(reply: SpecialProjectEffects) {
   const shape = (value: SpecialProjectEffects['output']) => value && [value.text ? value.text.split('\n').length : 0, Object.keys(value.refusals)];
-  return JSON.stringify([reply.unavailable, reply.options.map(shape), shape(reply.output), reply.iterations.map(item => [item.ordinal, shape(item.effects)]), reply.warnings]);
+  return JSON.stringify([reply.unavailable, reply.options.map(shape), shape(reply.output), reply.warnings]);
 }
 
 export function effectTexts(reply: SpecialProjectEffects) {
@@ -69,7 +79,6 @@ export function effectTexts(reply: SpecialProjectEffects) {
   };
   reply.options.forEach((value, i) => add(String(i), value));
   add('output', reply.output);
-  for (const item of reply.iterations) add('iteration:' + item.ordinal, item.effects);
   return out;
 }
 

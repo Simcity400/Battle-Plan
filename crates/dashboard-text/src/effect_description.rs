@@ -1339,6 +1339,62 @@ pub fn technology_description(token: &str, context: &Context<'_, '_>, country: u
     renderer.out
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IterationScopes {
+    pub country_seed: Option<u32>,
+    pub scientist: Result<Option<u32>, String>,
+    pub scientist_seed: Option<u32>,
+    pub facility: Result<Option<(u32, u32)>, String>,
+    pub state_seed: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutputSection {
+    pub heading: Option<String>,
+    pub text: String,
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct IterationDescription {
+    pub heading: Option<String>,
+    pub sections: Vec<OutputSection>,
+    pub refusals: BTreeMap<String, usize>,
+}
+
+pub fn project_iteration_description(
+    output: &content_reader_core::special_projects::Output,
+    context: &Context<'_, '_>,
+    owner: u32,
+    id: u32,
+    iteration: IterationScopes,
+) -> IterationDescription {
+    let mut renderer = Renderer {
+        context,
+        graph: Rc::new(RefCell::new(EventScopes::new(vec![
+            crate::scripted_text::EventScope::of(EventObject::Project { owner, id }),
+        ]))),
+        evaluator: OnceCell::new(),
+        out: Description::default(),
+        scripted_stack: Vec::new(),
+    };
+    let mut out = IterationDescription::default();
+    match renderer.project_iteration_body(
+        output,
+        Scopes::of(Scope::Project { owner, id }),
+        owner,
+        id,
+        iteration,
+    ) {
+        Ok((heading, sections)) => {
+            out.heading = heading;
+            out.sections = sections;
+        }
+        Err(why) => renderer.refuse("special-project iteration", why),
+    }
+    out.refusals = renderer.out.refusals;
+    out
+}
+
 pub fn project_output_description(
     output: &content_reader_core::special_projects::Output,
     context: &Context<'_, '_>,

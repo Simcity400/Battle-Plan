@@ -42,7 +42,8 @@ fn fixture(output: &str) -> (Fixture, Folder) {
                 " SPECIAL_PROJECT_OUTPUT_SUBUNITS:0 \"Subunits:\"\n SPECIAL_PROJECT_OUTPUT_EQUIPMENT:0 \"Equipment:\"\n SPECIAL_PROJECT_OUTPUT_MODULE:0 \"Modules:\"\n",
                 " mod_unit:0 \"Unit\"\n AAA_mod_unit:0 \"Alpha unit\"\n mod_equipment:0 \"Equipment\"\n AAA_mod_equipment:0 \"Alpha equipment\"\n mod_module:0 \"Module\"\n AAA_mod_module:0 \"Alpha module\"\n",
                 " STAT_ARMY_SOFT_ATTACK:0 \"Soft:\"\n STAT_MODIFIER_DIFF:0 \"$VALUE|2$\"\n",
-                " SUBUNIT_BONUS_HEADER:0 \"$ICON$$NAME$\"\n STAT_MODIFIER_VALUE:0 \"$VALUE|2$\"\n"
+                " SUBUNIT_BONUS_HEADER:0 \"$ICON$$NAME$\"\n STAT_MODIFIER_VALUE:0 \"$VALUE|2$\"\n",
+                " SPECIAL_PROJECT_REWARDS_HEADER_TEXT:0 \"Outputs\"\n SPECIAL_PROJECT_REWARD_EQUIPMENT:0 \"Equipment got\"\n SPECIAL_PROJECT_REWARD_EQUIPMENT_MODULE:0 \"Modules got\"\n"
             ),
         ),
     ]);
@@ -403,4 +404,74 @@ fn gap_research_grants_pending_output_uses_exact_selected_assignment_and_never_f
     assert!(selected.refusals.is_empty(), "{:?}", selected.refusals);
     assert!(selected.text.contains("Scientist Later"), "{:?}", selected);
     assert!(!selected.text.contains("Scientist First"));
+}
+
+#[test]
+fn iteration_output_follows_the_history_view_and_links_its_unlocks() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+    let (fixture, _folder) = fixture(
+        "country_effects={custom_effect_tooltip=PROJECT_COUNTRY} scientist_effects={custom_effect_tooltip=PROJECT_SCIENTIST} enable_equipments={mod_equipment} enable_equipment_modules={mod_module}",
+    );
+    let scripted = fixture.catalogue.scripted_content().unwrap();
+    let cache = scripted.effects().unwrap();
+    let text = crate::scripted_text::ScriptedText::new(
+        &fixture.frame,
+        &fixture.catalogue.localisation,
+        scripted,
+        1,
+    );
+    let context = Context::new(
+        &text,
+        &fixture.catalogue.localisation,
+        1,
+        "special-project iteration",
+        cache.view(None),
+    )
+    .with_entity_links();
+    let definitions =
+        content_reader_core::special_projects::Catalog::read(&fixture.catalogue.content.layers).unwrap();
+    let output = &definitions.projects["mod_project"].output;
+    let scopes = |scientist| IterationScopes {
+        country_seed: Some(5),
+        scientist,
+        scientist_seed: None,
+        facility: Ok(None),
+        state_seed: None,
+    };
+    let section = |heading: Option<&str>, text: &str| OutputSection {
+        heading: heading.map(Into::into),
+        text: text.into(),
+    };
+    let described = project_iteration_description(output, &context, 100, 8, scopes(Ok(Some(7))));
+    assert_eq!(described.heading.as_deref(), Some("Outputs"));
+    assert_eq!(
+        described.sections,
+        [
+            section(None, "Country AAA/AAA"),
+            section(None, "Scientist Later"),
+            section(Some("Modules got"), "\u{1}mmod_module\u{2}Alpha module\u{3}"),
+            section(Some("Equipment got"), "\u{1}emod_equipment\u{2}Alpha equipment\u{3}"),
+        ],
+        "country, scientist and state effects carry no heading; unlocks do, modules before equipment"
+    );
+    assert!(described.refusals.is_empty(), "{:?}", described.refusals);
+    let refused = project_iteration_description(
+        output,
+        &context,
+        100,
+        8,
+        scopes(Err("Unknown scientist reference type".into())),
+    );
+    assert_eq!(refused.sections.len(), 3, "a refused scientist keeps the rest: {refused:?}");
+    assert_eq!(
+        refused.refusals,
+        BTreeMap::from([(
+            "special-project iteration effect scientist effects: Unknown scientist reference type".into(),
+            1
+        )])
+    );
+    let empty = content_reader_core::special_projects::Output::default();
+    let nothing = project_iteration_description(&empty, &context, 100, 8, scopes(Ok(None)));
+    assert_eq!((nothing.heading, nothing.sections.len()), (None, 0), "no output, no heading");
 }

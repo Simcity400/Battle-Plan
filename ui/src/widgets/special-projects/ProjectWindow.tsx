@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import FloatingPanel from '../../components/FloatingPanel';
@@ -9,14 +9,19 @@ import { dayLabel } from '../../charts/draw';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import type { BoundTrack } from '../../dashboard/model';
 import type { PanelFeed } from '../../dashboard/panelFeed';
 import { panelFeed } from '../../dashboard/panelFeed';
+import { useProduct } from '../../dashboard/products';
+import EntityStatsWindow from '../research/EntityStatsWindow';
+import GameText, { GameRuns, type EntityLink } from '../research/GameText';
+import { trimLabel, trimValue } from '../research/gameRuns';
 import { DetailValues, Effects, Name, Painted } from './ProjectDetails';
 import type { Asked } from './ProjectDetails';
-import { detailsStructure, detailTexts, effectsStructure, validateProjectDetails, validateProjectEffects } from './projectDetailsData';
+import { detailsStructure, detailTexts, effectsStructure, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData';
 import { projectDate, runtimeProject, scientistName } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
-import type { ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectsReply } from '../../generated/dashboard';
+import type { ProjectChoice, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration, SpecialProjectsReply } from '../../generated/dashboard';
 
 const STATES = { running: 'In progress', paused: 'Paused', unknown: 'State unknown', completed: 'Completed', cancelled: 'Cancelled' } as const;
 const STATE_TONES = { running: '', paused: ' is-paused', unknown: ' is-quiet', completed: ' is-done', cancelled: ' is-quiet' } as const;
@@ -100,20 +105,7 @@ function Rewards({ runtime, widget, tag, active, project, done }: Asked & { proj
           <h5><Name label={option.label} /></h5><Effects prefix={String(index)} value={effects.data?.options[index]} state={state} /></div>)}</div>
       </>}
     </section>}
-    <section className="dossier-section">
-      <h4>Iterations{project.choices && project.choices.length > 0 && <span className="project-window-count">{project.choices.length}</span>}</h4>
-      {project.choices === null ? <p className="dossier-missing">Iterations not recorded.</p> : project.choices.length === 0 ? <p className="dossier-note">No iterations yet.</p>
-        : <ol className="project-window-choices">{project.choices.map(choice => {
-          const gave = effects.data?.iterations.find(item => item.ordinal === choice.ordinal)?.effects;
-          return <li key={choice.ordinal}>
-            <time>{dayLabel(choice.date)}</time>
-            <div className="project-window-choice">
-              <p><b><Name label={choice.reward} /></b>{choice.option.name && <><i aria-hidden="true">→</i><Name label={choice.option} /></>}</p>
-              <Effects prefix={'iteration:' + choice.ordinal} value={gave} state={effects.data && !gave ? 'Effects of this iteration were not recorded.' : state} />
-            </div>
-          </li>;
-        })}</ol>}
-    </section>
+    <Iterations runtime={runtime} widget={widget} tag={tag} active={active} project={project} />
     <section className="dossier-section">
       <h4>Project output</h4>
       <Effects prefix="output" value={effects.data?.output} state={state} />
@@ -125,4 +117,44 @@ function Rewards({ runtime, widget, tag, active, project, done }: Asked & { proj
       {project.seed !== null && <p className="dossier-note">Variable random seed <Painted at={`${at}:seed`} /></p>}
     </details>
   </div>;
+}
+
+function Iterations({ runtime, widget, tag, active, project }: Asked & { project: ProjectRuntimeDetails }) {
+  const [opened, setOpened] = useState<EntityLink | null>(null);
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const choices = project.choices;
+  return <section className="dossier-section">
+    <h4>Iterations{choices && choices.length > 0 && <span className="project-window-count">{choices.length}</span>}</h4>
+    {choices === null ? <p className="dossier-missing">Iterations not recorded.</p> : choices.length === 0 ? <p className="dossier-note">No iterations yet.</p>
+      : <ol className="project-window-timeline">{choices.map(choice => <li key={choice.ordinal}>
+        <time>{dayLabel(choice.date)}</time>
+        <p className="project-window-choice-name"><Name label={choice.reward} />
+          {choice.option.name && <span className="project-window-option"> · <Name label={choice.option} /></span>}</p>
+        <IterationOutput runtime={runtime} track={track} tag={tag} active={active} project={project} choice={choice} onOpen={setOpened} />
+      </li>)}</ol>}
+    {opened && <EntityStatsWindow key={`${opened.kind}:${opened.token}`} runtime={runtime} widget={widget} tag={tag} link={opened} active={active} onClose={() => setOpened(null)} />}
+  </section>;
+}
+
+function IterationOutput({ runtime, track, tag, active, project, choice, onOpen }: Pick<Asked, 'runtime' | 'tag' | 'active'> & {
+  track: BoundTrack | undefined; project: ProjectRuntimeDetails; choice: ProjectChoice; onOpen: (link: EntityLink) => void;
+}) {
+  const recorded = !!track && choice.date >= track.branch.firstHour && choice.date <= track.branch.lastHour;
+  const request = useMemo(() => track && recorded ? { sourceId: track.source.id, revision: track.source.revision, product: 'special-project-iteration',
+    params: { branchId: track.branch.id, hour: choice.date, country: countryFromKey(tag), owner: project.owner, project: project.id, ordinal: choice.ordinal } } : null,
+  [track, recorded, choice.date, choice.ordinal, tag, project.owner, project.id]);
+  const validate = useMemo(() => (value: unknown) => validateProjectIteration(value, choice.date), [choice.date]);
+  const { data, error } = useProduct<SpecialProjectIteration>(runtime.client, request, active, validate, track?.source);
+  if (!recorded) return <p className="project-window-withheld" title="This iteration's hour is not recorded in this branch.">Not recorded</p>;
+  if (error) return <p className="project-window-withheld" title={error.message}>Not recorded</p>;
+  if (!data) return null;
+  const refusals = Object.keys(data.refusals);
+  if (data.unavailable) return <p className="project-window-withheld" title={data.unavailable}>Not recorded</p>;
+  return <>
+    {data.sections.length > 0 && <div className="project-window-output">{data.sections.map((section, at) => <div key={at}>
+      {section.heading && <span className="project-window-output-label"><GameRuns runs={trimLabel(section.heading)} /></span>}
+      <GameText runs={trimValue(section.runs)} onOpen={onOpen} />
+    </div>)}</div>}
+    {refusals.length > 0 && <p className="project-window-withheld" title={refusals.join('\n')}>Part of this reward can't be shown</p>}
+  </>;
 }

@@ -163,6 +163,7 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     at_hour::local_entry::<wars::contributions::WarContributions>(),
     at_hour::local_entry::<special_projects::details::SpecialProjectDetailsAt>(),
     at_hour::local_entry::<special_projects::details::SpecialProjectEffectsAt>(),
+    at_hour::local_entry::<special_projects::details::SpecialProjectIterationAt>(),
     at_hour::local_entry::<technology_effects::TechnologyEffectsAt>(),
     at_hour::local_entry::<entity_stats::EntityStatsAt>(),
     at_hour::local_entry::<air_superiority::AirSuperiorityAt>(),

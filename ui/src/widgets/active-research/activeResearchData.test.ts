@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { ResearchHistory } from '../research/types';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import { slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
-import { activeSlots } from './activeResearchData.ts';
+import { activeSlots, completedResearch } from './activeResearchData.ts';
 import type { ResearchEntry, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsAt } from '../research/types';
 
@@ -78,4 +78,15 @@ test('at an hour without a read, slots open at the last read are unavailable rat
   assert.deepEqual(slots.map(slot => [slot.kind, slot.slot.index]), [['unavailable', 0]]);
   const covered = activeSlots(history, reply(day(90), [], 'This country\'s research slots were not read together'));
   assert.deepEqual(covered.map(slot => slot.kind === 'unavailable' && slot.reason), ['This country\'s research slots were not read together']);
+});
+
+test('a researched technology opens as completed only once the recording has seen it complete', () => {
+  const done = (ended: number, seen: number | null): ResearchEntry => ({ ...active, outcome: 'completed', endedByHour: ended, outcomeObservedHour: seen });
+  const slots = [{ index: 0, availability: open, entries: [done(day(20), null), done(day(60), day(64))], states: [], progress: [] },
+    { index: 1, availability: open, entries: [{ ...done(day(30), null), token: 'sonar' }], states: [], progress: [] }];
+  assert.equal(completedResearch(slots, 'radar', day(10)), null);
+  assert.equal(completedResearch(slots, 'radar', day(62))?.hour, day(20), 'a completion is not shown before it was observed');
+  assert.equal(completedResearch(slots, 'radar', day(70))?.hour, day(60));
+  assert.equal(completedResearch(slots, 'radar', day(70))?.slot.index, 0);
+  assert.equal(completedResearch(slots, 'missing', day(70)), null);
 });

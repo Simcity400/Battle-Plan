@@ -26,11 +26,13 @@ use std::{
 use ts_rs::TS;
 
 mod facility;
+mod iteration;
 #[cfg(test)]
 mod tests;
 mod visibility;
 
 pub use facility::{FacilityDetails, FacilitySource};
+pub use iteration::SpecialProjectIterationAt;
 
 const COMPLETION_MARKER: u32 = super::fold::COMPLETION_MARKER;
 
@@ -214,21 +216,11 @@ pub struct SpecialProjectEffects {
     pub output: Option<ProjectEffects>,
     #[doc = " The pending reward's options, in its order; empty with none pending."]
     pub options: Vec<ProjectEffects>,
-    #[doc = " What each recorded iteration's chosen option gave, by its history ordinal."]
-    pub iterations: Vec<IterationEffects>,
     pub unavailable: Option<String>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(SpecialProjectEffects);
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct IterationEffects {
-    pub ordinal: u32,
-    pub effects: ProjectEffects,
-}
 
 pub struct Context {
     content: Result<Arc<ProjectContent>, String>,
@@ -363,6 +355,13 @@ impl<'c, 'r, 'q> Namer<'c, 'r, 'q> {
 
     fn label(&mut self, token: String) -> ProjectLabel {
         ProjectLabel { name: self.name(&token), token }
+    }
+
+    fn named(&mut self, token: Option<String>, id: u32, key: Option<String>) -> ProjectLabel {
+        match token {
+            Some(token) => ProjectLabel { name: self.name(key.as_deref().unwrap_or(&token)), token },
+            None => ProjectLabel { token: id.to_string(), name: None },
+        }
     }
 
     fn token(&mut self, frame: &DecodedFrame, id: u32, unavailable: &mut Vec<String>) -> ProjectLabel {
@@ -808,15 +807,30 @@ fn choices(frame: &DecodedFrame, project: &ProjectRow, namer: &mut Namer<'_, '_,
     let rows = frame.complete::<tables::ProjectHistory>().map_err(|why| unavailable.push(format!("Project choice history is unavailable: {why}"))).ok()?;
     let first = rows.partition_point(|row| (row.owner, row.project) < (project.owner, project.local_id));
     let last = first + rows[first..].partition_point(|row| (row.owner, row.project) == (project.owner, project.local_id));
+    let project_token = spelled(frame, project.definition_id).ok();
     Some(
         rows[first..last]
             .iter()
             .filter(|row| !(row.prototype_reward_handle == COMPLETION_MARKER && row.option_handle == COMPLETION_MARKER))
-            .map(|row| ProjectChoice {
+            .map(|row| {
+                let reward = spelled(frame, row.prototype_reward_handle).map_err(|why| unavailable.push(why)).ok();
+                let option = spelled(frame, row.option_handle).map_err(|why| unavailable.push(why)).ok();
+                let authored = namer
+                    .content()
+                    .zip(project_token.as_deref())
+                    .zip(reward.as_deref())
+                    .and_then(|((content, project), reward)| content.definitions.reward_named(project, reward).ok());
+                let option_key = authored
+                    .zip(option.as_deref())
+                    .and_then(|(found, option)| found.options.iter().find(|candidate| candidate.token.eq_ignore_ascii_case(option)))
+                    .and_then(|found| found.name.clone());
+                (row, namer.named(reward, row.prototype_reward_handle, authored.and_then(|found| found.name.clone())), namer.named(option, row.option_handle, option_key))
+            })
+            .map(|(row, reward, option)| ProjectChoice {
                 ordinal: row.ordinal,
                 date: row.date,
-                reward: namer.token(frame, row.prototype_reward_handle, unavailable),
-                option: namer.token(frame, row.option_handle, unavailable),
+                reward,
+                option,
                 province: row.context.province,
                 progress: row.context.progress,
                 character_reference: row.context.character_reference.to_string(),
@@ -892,7 +906,7 @@ fn projects(
 
 fn effect_tables() -> Vec<TableId> {
     let mut tables: Vec<TableId> = dashboard_text::effect_description::recorded_tables()
-        .chain([TableId::RaidFacilities, TableId::Provinces, TableId::Projects, TableId::ProjectPrograms, TableId::ProjectHistory, TableId::LexicalTokens, TableId::CountryLinks])
+        .chain([TableId::RaidFacilities, TableId::Provinces, TableId::Projects, TableId::ProjectPrograms, TableId::LexicalTokens, TableId::CountryLinks])
         .collect();
     tables.sort_unstable();
     tables.dedup();
@@ -956,7 +970,7 @@ impl AtHour for SpecialProjectEffectsAt {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![SpecialProjectEffectsParams::decl(), SpecialProjectEffects::decl(), ProjectEffects::decl(), IterationEffects::decl()]
+        vec![SpecialProjectEffectsParams::decl(), SpecialProjectEffects::decl(), ProjectEffects::decl()]
     }
 
     fn owner(params: &Self::Params) -> Option<&Country> {
@@ -974,7 +988,7 @@ impl AtHour for SpecialProjectEffectsAt {
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Special project effects name no country"))?;
         let content = at.context.content.as_ref().map_err(|why| dashboard_core::refused(why.clone()))?;
-        let mut out = SpecialProjectEffects { hour: at.hour, output: None, options: Vec::new(), iterations: Vec::new(), unavailable: None, warnings: Vec::new() };
+        let mut out = SpecialProjectEffects { hour: at.hour, output: None, options: Vec::new(), unavailable: None, warnings: Vec::new() };
         if !owners_of(frame, owner.slot)?.contains(&params.owner) {
             out.unavailable = Some("The project's owner is not this country at this hour".into());
             return Ok(out);
@@ -1017,31 +1031,6 @@ impl AtHour for SpecialProjectEffectsAt {
             }
         })();
         out.output = Some(effects(content, frame, owner.slot, project, &found.output, &scientist));
-        let history = frame.complete::<tables::ProjectHistory>()?;
-        let first = history.partition_point(|row| (row.owner, row.project) < key);
-        let last = first + history[first..].partition_point(|row| (row.owner, row.project) == key);
-        out.iterations = history[first..last]
-            .iter()
-            .filter(|row| !(row.prototype_reward_handle == COMPLETION_MARKER && row.option_handle == COMPLETION_MARKER))
-            .map(|row| {
-                let chosen = spelled(frame, row.prototype_reward_handle)
-                    .and_then(|reward| content.definitions.reward_named(&token, &reward))
-                    .and_then(|reward| {
-                        let option = spelled(frame, row.option_handle)?;
-                        let mut options = reward.options.iter().filter(|candidate| candidate.token.eq_ignore_ascii_case(&option));
-                        let found = options.next().ok_or("Chosen option is absent from recorded content")?;
-                        if options.any(|other| other.output != found.output) {
-                            return Err("Several options of this reward share the chosen token".to_owned());
-                        }
-                        Ok(found)
-                    });
-                let effects = match chosen {
-                    Ok(option) => effects(content, frame, owner.slot, project, &option.output, &scientist),
-                    Err(why) => ProjectEffects { text: String::new(), refusals: BTreeMap::from([(why, 1)]) },
-                };
-                IterationEffects { ordinal: row.ordinal, effects }
-            })
-            .collect();
         if let Recorded::Value(runtime) = &project.runtime
             && let (Some(id), Some(ordinal)) = (runtime.pending_reward, runtime.pending_ordinal)
         {

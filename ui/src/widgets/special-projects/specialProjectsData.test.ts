@@ -13,12 +13,10 @@ import { effectsStructure, effectTexts } from './projectDetailsData.ts';
 
 test('an open effect keeps its layout when its dated line or refusal count changes', () => {
   const record = (hour: number, count: number) => ({ hour, options: [], warnings: [], unavailable: null,
-    output: { text: 'Modifier\nAmount ' + count, refusals: { 'Unknown effect': count } },
-    iterations: [{ ordinal: 3, effects: { text: 'Bonus\nUses ' + count, refusals: {} } }] });
+    output: { text: 'Modifier\nAmount ' + count, refusals: { 'Unknown effect': count } } });
   assert.equal(effectsStructure(record(12, 3)), effectsStructure(record(24, 8)));
   assert.equal(effectTexts(record(24, 8)).get('output:1'), 'Amount 8');
   assert.equal(effectTexts(record(24, 8)).get('output:reason:Unknown effect'), 'Unknown effect (8)');
-  assert.equal(effectTexts(record(24, 8)).get('iteration:3:1'), 'Uses 8');
 });
 
 const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spaces', unavailable: null, warnings: [],

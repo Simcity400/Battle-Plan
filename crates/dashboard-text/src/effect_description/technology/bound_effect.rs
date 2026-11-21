@@ -442,7 +442,7 @@ impl Renderer<'_, '_, '_> {
         self.technology_condition(&conditions.allowed, selected)
     }
 
-    fn technology_entity(&self, kind: EntityKind, token: &[u8], name: String) -> String {
+    pub(super) fn technology_entity(&self, kind: EntityKind, token: &[u8], name: String) -> String {
         match std::str::from_utf8(c_string(token)) {
             Ok(token) if self.context.entity_links => mark(kind, token, &name),
             _ => name,

@@ -48,10 +48,7 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   if (!data || !reply) return <ListSkeleton label="Loading research..." />;
   const describe = (token: string, databaseIndex: number | null) => {
     const art = researchArt(artwork, token, databaseIndex);
-    const placed = data.technologyFolders.find(item => item.token === token && (item.databaseIndex == null || databaseIndex === null || item.databaseIndex === databaseIndex));
-    const folder = placed?.folder ? data.folders.find(item => item.key === placed.folder) : undefined;
-    return { token, name: contentTitle(art?.name, token, 'Technology name unavailable'), icon: artwork.get(token)?.icon ?? undefined, description: art?.description ?? null,
-      folder: folder ? contentTitle(folder.name, folder.key, 'Folder name unavailable') : null };
+    return { token, name: contentTitle(art?.name, token, 'Technology name unavailable'), icon: artwork.get(token)?.icon ?? undefined };
   };
   const open = (token: string, databaseIndex: number | null, x: number, y: number) => { untip(); setOpened({ tag, token, databaseIndex, x, y }); };
   const researching = rows.filter((item): item is Extract<ActiveSlot, { kind: 'researching' }> => item.kind === 'researching');

@@ -8,6 +8,16 @@ export type ActiveSlot =
   | { kind: 'idle'; slot: ResearchSlotHistory; read: ResearchSlotNow }
   | { kind: 'unavailable'; slot: ResearchSlotHistory; reason: string };
 
+export function completedResearch(slots: readonly ResearchSlotHistory[], token: string, hour: number) {
+  let found: { slot: ResearchSlotHistory; entry: ResearchEntry; hour: number } | null = null;
+  for (const slot of slots) for (const entry of slot.entries) {
+    if (entry.token !== token || entry.outcome !== 'completed' || entry.endedByHour === null) continue;
+    if (Math.max(entry.endedByHour, entry.outcomeObservedHour ?? entry.endedByHour) > hour) continue;
+    if (!found || entry.endedByHour > found.hour) found = { slot, entry, hour: entry.endedByHour };
+  }
+  return found;
+}
+
 export function activeSlots(history: ResearchHistory, now: ResearchSlotsAt): ActiveSlot[] {
   const hour = now.hour;
   const coverage = coverageAt(history.coverage, hour);
