@@ -1050,12 +1050,16 @@ def not_the_runner(git_in_worktree):
             return f"{WORKTREE} is not a git worktree of its own: install a runner in another --ci-dir"
         private = Path(git_in_worktree("rev-parse", "--absolute-git-dir"))
         marked = (private / RUNNER_MARK).is_file()
-        pointer = Path((private / "gitdir").read_text(encoding="utf-8").strip()).resolve()
+        pointer = private / (private / "gitdir").read_text(encoding="utf-8").strip()
     except (OSError, RuntimeError, subprocess.CalledProcessError):
         return f"{WORKTREE} is not a runner install made: name another --ci-dir"
     if not marked:
         return f"{WORKTREE} is not a runner install made: name another --ci-dir"
-    if pointer != (WORKTREE / ".git").resolve():
+    try:
+        same = pointer.name == ".git" and os.path.samefile(pointer, WORKTREE / ".git")
+    except OSError:
+        same = False
+    if not same:
         return f"{WORKTREE} is a copy of the runner at {pointer.parent}: name that runner's --ci-dir"
     return None
 
