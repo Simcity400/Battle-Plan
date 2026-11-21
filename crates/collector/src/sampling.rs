@@ -2141,8 +2141,8 @@ impl Drop for CallbackPriority {
 }
 
 /// # Safety
-/// The callback holds the live acquisition boundary: nothing writes the simulation until this
-/// returns, because the game is held at the hourly boundary or the capture runs beside it with
+/// The requirements of [`acquire_with_memory`] apply, and the callback holds the live acquisition
+/// boundary: nothing writes the simulation until this returns, because the game is held at the hourly boundary or the capture runs beside it with
 /// every command-batch writer waiting at the capture gate. Portrait writers may proceed; the
 /// capture's `PreImagesCapture` keeps their pre-images, and the portrait reader validates the live
 /// bytes it reads against them.
@@ -2154,9 +2154,11 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
 }
 
 /// # Safety
-/// Every frame index in `dispatch` names a live frame this capture holds exclusively, taken with
-/// [`Shared::take_frame`], and `memory` stays valid for every read, the workers' included, until
-/// this returns. Reading the live game, the requirements of [`acquire`] apply as well.
+/// This is the only capture running against `shared`, so its capture-only state (the cadence,
+/// clocks and stores) has one user. Every frame index in `dispatch` names a live frame this capture
+/// holds exclusively, taken with [`Shared::take_frame`], and `memory` stays valid for every read,
+/// the workers' included, until this returns. Reading the live game, the boundary requirement of
+/// [`acquire`] applies as well.
 unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: impl Memory) {
     let Dispatch {
         world_generation,
