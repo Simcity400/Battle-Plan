@@ -656,17 +656,21 @@ pub(crate) fn saved_files(root: &Path) -> Vec<PathBuf> {
             })
             .collect()
     };
-    let mut files = recordings(root);
+    recording_folders(root).iter().flat_map(|folder| recordings(folder)).collect()
+}
+
+pub(crate) fn recording_folders(root: &Path) -> Vec<PathBuf> {
+    let mut folders = vec![root.to_path_buf()];
     for entry in fs::read_dir(root).into_iter().flatten().flatten() {
         let name = entry.file_name();
         if entry.file_type().is_ok_and(|kind| kind.is_dir())
             && name != "sessions"
             && !name.to_string_lossy().starts_with('.')
         {
-            files.extend(recordings(&entry.path()));
+            folders.push(entry.path());
         }
     }
-    files
+    folders
 }
 
 #[cfg(test)]

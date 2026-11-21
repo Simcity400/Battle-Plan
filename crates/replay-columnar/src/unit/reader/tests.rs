@@ -2,6 +2,10 @@ use super::*;
 use crate::unit::{FrameEntry, PartEntry, column_stream, put_varint, put_wide, zig_wide};
 
 fn part_of(tracks: u64, directory: &[u8], events: &[u8]) -> (Vec<u8>, PartEntry) {
+    part_in(column_stream(0), tracks, directory, events)
+}
+
+fn part_in(stream: u32, tracks: u64, directory: &[u8], events: &[u8]) -> (Vec<u8>, PartEntry) {
     let mut raw = vec![0_u8];
     put_varint(&mut raw, tracks);
     put_varint(&mut raw, directory.len() as u64);
@@ -11,7 +15,7 @@ fn part_of(tracks: u64, directory: &[u8], events: &[u8]) -> (Vec<u8>, PartEntry)
     raw.extend_from_slice(events);
     let stored = zstd::bulk::compress(&raw, 1).unwrap();
     let digest = blake3::hash(&stored).as_bytes()[..16].try_into().unwrap();
-    let frame = FrameEntry { streams: vec![column_stream(0)], offset: 0, stored: stored.len() as u32, raw: raw.len() as u32, digest, chained: false, small: false };
+    let frame = FrameEntry { streams: vec![stream], offset: 0, stored: stored.len() as u32, raw: raw.len() as u32, digest, chained: false, small: false };
     (stored, PartEntry { first: 0, frames: vec![frame], ..PartEntry::default() })
 }
 
@@ -55,6 +59,13 @@ fn an_event_running_into_the_next_track_is_refused_by_name() {
     let (bytes, entry) = part_of(2, &[0, 2, 2, 1, 2, 2], &[0, 0x82, 1, 2]);
     let refused = advanced(&bytes, &entry).unwrap_err();
     assert!(refused.to_string().contains("damaged"), "{refused}");
+    let part = fetch(&bytes, &entry, BLOCK as u16 - 1, &[0], None).unwrap();
+    let walked = part.tracks(0, false, |_, _, _| {}).unwrap_err();
+    assert!(walked.to_string().contains("ends inside a number"), "the event walk reads no byte of the next track: {walked}");
+    let (bytes, entry) = part_in(crate::unit::READ, 2, &[0, 2, 2, 1, 2, 2], &[0, 0x82, 1, 2]);
+    let part = fetch(&bytes, &entry, BLOCK as u16 - 1, &[], None).unwrap();
+    let marked = part.reads(0, BLOCK as u16 - 1, &mut Vec::new()).unwrap_err();
+    assert!(marked.to_string().contains("ends inside a number"), "a read mark's gap reads no byte of the next track: {marked}");
 }
 
 #[test]
@@ -291,4 +302,46 @@ fn stepping_past_values_and_summing_keys_equal_reading_them_one_at_a_time() {
         }
     }
     assert_eq!(numbers::skip(&raw, 0, ends[3], 4), None, "four values past an end after three");
+}
+
+#[test]
+fn a_number_wider_than_its_track_marks_the_track_damaged() {
+    let over = |groups: usize, last: u8| [vec![0x80; groups], vec![last]].concat();
+    for (bytes, value, damaged, code_damaged) in [
+        (over(9, 1), 1 << 63, false, false),
+        (over(9, 2), 0, true, false),
+        (over(9, 4), 0, true, true),
+        (over(10, 0), 0, true, true),
+        (over(18, 4), 0, true, true),
+    ] {
+        let (mut at, mut seen) = (0, false);
+        assert_eq!(numbers::varint(&bytes, &mut at, &mut seen), value);
+        assert_eq!((at, seen), (bytes.len(), damaged), "{bytes:02x?}");
+        let (mut at, mut seen) = (0, false);
+        numbers::code(&bytes, &mut at, &mut seen);
+        assert_eq!((at, seen), (bytes.len(), code_damaged), "{bytes:02x?} as a code");
+    }
+}
+
+#[test]
+fn an_event_code_past_its_track_width_is_refused_by_the_event_walk_as_by_the_reader() {
+    let mut events = vec![0];
+    events.extend([0x80; 10]);
+    events.push(0x00);
+    let (bytes, entry) = part_of(1, &[0, 2, events.len() as u8], &events);
+    let part = fetch(&bytes, &entry, BLOCK as u16 - 1, &[0], None).unwrap();
+    let refused = part.tracks(0, false, |_, _, _| {}).unwrap_err();
+    assert!(refused.to_string().contains("passes 65 bits"), "{refused}");
+    let damaged = advanced(&bytes, &entry).unwrap_err();
+    assert!(damaged.to_string().contains("damaged"), "{damaged}");
+}
+
+#[test]
+fn a_reserved_event_code_is_refused_by_the_event_walk_as_by_the_reader() {
+    let (bytes, entry) = part_of(1, &[0, 2, 2], &[0, 7]);
+    let part = fetch(&bytes, &entry, BLOCK as u16 - 1, &[0], None).unwrap();
+    let refused = part.tracks(0, false, |_, _, _| {}).unwrap_err();
+    assert!(refused.to_string().contains("reserved"), "{refused}");
+    let damaged = advanced(&bytes, &entry).unwrap_err();
+    assert!(damaged.to_string().contains("damaged"), "{damaged}");
 }

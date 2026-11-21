@@ -348,6 +348,86 @@ fn a_capture_is_written_once_into_its_recording() {
 }
 
 #[test]
+fn a_session_facts_file_whose_identity_passes_a_mebibyte_reads_alike_from_memory_and_its_file() {
+    use crate::campaign::{encode_session_facts, session_facts_for, session_facts_place};
+    let folder = Folder::new("large-facts");
+    let Spooled::SessionStart(start) = session() else { unreachable!("the session's start") };
+    let mods = (0..25_000)
+        .map(|at| crate::identity::Mod { id: format!("mod-{at:05}"), display_name: format!("A synthetic mod with a long display name, number {at}"), declared_version: "1.0".into(), hash: [4; 32] })
+        .collect();
+    let identity = Identity { mods, ..start.identity.clone() };
+    let pack = b"a session's facts";
+    let bytes = encode_session_facts(&identity, pack).unwrap();
+    assert!(bytes.len() > 2 << 20, "{} bytes", bytes.len());
+    let path = folder.0.join(crate::campaign::SESSION_FACTS_FILE);
+    fs::write(&path, &bytes).unwrap();
+    assert_eq!(session_facts_for(&bytes, &identity), Some(&pack[..]));
+    let (offset, length) = session_facts_place(&mut File::open(&path).unwrap(), &identity).unwrap().expect("the file-backed reader admits what the writer wrote");
+    assert_eq!(&bytes[offset as usize..][..length as usize], pack);
+    assert_eq!(session_facts_for(&bytes, &start.identity), None);
+    assert_eq!(session_facts_place(&mut File::open(&path).unwrap(), &start.identity).unwrap(), None);
+
+    let headless = &bytes[..bytes.len() - pack.len()];
+    fs::write(&path, headless).unwrap();
+    assert_eq!(session_facts_for(headless, &identity), None, "a header with no pack after it");
+    assert_eq!(session_facts_place(&mut File::open(&path).unwrap(), &identity).unwrap(), None);
+    let mut overlong = bytes.clone();
+    overlong[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+    fs::write(&path, &overlong).unwrap();
+    assert_eq!(session_facts_for(&overlong, &identity), None, "a header naming more than the file holds");
+    assert_eq!(session_facts_place(&mut File::open(&path).unwrap(), &identity).unwrap(), None);
+    assert!(encode_session_facts(&identity, &[]).is_err(), "the writer admits only what its readers do");
+}
+
+#[test]
+fn the_encoders_block_count_follows_each_committed_block_across_short_runs_and_a_resume() {
+    use crate::encode_report::{Everything, stopped_after};
+    let folder = Folder::new("committed-blocks");
+    let mut records = vec![session(), branch(1, 100)];
+    records.extend(hours(1, 100..=399, 19));
+    records.push(branch(2, 2_000));
+    records.extend(hours(2, 2_000..=3_439, 23));
+    records.push(detach(3_439));
+    fixtures::write_journal(&folder.journal(), 0, CAMPAIGN, &[records], true).unwrap();
+    let encode = |host: &mut Everything, until: Option<u64>| {
+        let mut writer = folder.open(0);
+        let mut journal = Journal::open(&folder.journal(), 0);
+        journal.start(writer.segments()).unwrap();
+        let mut blocks = Vec::new();
+        loop {
+            let progress = writer.advance(&mut journal, host, &|| true).unwrap();
+            if std::mem::take(&mut host.committed) && blocks.last().is_none_or(|&(held, _)| held != host.blocks) {
+                blocks.push((host.blocks, host.hours));
+                if stopped_after(until, host.blocks, host.hours) {
+                    return blocks;
+                }
+            }
+            if progress == Progress::Finished {
+                return blocks;
+            }
+        }
+    };
+
+    let mut whole = Everything::new(None, None);
+    assert_eq!(encode(&mut whole, None), [(1, 300), (2, 1_020), (3, 1_740)], "the short first run is block 0, and the longer run blocks 1 and 2");
+    fs::remove_file(folder.recording()).unwrap();
+    fs::remove_dir_all(folder.journal()).unwrap();
+    let mut records = vec![session(), branch(1, 100)];
+    records.extend(hours(1, 100..=399, 19));
+    records.push(branch(2, 2_000));
+    records.extend(hours(2, 2_000..=3_439, 23));
+    records.push(detach(3_439));
+    fixtures::write_journal(&folder.journal(), 0, CAMPAIGN, &[records], true).unwrap();
+
+    let mut first = Everything::new(None, None);
+    assert_eq!(encode(&mut first, Some(0)), [(1, 300)], "--stop-after=0 stops at the short block");
+    let mut resumed = Everything::new(None, None);
+    resumed.blocks = 1;
+    assert_eq!(encode(&mut resumed, Some(1)), [(2, 720)], "a resumed encoder counts on from the blocks its capture committed");
+    assert_eq!(saved(&folder.recording()).directories().unwrap().iter().map(|run| run.blocks()).sum::<u32>(), 2);
+}
+
+#[test]
 fn a_run_s_first_hour_is_its_first_restore_and_a_load_starts_a_run() {
     let folder = Folder::new("first");
     let mut records = vec![session(), branch(1, 100)];

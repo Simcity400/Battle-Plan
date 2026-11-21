@@ -12,7 +12,7 @@ const MB = 2 ** 20;
 
 function snapshot(change: Partial<Snapshot>): Snapshot {
   return { phase: 'waiting', campaign: null, recording: null, name: null, continued: false, hour: null, firstHour: null, savedBytes: null, spoolBytes: null,
-    progress: null, startedAt: null, stopping: false, problem: null, automatic: true, session: null, flag: null, captureMode: null, ...change };
+    startedAt: null, stopping: false, problem: null, automatic: true, session: null, flag: null, captureMode: null, ...change };
 }
 const recording = (change: Partial<Snapshot> = {}) => snapshot({ phase: 'recording', campaign: CAMPAIGN, recording: PATH, name: 'Germany 1936–1943',
   continued: true, hour: hour(1943, 6, 12), spoolBytes: 1229 * MB, savedBytes: 214 * MB, ...change });
@@ -24,8 +24,8 @@ test('every panel state reads as the approved design', () => {
     detail: '12 Jun 1943', sizes: '1.2 GB this session · 214 MB saved', action: 'stop', campaign: true });
   assert.deepEqual(head(recording({ phase: 'notRecording', hour: hour(1938, 2, 3), spoolBytes: null })), { glyph: false, flag: null,
     title: 'Germany 1936–1943', dot: 'grey', label: null, detail: 'Not recording · 3 Feb 1938', action: 'record', campaign: true });
-  assert.deepEqual(head(recording({ phase: 'saving', progress: 0.35 })), { glyph: false, flag: null, title: 'Germany 1936–1943', dot: 'spin',
-    label: 'Saving recording…', detail: null, action: null, campaign: false, bar: 0.35 });
+  assert.deepEqual(head(recording({ phase: 'saving' })), { glyph: false, flag: null, title: 'Germany 1936–1943', dot: 'spin',
+    label: 'Saving recording…', detail: null, action: null, campaign: false, busy: true });
   assert.deepEqual(head(recording({ phase: 'saved', firstHour: hour(1936, 1, 1), savedBytes: 412 * MB, spoolBytes: null })), { glyph: false, flag: null,
     title: 'Germany 1936–1943', dot: 'green', label: 'Saved', detail: '1936 – Jun 1943 · 412 MB', action: 'open', campaign: false });
   assert.deepEqual(head(recording({ phase: 'discarded' })), { glyph: false, flag: null, title: 'Germany 1936–1943', dot: 'grey', label: null,
@@ -89,7 +89,6 @@ test('unknown parts are left out rather than guessed', () => {
   assert.equal(head(recording({ hour: null, spoolBytes: null, savedBytes: null })).sizes, null);
   assert.equal(head(recording({ recording: null, name: null })).title, '');
   assert.equal(head(recording({ recording: null, name: null })).glyph, true);
-  assert.equal(head(recording({ phase: 'saving', progress: null })).bar, null);
   assert.deepEqual(head(snapshot({ phase: 'notRecording' })), { glyph: true, flag: null, title: 'Not recording', dot: null, label: null,
     detail: null, action: 'record', campaign: false });
   assert.equal(head(snapshot({ automatic: false })).detail, 'Auto record is off');

@@ -1575,3 +1575,22 @@ fn a_log_key_given_again_costs_its_table_from_that_hour_by_name() {
     let statuses: Vec<String> = journal_statuses(&memory, 1).into_iter().map(|(status, _)| status).collect();
     assert_eq!(statuses, ["Complete", "Complete", "a log row changed after it was written: table 1 key 0x64 given again"]);
 }
+
+#[test]
+fn unit_numbers_hold_their_widest_values_and_refuse_bits_past_them() {
+    let (mut narrow, mut wide) = (Vec::new(), Vec::new());
+    put_varint(&mut narrow, u64::MAX);
+    put_wide(&mut wide, u128::MAX);
+    assert_eq!(get_varint(&narrow, &mut 0).unwrap(), u64::MAX);
+    assert_eq!(get_wide(&wide, &mut 0).unwrap(), u128::MAX);
+    let over = |groups: usize, last: u8| [vec![0x80; groups], vec![last]].concat();
+    assert_eq!(get_varint(&over(9, 1), &mut 0).unwrap(), 1 << 63);
+    assert_eq!(get_wide(&over(18, 3), &mut 0).unwrap(), 3 << 126);
+    assert_eq!(get_code(&over(9, 3), &mut 0).unwrap(), 3 << 63);
+    for refused in [get_code(&over(9, 4), &mut 0), get_code(&over(10, 0), &mut 0)] {
+        assert!(refused.unwrap_err().to_string().contains("passes 65 bits"));
+    }
+    for refused in [get_varint(&over(9, 2), &mut 0).map(u128::from), get_wide(&over(18, 4), &mut 0)] {
+        assert!(refused.unwrap_err().to_string().contains("passes"));
+    }
+}

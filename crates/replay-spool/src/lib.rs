@@ -11,7 +11,7 @@ use std::{
     marker::PhantomData,
     mem::size_of,
     num::{NonZeroU8, NonZeroU16, NonZeroU32, NonZeroU64, NonZeroUsize},
-    ops::{Range, RangeInclusive},
+    ops::Range,
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -1149,17 +1149,6 @@ impl<T: Spooled> Spooled for Range<T> {
     fn unspool(input: &mut Reader<'_>) -> io::Result<Self> {
         let start = T::unspool(input)?;
         Ok(start..T::unspool(input)?)
-    }
-}
-
-impl<T: Spooled> Spooled for RangeInclusive<T> {
-    fn spool(&self, out: &mut Writer<'_>) -> io::Result<()> {
-        self.start().spool(out)?;
-        self.end().spool(out)
-    }
-    fn unspool(input: &mut Reader<'_>) -> io::Result<Self> {
-        let start = T::unspool(input)?;
-        Ok(start..=T::unspool(input)?)
     }
 }
 

@@ -19,7 +19,7 @@ static ALLOCATOR: engine_allocation::labels::Counting<std::alloc::System> =
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = || io::Error::new(io::ErrorKind::InvalidInput, "journal-encode <session directory> <capture> <out.battleplan> [--level=N] [--facts=<file>] [--memory] [--timed] [--pace=<hours a second>,<from hour>] [--times=<factors>] [--start=<block> --start-file=<file>] [--hours=N] [--stop-after=<block>] | journal-encode --preroll <session directory> <capture> <block> <file>");
+    let usage = || io::Error::new(io::ErrorKind::InvalidInput, "journal-encode <session directory> <capture> <out.battleplan> [--level=N] [--facts=<file>] [--memory] [--timed] [--pace=<hours a second>,<from hour>] [--times=<factors>] [--start=<block> --start-file=<file>] [--hours=N] [--stop-after=<block of the capture, from 0>] | journal-encode --preroll <session directory> <capture> <block> <file>");
     if let [flag, directory, capture, block, file] = args.as_slice()
         && flag == "--preroll"
     {
@@ -67,6 +67,11 @@ fn main() -> io::Result<()> {
     let facts = facts.map(|(_, pack)| pack);
     let out = Path::new(out);
     let state = out.with_extension("state");
+    if let (Some(start), Some(block)) = (start, stop_after)
+        && block <= u64::from(start)
+    {
+        return Err(io::Error::other(format!("Block {block} of capture {capture} comes before block {}, the first this start writes", u64::from(start) + 1)));
+    }
     let start = match (start, start_file) {
         (None, None) => None,
         (Some(block), Some(file)) => {
@@ -91,6 +96,7 @@ fn main() -> io::Result<()> {
     }
     let tables = replay_data::rows::TableId::ALL.len();
     let factors = times.unwrap_or_else(|| Factors { factor: vec![1; tables], in_phase: vec![false; tables] });
+    let started_after = start.as_ref().map(|start| u64::from(start.block) + 1);
     let mut source = Multiplied::open(Path::new(directory), capture, factors, start)?;
     let first_hours = u64::from(writer.segments()).saturating_sub(1) * 720;
     source.start(writer.segments())?;
@@ -98,6 +104,13 @@ fn main() -> io::Result<()> {
         "build": { "memory_labels": engine_allocation::labels::ENABLED, "multiplied": cfg!(feature = "multiplied"), "keep_journal": cfg!(feature = "keep-journal") } }));
     let facts = facts.filter(|_| !writer.carries_facts());
     let mut host = Everything::new(facts, pace);
+    host.blocks = started_after.unwrap_or_else(|| source.blocks_before(writer.segments()));
+    if let Some(block) = stop_after.filter(|&block| block < host.blocks) {
+        return Err(io::Error::other(match started_after {
+            Some(first) => format!("Block {block} of capture {capture} comes before block {first}, the first this start writes"),
+            None => format!("Block {block} of capture {capture} is committed in {} already", out.display()),
+        }));
+    }
     let taken = host.taken.clone();
     loop {
         let stop = || memory || stop_after.is_some() || taken.get() >= limit;
@@ -106,7 +119,7 @@ fn main() -> io::Result<()> {
             if memory {
                 eprintln!("{}", serde_json::Value::Object(encode_report::revision_line(&writer, host.revisions, host.hours + first_hours, started)));
             }
-            if encode_report::stopped_after(stop_after, host.hours + first_hours) {
+            if encode_report::stopped_after(stop_after, host.blocks, host.hours + first_hours) {
                 std::process::exit(0);
             }
         }
@@ -114,10 +127,16 @@ fn main() -> io::Result<()> {
             Progress::Finished => break,
             Progress::Waiting => {
                 writer.finish_stopped(&mut source, &mut host, "the journal ends")?;
+                if std::mem::take(&mut host.committed) {
+                    encode_report::stopped_after(stop_after, host.blocks, host.hours + first_hours);
+                }
                 break;
             }
             Progress::Paused if host.hours >= limit => {
                 writer.finish_stopped(&mut source, &mut host, "the hours asked are written")?;
+                if std::mem::take(&mut host.committed) {
+                    encode_report::stopped_after(stop_after, host.blocks, host.hours + first_hours);
+                }
                 break;
             }
             Progress::Paused => continue,

@@ -971,6 +971,7 @@ pub struct Multiplied {
     built: Option<Built>,
     passing: Option<(Option<crate::columnar_journal::Witness>, Vec<u8>)>,
     runs: u32,
+    segment_hours: Vec<(u32, u64)>,
     pub spent: std::time::Duration,
 }
 
@@ -1023,6 +1024,7 @@ impl Multiplied {
                 Some(Arc::new(Synthetic::open(&start.file, capture, start.block, kinds.len())?))
             }
         };
+        let segment_hours = segments.iter().zip(&scanned).map(|((segment, _), held)| (*segment, held.hours)).collect();
         drop(scanned);
         let upstream = |prefix: Vec<Prefix>| -> io::Result<Upstream> {
             let mut journal = Journal::open_read_only(directory, capture);
@@ -1033,7 +1035,11 @@ impl Multiplied {
         let out_of_phase = (0..factors.factor.len()).filter(|&table| !factors.in_phase[table]).map(|table| factors.factor[table]).max().unwrap_or(1);
         let copies = (1..out_of_phase).map(|_| upstream(Vec::new())).collect::<io::Result<_>>()?;
         let live = factors.factor.iter().map(|&factor| if factor > 1 { vec![Bits::default(); factor as usize] } else { Vec::new() }).collect();
-        Ok(Self { kinds, columns, journal, begin: None, start: synthetic.clone(), exact_schema: exact, recorded, factors, first, copies, hours: 0, live, built: None, passing: None, runs: 0, spent: std::time::Duration::ZERO })
+        Ok(Self { kinds, columns, journal, begin: None, start: synthetic.clone(), exact_schema: exact, recorded, factors, first, copies, hours: 0, live, built: None, passing: None, runs: 0, segment_hours, spent: std::time::Duration::ZERO })
+    }
+
+    pub fn blocks_before(&self, segment: u32) -> u64 {
+        self.segment_hours.iter().filter(|&&(held, hours)| held < segment && hours > 0).count() as u64
     }
 
     pub fn in_phase(&self) -> Vec<String> {
@@ -1626,6 +1632,15 @@ mod tests {
             assert_eq!(statuses[TableId::CountryLinks.index()], Status::Complete);
             assert_eq!(statuses[TableId::Countries.index()], Status::NotRecorded, "Countries takes no status of the table before it");
         }
+    }
+
+    #[test]
+    fn the_capture_s_committed_blocks_are_its_segments_that_hold_hours() {
+        let folder = Folder::new("blocks");
+        journal(&folder.0, None, false);
+        let kinds = schema().unwrap();
+        let source = Multiplied::open_with(&folder.0, 0, Factors { factor: vec![1; kinds.len()], in_phase: vec![false; kinds.len()] }, None, &MIDDLE).unwrap();
+        assert_eq!([0, 1, 2, 3].map(|segment| source.blocks_before(segment)), [0, 0, 1, 1], "the opening segment holds no block; the run's segment holds block 0");
     }
 
     #[test]

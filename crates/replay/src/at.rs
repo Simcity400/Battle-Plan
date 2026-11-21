@@ -109,14 +109,25 @@ pub struct Cursor<'r, 'a> {
 }
 
 pub struct Readers {
-    reads: Vec<(TableId, Option<Vec<usize>>)>,
+    source: std::sync::Weak<crate::columnar_frames::Source>,
+    revision: replay_columnar::container::Revision,
+    reads: Vec<ReadKey>,
     run: u32,
-    ordinals: u32,
     readers: Vec<Result<TableReader, String>>,
 }
 
-fn read_tables(reads: &[Read<'_>]) -> Vec<(TableId, Option<Vec<usize>>)> {
-    reads.iter().map(|read| (read.table, read.columns.map(<[usize]>::to_vec))).collect()
+type ReadKey = (TableId, Vec<usize>, Option<String>, bool);
+
+fn read_tables(recording: &Recording, reads: &[Read<'_>]) -> io::Result<Vec<ReadKey>> {
+    reads
+        .iter()
+        .map(|read| {
+            let index = read.table.index();
+            let recorded = recording.columns()[index].min(read.table.schema().len());
+            let columns = crate::cells::read_columns(recording, recorded, index, read.columns);
+            Ok((read.table, columns, recording.withheld_reason(index).map(str::to_owned), recording.predates(index).is_some()))
+        })
+        .collect()
 }
 
 impl<'r, 'a> Cursor<'r, 'a> {
@@ -135,8 +146,9 @@ impl<'r, 'a> Cursor<'r, 'a> {
     pub fn resume(recording: &'r Recording, reads: &[Read<'a>], left: Option<Readers>) -> io::Result<Self> {
         let mut cursor = Self::new(recording, reads)?;
         if let Some(left) = left
-            && left.reads == read_tables(reads)
-            && recording.run(left.run).is_ok_and(|held| held.ordinals == left.ordinals)
+            && left.source.upgrade().is_some_and(|source| std::sync::Arc::ptr_eq(&source, &recording.source()))
+            && left.revision == recording.revision()
+            && left.reads == read_tables(recording, reads)?
         {
             cursor.readers = Some((left.run, left.readers));
         }
@@ -148,8 +160,8 @@ impl<'r, 'a> Cursor<'r, 'a> {
             return None;
         }
         let (run, readers) = self.readers?;
-        let ordinals = self.recording.run(run).ok()?.ordinals;
-        Some(Readers { reads: read_tables(&self.reads), run, ordinals, readers })
+        let reads = read_tables(self.recording, &self.reads).ok()?;
+        Some(Readers { source: std::sync::Arc::downgrade(&self.recording.source()), revision: self.recording.revision(), reads, run, readers })
     }
 
     pub fn frame(&mut self, run: u32, hour: i32) -> io::Result<DecodedFrame> {

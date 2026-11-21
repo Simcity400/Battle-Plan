@@ -108,6 +108,18 @@ impl Tapped {
     }
 }
 
+pub(crate) fn read_columns(recording: &Recording, recorded: usize, table: usize, columns: Option<&[usize]>) -> Vec<usize> {
+    match columns {
+        Some(columns) => {
+            let mut columns: Vec<usize> = columns.iter().copied().filter(|&column| column < recorded).collect();
+            columns.sort_unstable();
+            columns.dedup();
+            columns
+        }
+        None => recording.read_columns(table),
+    }
+}
+
 pub struct TableReader {
     table: usize,
     kinds: Vec<Kind>,
@@ -154,15 +166,7 @@ impl TableReader {
         }
         let kinds = crate::columnar_frames::schema()?.swap_remove(index);
         let recorded = recording.columns()[index].min(kinds.len());
-        let columns: Vec<usize> = match columns {
-            Some(columns) => {
-                let mut columns: Vec<usize> = columns.iter().copied().filter(|&column| column < recorded).collect();
-                columns.sort_unstable();
-                columns.dedup();
-                columns
-            }
-            None => recording.read_columns(index),
-        };
+        let columns = read_columns(recording, recorded, index, columns);
         let log = !absent && held.ordinals > 0 && unit::reader::class_of(&recording.table_pages(run, index, 0, 1)?, index)?;
         Ok(Self {
             table: index,

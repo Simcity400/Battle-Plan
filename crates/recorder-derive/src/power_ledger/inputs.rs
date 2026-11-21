@@ -180,9 +180,17 @@ pub(super) fn daily(hour: &Hour<'_>, raw: u32) -> io::Result<Option<CountryPower
     keyed(&hour.table(TableId::CountryPowerDaily), u128::from(raw))
 }
 
+pub(super) fn fresh_daily(hour: &Hour<'_>, raw: u32) -> io::Result<Option<CountryPowerDailyRow>> {
+    if !daily_complete(hour) || hour.table(TableId::CountryPowerDaily).sampled_at() != Some(hour.hour) {
+        return Ok(None);
+    }
+    daily(hour, raw)
+}
+
 pub(super) struct Publication {
     pub country: u32,
     pub costs: Vec<CountryPowerDailyCostRow>,
+    pub deleted_only: bool,
 }
 
 pub(super) fn publications(hour: &Hour<'_>) -> io::Result<Logged<Publication>> {
@@ -191,19 +199,29 @@ pub(super) fn publications(hour: &Hour<'_>) -> io::Result<Logged<Publication>> {
         return Ok(Logged { backlog: hour.first, rows: Vec::new() });
     }
     let view = hour.table(table);
-    let mut raws: Vec<u32> = hour.written_rows(table, Columns::Every).into_iter().filter_map(|slot| view.key(slot)).map(|key| (key >> 32) as u32).collect();
-    raws.sort_unstable();
-    raws.dedup();
+    let mut written: Vec<u32> = hour.written_rows(table, Columns::Every).into_iter().filter_map(|slot| view.key(slot)).map(|key| (key >> 32) as u32).collect();
+    written.sort_unstable();
+    written.dedup();
+    let mut raws: Vec<(u32, bool)> = written.iter().map(|&raw| (raw, false)).collect();
+    let mut deleted: Vec<u32> = hour.deleted_keys(table).map(|key| (key >> 32) as u32).filter(|raw| written.binary_search(raw).is_err()).collect();
+    deleted.sort_unstable();
+    deleted.dedup();
+    raws.extend(deleted.into_iter().map(|raw| (raw, true)));
     let mut rows = Vec::with_capacity(raws.len());
-    for country in raws {
+    for (country, deleted_only) in raws {
         let mut costs = Vec::new();
         for ordinal in 0..=u32::MAX {
             let Some(cost) = keyed::<CountryPowerDailyCostRow>(&hour.table(table), u128::from(country) << 32 | u128::from(ordinal))? else { break };
             costs.push(cost);
         }
-        rows.push(Publication { country, costs });
+        rows.push(Publication { country, costs, deleted_only });
     }
     Ok(Logged { backlog: hour.first, rows })
+}
+
+pub(super) fn holds_no_costs(hour: &Hour<'_>, country: u32) -> io::Result<bool> {
+    let table = TableId::CountryPowerDailyCosts;
+    Ok(hour.complete(table) && hour.table(table).slot(u128::from(country) << 32).is_none())
 }
 
 pub(super) fn input_reason(hour: &Hour<'_>) -> Option<String> {

@@ -6,17 +6,21 @@ use replay_data::identity::is_campaign_uuid;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
+    io,
     os::windows::process::CommandExt,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::Mutex,
     time::SystemTime,
 };
-use windows_sys::Win32::System::Threading::{
-    CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
+use windows_sys::Win32::System::{
+    JobObjects::IsProcessInJob,
+    Threading::{CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, GetCurrentProcess},
 };
 
 const RECORDER: &str = "battle-plan-recorder.exe";
+
+const HELD: &str = "Battle Plan Recorder was not started with Battle Plan: the program that opened Battle Plan would close the recorder with it, ending a recording. Start Battle Plan Recorder from the Start menu, or turn on Start with Windows in its settings.";
 
 pub fn start_recorder() {
     if !RecorderSettings::load().map_or(true, |settings| settings.start_with_replay) {
@@ -25,20 +29,68 @@ pub fn start_recorder() {
     let Ok(executable) = std::env::current_exe().map(|path| path.with_file_name(RECORDER)) else {
         return;
     };
-    if !executable.is_file() {
+    if !executable.is_file() || recorder_running() {
         return;
     }
-    let spawn = |flags| {
-        Command::new(&executable)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(flags)
-            .spawn()
+    let mut command = Command::new(&executable);
+    command.arg(replay::recorder_settings::STARTED_WITH_REPLAY);
+    if let Err(refusal) = launch_independently(&mut command) {
+        eprintln!("{refusal}");
+        std::thread::spawn(move || {
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Warning)
+                .set_title("Battle Plan Recorder")
+                .set_description(refusal)
+                .set_buttons(rfd::MessageButtons::Ok)
+                .show()
+        });
+    }
+}
+
+fn recorder_running() -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE},
     };
-    let detached = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
-    if let Err(error) = spawn(detached | CREATE_BREAKAWAY_FROM_JOB).or_else(|_| spawn(detached)) {
-        eprintln!("Battle Plan Recorder could not start: {error}");
+    let name: Vec<u16> = std::ffi::OsStr::new(replay::recorder_settings::RECORDER_INSTANCE).encode_wide().chain([0]).collect();
+    let held = unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr()) };
+    if held.is_null() {
+        return false;
+    }
+    unsafe { CloseHandle(held) };
+    true
+}
+
+fn launch_independently(command: &mut Command) -> Result<Child, String> {
+    use std::os::windows::io::AsRawHandle;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB)
+        .spawn()
+        .map_err(|error| refusal(&error))?;
+    let mut held = 1;
+    let checked = unsafe { IsProcessInJob(child.as_raw_handle(), std::ptr::null_mut(), &raw mut held) } != 0;
+    if checked && held == 0 {
+        return Ok(child);
+    }
+    let refused = if checked { HELD.to_owned() } else { format!("Battle Plan Recorder could not start: {}", io::Error::last_os_error()) };
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(refused)
+}
+
+fn refusal(error: &io::Error) -> String {
+    let mut in_job = 0;
+    let held = error.kind() == io::ErrorKind::PermissionDenied
+        && unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &raw mut in_job) } != 0
+        && in_job != 0;
+    if held {
+        HELD.to_owned()
+    } else {
+        format!("Battle Plan Recorder could not start: {error}")
     }
 }
 
@@ -372,6 +424,128 @@ mod tests {
             None
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    const ROLE: &str = "BATTLE_PLAN_TEST_LAUNCH_ROLE";
+
+    fn this_test_binary(role: &str, test: &str) -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", test, "--nocapture", "--test-threads=1"])
+            .env(ROLE, role);
+        command
+    }
+
+    #[test]
+    fn launched_recorder_stand_in() {
+        if std::env::var(ROLE).as_deref() == Ok("recorder") {
+            loop {
+                std::thread::park();
+            }
+        }
+    }
+
+    #[test]
+    fn launching_desktop_stand_in() {
+        use std::io::{BufRead, Write};
+        if std::env::var(ROLE).as_deref() != Ok("desktop") {
+            return;
+        }
+        let mut stdin = std::io::stdin().lock();
+        stdin.read_line(&mut String::new()).unwrap();
+        let mut recorder =
+            this_test_binary("recorder", "recorder::tests::launched_recorder_stand_in");
+        let line = match launch_independently(&mut recorder) {
+            Ok(child) => format!("launched {}", child.id()),
+            Err(refusal) => format!("refused {refusal}"),
+        };
+        let mut out = std::io::stdout().lock();
+        writeln!(out, "\n{line}").unwrap();
+        out.flush().unwrap();
+        stdin.read_line(&mut String::new()).unwrap();
+    }
+
+    #[test]
+    fn the_recorder_outlives_the_desktop_or_is_refused_by_name() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            os::windows::io::AsRawHandle,
+        };
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, WAIT_TIMEOUT},
+            System::{
+                JobObjects::{
+                    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+                    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                    JobObjectExtendedLimitInformation, SetInformationJobObject,
+                },
+                Threading::{
+                    OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess,
+                    WaitForSingleObject,
+                },
+            },
+        };
+        let job = |breakaway: bool| {
+            let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            assert!(!job.is_null());
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+            limits.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | if breakaway { JOB_OBJECT_LIMIT_BREAKAWAY_OK } else { 0 };
+            let set = unsafe {
+                SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    (&raw const limits).cast(),
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            assert_ne!(set, 0);
+            job
+        };
+        for (outer_breakaway, nested, frees) in [(true, false, true), (false, false, false), (false, true, false)] {
+            let outer = job(outer_breakaway);
+            let inner = nested.then(|| job(true));
+            let mut desktop =
+                this_test_binary("desktop", "recorder::tests::launching_desktop_stand_in")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+            for job in std::iter::once(outer).chain(inner) {
+                assert_ne!(unsafe { AssignProcessToJobObject(job, desktop.as_raw_handle()) }, 0);
+            }
+            let mut input = desktop.stdin.take().unwrap();
+            writeln!(input).unwrap();
+            let line = BufReader::new(desktop.stdout.take().unwrap())
+                .lines()
+                .map(Result::unwrap)
+                .find(|line| line.starts_with("launched ") || line.starts_with("refused "))
+                .unwrap();
+            let close = || {
+                for job in std::iter::once(outer).chain(inner) {
+                    unsafe { CloseHandle(job) };
+                }
+            };
+            let mut runner = 0;
+            let runner_held = unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &raw mut runner) } != 0 && runner != 0;
+            if !frees || (runner_held && line.starts_with("refused ")) {
+                assert!(line.contains("Start Battle Plan Recorder from the Start menu"), "nested {nested}: {line}");
+                close();
+                desktop.wait().unwrap();
+                continue;
+            }
+            let pid: u32 = line.strip_prefix("launched ").unwrap().parse().unwrap();
+            let recorder = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+            assert!(!recorder.is_null());
+            close();
+            desktop.wait().unwrap();
+            let running = unsafe { WaitForSingleObject(recorder, 0) } == WAIT_TIMEOUT;
+            unsafe {
+                TerminateProcess(recorder, 0);
+                CloseHandle(recorder);
+            }
+            assert!(running, "the recorder ended with the desktop's job");
+        }
     }
 
     #[test]

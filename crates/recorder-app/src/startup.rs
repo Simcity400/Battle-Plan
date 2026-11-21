@@ -16,7 +16,7 @@ use windows_sys::Win32::{
     },
 };
 
-const INSTANCE_MUTEX: &str = "Local\\HOI4Replay.Recorder";
+const INSTANCE_MUTEX: &str = replay::recorder_settings::RECORDER_INSTANCE;
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE: &str = "the game Recorder";
 const PERSONALIZE_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
@@ -133,4 +133,11 @@ pub fn light_taskbar() -> bool {
         )
     };
     status == ERROR_SUCCESS && data == 1
+}
+
+pub fn held_by_a_job() -> bool {
+    use windows_sys::Win32::System::{JobObjects::IsProcessInJob, Threading::GetCurrentProcess};
+    let mut held = 1;
+    let checked = unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &raw mut held) };
+    checked == 0 || held != 0
 }

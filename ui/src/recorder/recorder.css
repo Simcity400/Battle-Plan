@@ -37,8 +37,7 @@
 .recorder-dismiss svg { width: 13px; height: 13px; }
 
 .recorder-bar { height: 3px; margin: 0 16px 14px; overflow: hidden; border-radius: 99px; background: color-mix(in srgb, var(--text) 8%, transparent); }
-.recorder-bar > i { display: block; width: 0; height: 100%; border-radius: 99px; background: var(--accent); transition: width var(--t) var(--ease); }
-.recorder-bar.is-open > i { width: 100%; background: linear-gradient(90deg, transparent 0 40%, var(--accent) 50%, transparent 60% 100%);
+.recorder-bar > i { display: block; width: 100%; height: 100%; border-radius: 99px; background: linear-gradient(90deg, transparent 0 40%, var(--accent) 50%, transparent 60% 100%);
   background-size: 200% 100%; animation: recorder-sweep var(--meter-sweep-duration) linear infinite; }
 @keyframes recorder-sweep { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 

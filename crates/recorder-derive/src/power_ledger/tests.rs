@@ -77,7 +77,40 @@ fn cost(day_hour: i32, ordinal: u32, component: PowerDailyCostKind, amount: i64,
 }
 
 const NO_CAPTURE: i32 = 30;
+const WIDER: i32 = 50;
+const SHORTER: i32 = 51;
+const EMPTIED: i32 = 52;
+const RESTORED: i32 = 53;
+const REMOVED: i32 = 54;
+const ZEROED: i32 = 55;
+const LATER_DAY: i32 = 73;
+const CLOSED_DELETED: i32 = 97;
+const SAME_ITEM: i32 = 98;
+const SAME_ITEM_DROPPED: i32 = 99;
+const SAME_ITEM_RESTORED: i32 = 100;
+const SAME_ITEM_UNRECONCILED: i32 = 101;
+const UNLINKED: i32 = 102;
+const LINKED_DELETED: i32 = 103;
+const SHARED: i32 = 104;
+const SHARED_PUBLISHED: i32 = 105;
+const SHARED_DELETED: i32 = 106;
+const REPUBLISHED: i32 = 107;
+const OTHER_PUBLISHED: i32 = 108;
+const UNSHARED_DELETED: i32 = 109;
+const UNMATCHED: i32 = 120;
+const MATCHED_DELETED: i32 = 121;
+const CANCELLED: i32 = 122;
+const STALE_ZERO: i32 = 123;
+const MATCHED: i32 = 124;
+const DAILY_GONE: i32 = 125;
+const PAIRED: i32 = 144;
+const TOTAL_KEPT: i32 = 145;
 const NO_CHANGES: i32 = 26;
+
+fn put_daily(store: &mut Store, hour: i32, row: &CountryPowerDailyRow) {
+    testing::put(store, TableId::CountryPowerDaily, row, TEXTS).unwrap();
+    store.status(TableId::CountryPowerDaily.index(), Status::Complete, true, Some(hour), true).unwrap();
+}
 
 fn edit(store: &mut Store, hour: i32) {
     let complete = |store: &mut Store, table: TableId| store.status(table.index(), Status::Complete, true, Some(hour), true).unwrap();
@@ -96,7 +129,8 @@ fn edit(store: &mut Store, hour: i32) {
     } else {
         complete(store, TableId::PoliticsCaptureCoverage);
         for country in [1, 2] {
-            let witness = Streams { country, epoch: 1, since_hour: 0, through_hour: hour, streams: Streams::ALL_STREAMS, ..Default::default() };
+            let since_hour = if hour >= SAME_ITEM { SAME_ITEM - 2 } else if hour >= SHORTER { hour - 1 } else { 0 };
+            let witness = Streams { country, epoch: 1, since_hour, through_hour: hour, streams: Streams::ALL_STREAMS, ..Default::default() };
             testing::put(store, TableId::PoliticsCaptureCoverage, &witness, TEXTS).unwrap();
         }
     }
@@ -126,24 +160,128 @@ fn edit(store: &mut Store, hour: i32) {
     }
     match hour {
         0 => {
-            testing::put(store, TableId::CountryPowerDaily, &daily(0, 3 * Q, Q, 5), TEXTS).unwrap();
+            put_daily(store, hour, &daily(0, 3 * Q, Q, 5));
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(0, 0, PowerDailyCostKind::Relation, Q, 5), TEXTS).unwrap();
         }
         2 => testing::put(store, TableId::CountryCommandPower, &CountryCommandPowerRow { canonical_slot: 10, allocated_command_power_raw: 2 * Q, ..Default::default() }, TEXTS).unwrap(),
         24 => {
-            testing::put(store, TableId::CountryPowerDaily, &daily(24, 3 * Q, Q, 50), TEXTS).unwrap();
+            put_daily(store, hour, &daily(24, 3 * Q, Q, 50));
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(24, 0, PowerDailyCostKind::Relation, Q, 50), TEXTS).unwrap();
         }
         25 => {
-            testing::put(store, TableId::CountryPowerDaily, &daily(24, 3 * Q + Q / 10, Q + Q / 10, 50), TEXTS).unwrap();
+            put_daily(store, hour, &daily(24, 3 * Q + Q / 10, Q + Q / 10, 50));
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(24, 1, PowerDailyCostKind::MioResearch, Q / 10, 50), TEXTS).unwrap();
         }
-        28 => testing::put(store, TableId::CountryPowerDaily, &daily(24, 4 * Q, 2 * Q, 50), TEXTS).unwrap(),
-        29 => testing::put(store, TableId::CountryPowerDaily, &daily(24, 3 * Q + Q / 10, Q + Q / 10, 50), TEXTS).unwrap(),
+        28 => put_daily(store, hour, &daily(24, 4 * Q, 2 * Q, 50)),
+        29 => put_daily(store, hour, &daily(24, 3 * Q + Q / 10, Q + Q / 10, 50)),
         48 => {
             testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
-            testing::put(store, TableId::CountryPowerDaily, &daily(48, 2 * Q, Q / 2, 80), TEXTS).unwrap();
+            put_daily(store, hour, &daily(48, 2 * Q, Q / 2, 80));
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(48, 0, PowerDailyCostKind::Relation, Q / 2, 80), TEXTS).unwrap();
+        }
+        WIDER => {
+            put_daily(store, hour, &daily(48, 2 * Q + Q / 10, Q / 2 + Q / 10, 80));
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(48, 1, PowerDailyCostKind::MioResearch, Q / 10, 80), TEXTS).unwrap();
+        }
+        SHORTER => {
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+            put_daily(store, hour, &daily(48, 2 * Q, Q / 2, 80));
+        }
+        EMPTIED => testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32).unwrap(),
+        RESTORED => testing::put(store, TableId::CountryPowerDailyCosts, &cost(48, 0, PowerDailyCostKind::Relation, Q / 2, 80), TEXTS).unwrap(),
+        REMOVED => testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32).unwrap(),
+        ZEROED => put_daily(store, hour, &daily(48, 2 * Q, 0, 80)),
+        LATER_DAY => {
+            put_daily(store, hour, &daily(72, 3 * Q, Q / 2 + Q / 10, 90));
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(72, 0, PowerDailyCostKind::Relation, Q / 2, 90), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(72, 1, PowerDailyCostKind::MioResearch, Q / 10, 90), TEXTS).unwrap();
+        }
+        CLOSED_DELETED => testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap(),
+        SAME_ITEM => {
+            put_daily(store, hour, &daily(96, 3 * Q, Q / 2 + Q / 4, 99));
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(96, 0, PowerDailyCostKind::Relation, Q / 2, 99), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(96, 1, PowerDailyCostKind::Relation, Q / 4, 99), TEXTS).unwrap();
+        }
+        SAME_ITEM_DROPPED => {
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+            put_daily(store, hour, &daily(96, 3 * Q, Q / 2, 99));
+        }
+        SAME_ITEM_RESTORED => {
+            put_daily(store, hour, &daily(96, 3 * Q, Q / 2 + Q / 4, 99));
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(96, 1, PowerDailyCostKind::Relation, Q / 4, 99), TEXTS).unwrap();
+        }
+        SAME_ITEM_UNRECONCILED => testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap(),
+        UNLINKED => {
+            put_daily(store, hour, &CountryPowerDailyRow { country: 3, ..daily(96, 3 * Q, Q / 2 + Q / 10, 7) });
+            testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 3, ..cost(96, 0, PowerDailyCostKind::Relation, Q / 2, 7) }, TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 3, ..cost(96, 1, PowerDailyCostKind::MioResearch, Q / 10, 7) }, TEXTS).unwrap();
+        }
+        LINKED_DELETED => {
+            testing::put(store, TableId::Countries, &CountryRow { id: 3, canonical_slot: 30, ..Default::default() }, TEXTS).unwrap();
+            testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 3, canonical_slot: 30 }, TEXTS).unwrap();
+            testing::remove(store, TableId::CountryPowerDailyCosts, 3 << 32 | 1).unwrap();
+        }
+        SHARED => {
+            testing::put(store, TableId::Countries, &CountryRow { id: 4, canonical_slot: 30, ..Default::default() }, TEXTS).unwrap();
+            testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 4, canonical_slot: 30 }, TEXTS).unwrap();
+        }
+        SHARED_PUBLISHED => {
+            put_daily(store, hour, &CountryPowerDailyRow { country: 3, ..daily(96, 3 * Q, Q / 2 + Q / 10, 8) });
+            testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 3, ..cost(96, 0, PowerDailyCostKind::Relation, Q / 2, 8) }, TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 3, ..cost(96, 1, PowerDailyCostKind::MioResearch, Q / 10, 8) }, TEXTS).unwrap();
+        }
+        SHARED_DELETED => {
+            testing::remove(store, TableId::CountryPowerDailyCosts, 3 << 32 | 1).unwrap();
+            put_daily(store, hour, &CountryPowerDailyRow { country: 3, ..daily(96, 3 * Q, Q / 2, 8) });
+        }
+        REPUBLISHED => {
+            put_daily(store, hour, &CountryPowerDailyRow { country: 3, ..daily(96, 3 * Q, Q / 2 + Q / 10, 8) });
+            testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 3, ..cost(96, 1, PowerDailyCostKind::MioResearch, Q / 10, 8) }, TEXTS).unwrap();
+        }
+        OTHER_PUBLISHED => {
+            put_daily(store, hour, &CountryPowerDailyRow { country: 4, ..daily(96, 3 * Q, Q / 4, 9) });
+            testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 4, ..cost(96, 0, PowerDailyCostKind::Relation, Q / 4, 9) }, TEXTS).unwrap();
+        }
+        UNSHARED_DELETED => {
+            testing::put(store, TableId::Countries, &CountryRow { id: 4, canonical_slot: 40, ..Default::default() }, TEXTS).unwrap();
+            testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 4, canonical_slot: 40 }, TEXTS).unwrap();
+            testing::remove(store, TableId::CountryPowerDailyCosts, 3 << 32 | 1).unwrap();
+            put_daily(store, hour, &CountryPowerDailyRow { country: 3, ..daily(96, 3 * Q, Q / 2, 8) });
+        }
+        UNMATCHED => {
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 0, PowerDailyCostKind::Relation, Q / 2, 120), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 1, PowerDailyCostKind::MioResearch, Q / 10, 120), TEXTS).unwrap();
+        }
+        MATCHED_DELETED => {
+            put_daily(store, hour, &daily(120, 3 * Q, Q / 2, 120));
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+        }
+        CANCELLED => {
+            put_daily(store, hour, &daily(120, 3 * Q, 0, 121));
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 0, PowerDailyCostKind::Relation, Q / 4, 121), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 1, PowerDailyCostKind::MioResearch, -Q / 4, 121), TEXTS).unwrap();
+        }
+        STALE_ZERO => {
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32).unwrap();
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+        }
+        MATCHED => {
+            put_daily(store, hour, &daily(120, 3 * Q, Q / 2 + Q / 10, 124));
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 0, PowerDailyCostKind::Relation, Q / 2, 124), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 1, PowerDailyCostKind::MioResearch, Q / 10, 124), TEXTS).unwrap();
+        }
+        DAILY_GONE => {
+            testing::remove(store, TableId::CountryPowerDaily, 1).unwrap();
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+        }
+        PAIRED => {
+            put_daily(store, hour, &daily(144, 3 * Q, Q / 2 + Q / 10, 144));
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(144, 0, PowerDailyCostKind::Relation, Q / 2, 144), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(144, 1, PowerDailyCostKind::MioResearch, Q / 10, 144), TEXTS).unwrap();
+        }
+        TOTAL_KEPT => {
+            put_daily(store, hour, &daily(144, 3 * Q, Q / 2 + Q / 10, 144));
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
         }
         _ => {}
     }
@@ -317,6 +455,86 @@ fn the_open_days_parts_hold_what_was_spent_since_midnight_and_end_with_the_day()
     let (next, _) = through(0..=49);
     assert_eq!(cell::<Part>(&next, TableId::PowerDayParts, idea, "spent"), Some(2 * Q), "a later day's part starts from nothing");
     assert_eq!(cell::<Part>(&next, TableId::PowerDayParts, idea, "day"), Some(48));
+}
+
+#[test]
+fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_spending() {
+    let (store, _) = through(0..=25);
+    let costs = cost_items(&store);
+    let (relation, organisation, idea) = (part_key(10, POLITICAL, costs[0]), part_key(10, POLITICAL, costs[1]), part_key(10, POLITICAL, 0));
+    let (wider, _) = through(0..=WIDER);
+    assert_eq!(keys(&wider, TableId::PowerDayParts), [idea, relation, organisation]);
+    let (shorter, _) = through(0..=SHORTER);
+    let covered = |store: &Store| {
+        let view = store.view(TableId::PowerDayParts.index());
+        view.bool(column::<Part>("covered"), view.slot(relation).expect("a row"))
+    };
+    assert_eq!(covered(&wider), Some(true));
+    assert_eq!(covered(&shorter), Some(true), "a deletion leaves the surviving cost's proven coverage as it was");
+    assert_eq!(keys(&shorter, TableId::PowerDayParts), [idea, relation], "the withdrawn cost is no longer today's, and the idea paid today stays");
+    assert_eq!(cell::<Part>(&shorter, TableId::PowerDayParts, idea, "spent"), Some(2 * Q));
+    let (emptied, _) = through(0..=EMPTIED);
+    assert_eq!(keys(&emptied, TableId::PowerDayParts), [idea, relation], "a country left with no cost rows withdraws nothing");
+    let (removed, _) = through(0..=REMOVED);
+    assert_eq!(keys(&removed, TableId::PowerDayParts), [idea, relation], "rows gone before the application says why withdraw nothing");
+    let (zeroed, _) = through(0..=ZEROED);
+    assert_eq!(keys(&zeroed, TableId::PowerDayParts), [idea], "an application of no cost covered this hour then empties the batch");
+    let (next, _) = through(0..=72);
+    assert_eq!(spend(&next, 10, POLITICAL, costs[1], "days"), Some(1), "day 48 settles without the withdrawn cost");
+    assert_eq!(spend(&next, 10, POLITICAL, costs[1], "day_charge"), Some(Q / 10));
+    assert_eq!(spend(&next, 10, POLITICAL, costs[0], "days"), Some(1), "day 48's relation was withdrawn by its zero-cost application");
+    let (settled, _) = through(0..=CLOSED_DELETED - 1);
+    let (deleted, _) = through(0..=CLOSED_DELETED);
+    for name in ["day_payments", "day_charge", "days"] {
+        assert_eq!(spend(&deleted, 10, POLITICAL, costs[0], name), spend(&settled, 10, POLITICAL, costs[0], name), "a deletion from a closed day settles none of its costs again ({name})");
+    }
+    assert_eq!(spend(&settled, 10, POLITICAL, costs[0], "days"), Some(2), "day 72's relation settled at its midnight");
+    let (paired, _) = through(0..=SAME_ITEM);
+    assert_eq!((cell::<Part>(&paired, TableId::PowerDayParts, relation, "spent"), cell::<Part>(&paired, TableId::PowerDayParts, relation, "payments")), (Some(Q / 2 + Q / 4), Some(2)));
+    let (dropped, _) = through(0..=SAME_ITEM_DROPPED);
+    assert_eq!((cell::<Part>(&dropped, TableId::PowerDayParts, relation, "spent"), cell::<Part>(&dropped, TableId::PowerDayParts, relation, "payments")), (Some(Q / 2), Some(1)), "a deleted row of a shared item leaves the item what its remaining rows pay");
+    assert_eq!((covered(&paired), covered(&dropped)), (Some(true), Some(true)), "and keeps the coverage it proved while its batch reconciles");
+    let (restored, _) = through(0..=SAME_ITEM_RESTORED);
+    assert_eq!(covered(&restored), Some(true));
+    let (unreconciled, _) = through(0..=SAME_ITEM_UNRECONCILED);
+    assert_eq!(cell::<Part>(&unreconciled, TableId::PowerDayParts, relation, "spent"), Some(Q / 2));
+    assert_eq!(covered(&unreconciled), Some(false), "a survivor whose batch no longer matches the day's total is not covered");
+    assert_eq!(cell::<Coverage>(&unreconciled, TableId::PowerSpendCoverage, 10, "daily_mismatch"), Some(i64::from(Coverage::STEADY_MISMATCH)), "and its holder's costs are named as not adding up until a daily application confirms them");
+    let holders = |store: &Store| keys(store, TableId::PowerDayParts).into_iter().map(|key| (key >> 40) as u32).filter(|&holder| holder == NONE || holder == 30).collect::<std::collections::BTreeSet<_>>();
+    let (unlinked, _) = through(0..=UNLINKED);
+    assert_eq!(holders(&unlinked), [NONE].into());
+    let (linked, _) = through(0..=LINKED_DELETED);
+    assert_eq!(holders(&linked), [NONE].into(), "a deletion opens no part under a holder its costs were never published under");
+    let shared = |store: &Store, ordinal: u32| cell::<Part>(store, TableId::PowerDayParts, part_key(30, POLITICAL, ordinal), "spent");
+    let (published, _) = through(0..=SHARED_PUBLISHED);
+    assert_eq!((shared(&published, 0), shared(&published, 1)), (Some(Q / 2), Some(Q / 10)));
+    let (shared_deleted, _) = through(0..=SHARED_DELETED);
+    assert_eq!((shared(&shared_deleted, 0), shared(&shared_deleted, 1)), (Some(Q / 2), None), "on a shared holder a deletion withdraws the dropped cost and keeps the survivor as published");
+    let (other, _) = through(0..=OTHER_PUBLISHED);
+    assert_eq!(shared(&other, 0), Some(Q / 4));
+    let (unshared, _) = through(0..=UNSHARED_DELETED);
+    assert_eq!(shared(&unshared, 0), Some(Q / 4), "a deletion leaves a part another application published as it was");
+    let gains = part_key(10, POLITICAL, Total::GAINS);
+    let (unmatched, _) = through(0..=UNMATCHED);
+    assert_eq!(cell::<Part>(&unmatched, TableId::PowerDayParts, gains, "payments"), Some(2));
+    let (matched, _) = through(0..=MATCHED_DELETED);
+    assert!(keys(&matched, TableId::PowerDayParts).contains(&gains), "a deletion keeps the survivor of an application it held unmatched");
+    assert_eq!((cell::<Part>(&matched, TableId::PowerDayParts, gains, "payments"), cell::<Part>(&matched, TableId::PowerDayParts, gains, "spent")), (Some(1), Some(Q / 2)));
+    let open = |store: &Store| keys(store, TableId::PowerDayParts).into_iter().filter(|&key| (key >> 40) as u32 == 10).count();
+    let (cancelled, _) = through(0..=CANCELLED);
+    let (stale, _) = through(0..=STALE_ZERO);
+    assert_eq!(open(&stale), open(&cancelled), "a daily zero carried from an earlier hour confirms no empty batch");
+    let (paid, _) = through(0..=MATCHED);
+    assert_eq!((cell::<Part>(&paid, TableId::PowerDayParts, relation, "spent"), covered(&paid)), (Some(Q / 2), Some(true)));
+    let (gone, _) = through(0..=DAILY_GONE);
+    assert_eq!((cell::<Part>(&gone, TableId::PowerDayParts, relation, "spent"), covered(&gone)), (Some(Q / 2), Some(false)), "a deletion keeps a survivor in the part it was published in, uncovered while no daily application confirms the batch");
+    let mismatch = |store: &Store| cell::<Coverage>(store, TableId::PowerSpendCoverage, 10, "daily_mismatch");
+    assert_eq!(mismatch(&gone), Some(i64::from(Coverage::STEADY_MISMATCH)), "and the daily row leaving with it confirms nothing");
+    let (batch, _) = through(0..=PAIRED);
+    assert_eq!((mismatch(&batch), covered(&batch)), (Some(0), Some(true)));
+    let (kept, _) = through(0..=TOTAL_KEPT);
+    assert_eq!(mismatch(&kept), Some(i64::from(Coverage::STEADY_MISMATCH)), "a deletion whose remaining costs miss the total read that hour is a mismatch");
+    assert_eq!(covered(&kept), Some(false), "and its unchanged survivor is no longer covered");
 }
 
 #[test]
