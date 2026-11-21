@@ -499,6 +499,37 @@ class ReviewOfFourteen(unittest.TestCase):
         for package in ("pyyaml", "tree-sitter", "tree-sitter-language-pack"):
             self.assertIn(package, said)
 
+    def test_the_pipeline_implementation_keys_every_job(self):
+        pipeline = ci.load_pipeline(PIPELINE)
+        tree = {"tools/ci.py": ("one", True), "src/a.rs": ("a", True)}
+        before, _ = ci.toolchain_digests(pipeline, tree, {"python": sys.executable}, {})
+        after, _ = ci.toolchain_digests(pipeline, dict(tree, **{"tools/ci.py": ("two", True)}), {"python": sys.executable}, {})
+        self.assertNotEqual(before["python"], after["python"])
+        self.assertNotEqual(before["rust"], after["rust"])
+
+    def test_a_rolled_back_tip_ratchets_against_the_shared_history(self):
+        original = ci.git
+        answers = {("cat-file", "-t", "replaced-tip"): "commit", ("merge-base", "HEAD", "replaced-tip"): "head"}
+        ci.git = lambda *args, check=True, data=None: answers.get(args, "")
+        try:
+            self.assertEqual(ci.ratchet_base("replaced-tip"), "head")
+        finally:
+            ci.git = original
+        parent = ci.git("rev-parse", "HEAD^1").strip()
+        self.assertEqual(ci.ratchet_base(parent), parent)
+
+    def test_only_a_github_remote_url_names_a_repository(self):
+        original = ci.git
+        urls = {"good": "https://github.com/acme/widget.git", "ssh": "git@github.com:acme/widget.git",
+                "mirror": "https://git.corp.example/mirrors/github.com/acme/widget.git"}
+        ci.git = lambda *args, check=True, data=None: urls.get(args[-1], "") if args[:2] == ("remote", "get-url") else original(*args, check=check, data=data)
+        try:
+            self.assertEqual(ci.upstream_repository("good/main"), "acme/widget")
+            self.assertEqual(ci.upstream_repository("ssh/main"), "acme/widget")
+            self.assertIsNone(ci.upstream_repository("mirror/main"))
+        finally:
+            ci.git = original
+
     def test_an_upstream_ref_names_its_remote(self):
         self.assertEqual(ci.upstream_remote("refs/remotes/bp/main"), "bp")
         self.assertEqual(ci.upstream_remote("bp/main"), "bp")

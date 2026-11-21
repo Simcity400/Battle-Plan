@@ -827,7 +827,8 @@ def toolchain_digests(pipeline, tree, values, consistent):
             missing[name] = f"`{' '.join(toolchain.consistent)}` fails: the manifest and lockfile disagree"
         files = matcher(toolchain.files)
         probed = {tool: probe(tool) for tool in toolchain.probes}
-        digests[name] = digest(version, installed, probed, file_entries(tree, [path for path in tree if files(path)]))
+        implementation = matcher(pipeline.implementation)
+        digests[name] = digest(version, installed, probed, file_entries(tree, [path for path in tree if files(path) or implementation(path)]))
     return digests, missing
 
 
@@ -897,7 +898,7 @@ def upstream_repository(upstream):
     """`owner/name` of the GitHub repository the upstream's remote points at, or None."""
     remote = upstream_remote(upstream)
     url = git("remote", "get-url", remote, check=False).strip()
-    found = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", url)
+    found = re.fullmatch(r"(?:https://(?:[^@/]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+?)(?:\.git)?/?", url)
     return found.group(1) if found else None
 
 
@@ -1162,10 +1163,14 @@ def plan(tier, base_ref, gates, exact=False):
 
 
 def ratchet_base(base):
-    """The commit a ratchet compares with: the base itself when it is a commit, else (a new main
-    compared with the empty tree) HEAD's first parent; None when there is none."""
+    """The commit a ratchet compares with: its merge base with HEAD when the base is a commit, so
+    a rollback or force-push ratchets only what HEAD adds to history they share (restored code
+    already passed there); for a tree (a new main against the empty tree), HEAD's first parent;
+    None when there is none."""
     if git("cat-file", "-t", base, check=False).strip() == "commit":
-        return base
+        shared = git("merge-base", "HEAD", base, check=False).strip()
+        if shared:
+            return shared
     return git("rev-parse", "--verify", "--quiet", "HEAD^1", check=False).strip() or None
 
 
