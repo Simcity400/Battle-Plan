@@ -179,6 +179,14 @@ inputs = ["ui/**", "tools/**/*.ts", "tools/**/*.mjs", "tools/**/*.js", "crates/*
 command = ["{node}", "tools/test-ui.mjs", "--group", "node"]
 
 [[job]]
+name = "ui-parity-tests"
+group = "browser"
+tier = "check"
+toolchain = "node"
+inputs = ["ui/**", "crates/dashboard-core/src/map_settings.rs"]
+command = ["{npm}", "run", "test:parity"]
+
+[[job]]
 name = "ui-browser-tests"
 group = "browser"
 tier = "main"

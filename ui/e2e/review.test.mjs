@@ -48,37 +48,20 @@ test('capture matrix preserves choices and repeated widget kinds without a count
   assert.throws(() => captureCases([{ kind: 'other' }], matrix, 99), /not registered/);
 });
 
-test('configured parity hook applies exact countries, time and options before mounting', async () => {
-  const { stripTypeScriptTypes } = await import('node:module');
-  const source = stripTypeScriptTypes(await readFile(new URL('../src/dashboard/parityFixture.ts', import.meta.url), 'utf8'))
-    .replace(/^import .*;$/gm, '').replace(/\bexport /g, '');
+test('configured parity capture forwards exact countries, time and options before paint', async () => {
   const tags = Array.from({ length: 5000 }, (_, index) => `opaque / tag ${index}`);
   const countries = { tags, kind: 'tags' }, time = { mode: 'follow' }, options = { measure: 'week' };
-  const template = { tracks: [{ id: 'main' }], widgets: [], layouts: {} };
-  const host = { client: { product() {}, openSource() {} }, template,
-    runtime: { tracks: [{ id: 'main', roleId: 'primary' }], defaultRoleId: 'primary', clock: { stop() {}, seek() {} } },
-    setTemplate(value) { host.template = value; } };
-  const window = {}; let reverseTags = false;
-  const install = runInNewContext(source + '\ninstallParityFixture', { window,
-    widgetDefinitions: () => [{ kind: 'synthetic', title: 'Synthetic' }],
-    widgetDefinition: () => ({ timeModes: ['campaign', 'follow'], options: [{ key: 'measure' }] }),
-    createWidget: (kind, trackId, id) => ({ kind, id, trackIds: [trackId], countries: { kind: 'selected' }, time: { mode: 'campaign' } }),
-    GRID_COLUMNS: { lg: 12 }, validOption: (_field, value) => value === 'week',
-    parseTemplate: input => ({ ...input, widgets: input.widgets.map(widget => ({ ...widget,
-      countries: { kind: widget.countries.kind, tags: reverseTags ? widget.countries.tags?.toReversed() : widget.countries.tags } })) }),
-  });
-  const close = install(() => host);
-  try {
-    assert.equal(window.__hoi4Parity.capabilities().scenarioVersion, 1);
-    window.__hoi4Parity.isolate('synthetic', { countries, time, options });
-    assert.deepEqual(host.template.widgets[0].countries, countries);
-    assert.deepEqual(host.template.widgets[0].time, time);
-    assert.equal(host.template.widgets[0].options.measure, 'week');
-    assert.throws(() => window.__hoi4Parity.isolate('synthetic', { options: { unregistered: 'week' } }), /Invalid parity option/);
-    assert.throws(() => window.__hoi4Parity.isolate('synthetic', { time: { mode: 'unsupported' } }), /Invalid parity time mode/);
-    reverseTags = true;
-    assert.throws(() => window.__hoi4Parity.isolate('synthetic', { countries, time, options }), /saved widget schema/);
-  } finally { close(); }
+  const calls = [];
+  const window = { __hoi4ParityBrowserErrors: [], __hoi4Parity: {
+    isolate: async (...args) => { await Promise.resolve(); calls.push(args); },
+  } };
+  const page = { on() {}, setDefaultTimeout() {},
+    evaluate: (fn, arg) => runInNewContext(`(${fn})(arg)`, { window, arg,
+      requestAnimationFrame: callback => { calls.push('paint'); callback(); } }),
+  };
+  const driver = app.createApp(page, { hour: 42, scenario: { countries, time, options } });
+  await driver.install('synthetic');
+  assert.deepEqual(calls, [['synthetic', { height: 18, hour: 42, countries, time, options }], 'paint', 'paint']);
 });
 
 test('required exact model refuses absent provider and retains duplicate chart operands', async () => {
@@ -223,23 +206,38 @@ test('startup errors are cleared before isolated widget errors are collected', a
 test('bridge cleanup awaits the retained child close before staging can be removed', async t => {
   const { stripTypeScriptTypes } = await import('node:module');
   const { EventEmitter } = await import('node:events');
-  const child = new EventEmitter(); child.stdin = Object.assign(new EventEmitter(), { write() {}, end() {} });
+  const commands = [];
+  const child = new EventEmitter(); child.stdin = Object.assign(new EventEmitter(), { write: line => commands.push(JSON.parse(line)), end() {} });
   child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.exitCode = child.signalCode = null;
-  let closed = false, middleware;
-  child.kill = () => { setTimeout(() => { closed = true; child.emit('close'); }, 20); return true; };
+  const removed = [];
+  let killed = false, middleware;
+  child.kill = () => { killed = true; return true; };
   const source = stripTypeScriptTypes(await readFile(new URL('../browserBridge.ts', import.meta.url), 'utf8')).replace(/^import .*;$/gm, '').replace(/\bexport /g, '');
   const factory = runInNewContext(source + '\nbrowserBridge', { promisify, execFile() {}, path, spawn: () => child,
-    savedReplayFolder: async folder => folder, readFile: async () => { throw Object.assign(Error(), { code: 'ENOENT' }); },
-    createInterface: () => new EventEmitter(), MAX_MESSAGE_BYTES: 1024 * 1024,
+    savedReplayFolder: async folder => folder, process: { pid: 1, env: {} }, tmpdir, randomUUID: () => 'synthetic',
+    readdir: async () => [], rm: async target => { removed.push(target); },
+    createInterface: () => new EventEmitter(), MAX_MESSAGE_BYTES: 1024 * 1024, BROWSER_ARTWORK_BASE: '/api/artwork/',
+    asFailure: error => error, failureWire: error => ({ message: error.message }),
     Buffer, URL, AbortController, setTimeout, clearTimeout, console });
   const plugin = factory('synthetic', 'synthetic', '', '');
-  const server = new EventEmitter(); t.after(() => server.emit('close'));
-  plugin.configureServer({ httpServer: server, middlewares: { use(_path, handler) { middleware = handler; } } });
+  const server = new EventEmitter();
+  t.after(() => { server.emit('close'); child.emit('close'); });
+  plugin.configureServer({ httpServer: server, middlewares: { use(route, handler) { if (route === '/api/recordings') middleware = handler; } } });
   const response = Object.assign(new EventEmitter(), { setHeader() {}, end() { this.writableEnded = true; } });
   const request = { method: 'POST', url: '/', headers: { 'content-type': 'application/json' }, async *[Symbol.asyncIterator]() { yield Buffer.from('{"type":"product","request":{}}'); } };
   const sending = middleware(request, response);
   await new Promise(resolve => setImmediate(resolve));
-  const stopping = plugin.closeBundle?.(); server.emit('close'); await stopping; assert.equal(closed, true); await sending;
+  assert.equal(commands[0]?.type, 'product');
+  let stopped = false;
+  const stopping = plugin.closeBundle().then(() => { stopped = true; });
+  server.emit('close');
+  await sending;
+  assert.equal(killed, true);
+  assert.equal(stopped, false);
+  assert.deepEqual(removed, []);
+  child.emit('close');
+  await stopping;
+  assert.deepEqual(removed, [path.join(tmpdir(), 'battle-plan-imports', '1-synthetic')]);
 });
 
 test('adapter preserves source-change timestamps and private native verification writes', async () => {
@@ -254,20 +252,33 @@ test('adapter preserves source-change timestamps and private native verification
   try {
     await mkdir(path.dirname(hashInput), { recursive: true }); await writeFile(hashInput, 'synthetic hash cache');
     process.env.LOCALAPPDATA = path.join(root, 'input');
-    const sourceTime = Number(execFileSync('git', ['log', '-1', '--format=%ct', '--', 'crates/dashboard/src/reply_cache.rs'], { cwd: repository, encoding: 'utf8' }));
-    const binary = path.join(root, 'release', 'dashboard-bridge.exe'); await mkdir(path.dirname(binary)); await writeFile(binary, 'synthetic release');
-    await utimes(binary, sourceTime + 60.123456, sourceTime + 60.123456);
+    const marker = 'crates/dashboard-core/src/map_settings.rs';
+    const git = args => execFileSync('git', args, { cwd: repository, encoding: 'utf8' }).trim();
+    const sourceTime = git(['status', '--porcelain', '--', marker])
+      ? (await stat(path.join(repository, marker))).mtimeMs
+      : Number(git(['log', '-1', '--format=%ct', '--', marker])) * 1000;
+    assert.ok(sourceTime > 0);
+    const release = path.join(root, 'release');
+    const binary = path.join(release, 'dashboard-bridge.exe');
+    await mkdir(release);
+    await writeFile(binary, 'synthetic release');
+    for (const name of ['dxcompiler.dll', 'dxil.dll']) await writeFile(path.join(release, name), name);
+    const buildTime = sourceTime / 1000 + 60.123456;
+    await utimes(binary, buildTime, buildTime);
     const historyInput = path.join(root, 'input/HOI4Replay/viewer/history/recording/reply.zst');
     await mkdir(path.dirname(historyInput), { recursive: true }); await writeFile(historyInput, 'synthetic reply');
-    const config = { cache: root, bridge: binary, shaderTools: root, nativeCache: path.join(root, 'native'), recording: path.join(root, 'synthetic.battleplan'), gameDir: '', userDir: '' };
+    const config = { bridge: binary, recording: path.join(root, 'synthetic.battleplan'), gameDir: '', userDir: '' };
     server = await startUI({ root: repository, commit: 'synthetic' }, config, path.join(root, 'runs', 'capture'));
-    assert.ok((await stat(path.join(root, 'runs/capture/bridge/crates/dashboard/src/reply_cache.rs'))).mtimeMs <= (await stat(binary)).mtimeMs);
-    assert.equal((await stat(path.join(root, 'runs/capture/bridge/.cargo-target/debug/dashboard-bridge.exe'), { bigint: true })).mtimeNs,
+    const adapter = path.join(root, 'runs/capture/bridge');
+    const debug = path.join(adapter, '.cargo-target/debug');
+    assert.equal((await stat(path.join(adapter, marker))).mtimeMs, sourceTime);
+    assert.equal((await stat(path.join(debug, 'dashboard-bridge.exe'), { bigint: true })).mtimeNs,
       (await stat(binary, { bigint: true })).mtimeNs, 'release build identity preserves fractional timestamp precision');
-    const hashCopy = path.join(root, 'runs/capture/bridge/localappdata/HOI4Replay/viewer/content-hashes-v2.bin');
+    for (const name of ['dxcompiler.dll', 'dxil.dll']) assert.equal(await readFile(path.join(debug, name), 'utf8'), name);
+    const hashCopy = path.join(adapter, 'localappdata/HOI4Replay/viewer/content-hashes-v2.bin');
     assert.equal(await readFile(hashCopy, 'utf8'), 'synthetic hash cache');
     await writeFile(hashCopy, 'private update'); assert.equal(await readFile(hashInput, 'utf8'), 'synthetic hash cache');
-    const historyCopy = path.join(root, 'runs/capture/bridge/localappdata/HOI4Replay/viewer/history/recording/reply.zst');
+    const historyCopy = path.join(adapter, 'localappdata/HOI4Replay/viewer/history/recording/reply.zst');
     assert.equal(await readFile(historyCopy, 'utf8'), 'synthetic reply');
     await writeFile(historyCopy, 'private reply'); assert.equal(await readFile(historyInput, 'utf8'), 'synthetic reply');
   } finally {

@@ -1,4 +1,4 @@
-import { mkdir, copyFile, symlink, utimes, rm, cp, lstat } from 'node:fs/promises';
+import { mkdir, copyFile, utimes, rm, cp, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'vite';
@@ -27,10 +27,10 @@ export async function startUI(ui, config, output) {
   try {
     await mkdir(path.dirname(binary), { recursive: true }); await copyFile(config.bridge, binary);
     for (const name of ['dxcompiler.dll', 'dxil.dll']) await copyFile(path.join(path.dirname(config.bridge), name), path.join(path.dirname(binary), name));
-    for (const name of ['crates/dashboard-core/src/map_settings.rs', 'crates/dashboard/src/reply_cache.rs']) {
-      const marker = path.join(root, name);
-      await mkdir(path.dirname(marker), { recursive: true }); await copyFile(path.join(ui.root, name), marker);
-      if (execFileSync('git', ['status', '--porcelain', '--', name], { cwd: ui.root, encoding: 'utf8' }).trim()) continue;
+    const name = 'crates/dashboard-core/src/map_settings.rs';
+    const marker = path.join(root, name);
+    await mkdir(path.dirname(marker), { recursive: true }); await copyFile(path.join(ui.root, name), marker);
+    if (!execFileSync('git', ['status', '--porcelain', '--', name], { cwd: ui.root, encoding: 'utf8' }).trim()) {
       const changed = new Date(Number(execFileSync('git', ['log', '-1', '--format=%ct', '--', name], { cwd: ui.root, encoding: 'utf8' })) * 1000);
       await utimes(marker, changed, changed);
     }
