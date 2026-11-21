@@ -253,21 +253,25 @@ test('adapter preserves source-change timestamps and private native verification
     await mkdir(path.dirname(hashInput), { recursive: true }); await writeFile(hashInput, 'synthetic hash cache');
     process.env.LOCALAPPDATA = path.join(root, 'input');
     const marker = 'crates/dashboard-core/src/map_settings.rs';
-    const sourceTime = Number(execFileSync('git', ['log', '-1', '--format=%ct', '--', marker], { cwd: repository, encoding: 'utf8' }));
+    const git = args => execFileSync('git', args, { cwd: repository, encoding: 'utf8' }).trim();
+    const sourceTime = git(['status', '--porcelain', '--', marker])
+      ? (await stat(path.join(repository, marker))).mtimeMs
+      : Number(git(['log', '-1', '--format=%ct', '--', marker])) * 1000;
     assert.ok(sourceTime > 0);
     const release = path.join(root, 'release');
     const binary = path.join(release, 'dashboard-bridge.exe');
     await mkdir(release);
     await writeFile(binary, 'synthetic release');
     for (const name of ['dxcompiler.dll', 'dxil.dll']) await writeFile(path.join(release, name), name);
-    await utimes(binary, sourceTime + 60.123456, sourceTime + 60.123456);
+    const buildTime = sourceTime / 1000 + 60.123456;
+    await utimes(binary, buildTime, buildTime);
     const historyInput = path.join(root, 'input/HOI4Replay/viewer/history/recording/reply.zst');
     await mkdir(path.dirname(historyInput), { recursive: true }); await writeFile(historyInput, 'synthetic reply');
     const config = { bridge: binary, recording: path.join(root, 'synthetic.battleplan'), gameDir: '', userDir: '' };
     server = await startUI({ root: repository, commit: 'synthetic' }, config, path.join(root, 'runs', 'capture'));
     const adapter = path.join(root, 'runs/capture/bridge');
     const debug = path.join(adapter, '.cargo-target/debug');
-    assert.equal((await stat(path.join(adapter, marker))).mtimeMs, sourceTime * 1000);
+    assert.equal((await stat(path.join(adapter, marker))).mtimeMs, sourceTime);
     assert.equal((await stat(path.join(debug, 'dashboard-bridge.exe'), { bigint: true })).mtimeNs,
       (await stat(binary, { bigint: true })).mtimeNs, 'release build identity preserves fractional timestamp precision');
     for (const name of ['dxcompiler.dll', 'dxil.dll']) assert.equal(await readFile(path.join(debug, name), 'utf8'), name);
