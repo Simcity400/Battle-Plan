@@ -130,5 +130,10 @@ test.skip('dated names retain explicit loading, absence, failure and stable comp
     refuse = true;
     assert.deepEqual(await at(13), { loading: { kind: 'value', value: 'Named' }, read: { kind: 'failed', failure: refusal } });
     assert.deepEqual((await at(14)).loading, { kind: 'failed', failure: refusal });
+    refuse = false;
+    wanted.splice(0, wanted.length, { hour: 15, tag: 'present' });
+    fixture.begin();
+    assert.equal(useCountryNamesAt(playing, track, [...wanted], true, Infinity, 0, true).get(nameKey(15, 'present'))?.kind, 'loading');
+    fixture.commit();
   } finally { fixture.dispose(); delete host.__nameReadHooks; await vite.close(); }
 });

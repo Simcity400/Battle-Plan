@@ -20,7 +20,7 @@ use ts_rs::TS;
 
 pub struct AgencyComparison;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgencyComparisonParams {
@@ -77,7 +77,7 @@ pub struct Agency {
     pub upgrades: Option<Upgrades>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AgencyComparisonReply {
@@ -198,11 +198,10 @@ impl AtHour for AgencyComparison {
         branch(&params.branch_id)
     }
 
-    fn uses_sample(_table: TableId) -> bool { false }
 
     const CLOCK_DEPENDENT: bool = false;
 
-    fn projection(_params: &Self::Params, table: TableId) -> Option<Vec<usize>> {
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         match table {
             TableId::IntelligenceAgencies => Some(dashboard_base::products::at_hour::field_columns(table, &["created", "name", "defense_raw", "active_count", "unknown_f0"])),
             TableId::Countries => Some(dashboard_base::products::at_hour::field_columns(table, &["canonical_slot", "tag"])),

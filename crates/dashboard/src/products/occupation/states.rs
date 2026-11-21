@@ -1,13 +1,13 @@
 
 use super::{
-    Content, law::{self, GroupLaw, LawInputs, OccupationLawInfo}, occupied, slot,
+    Content, Eligibility, WorldReads, law::{self, GroupLaw, LawInputs, OccupationLawInfo}, occupied, slot,
 };
 use crate::{
     Source,
     catalogue::Refusals,
     products::{
         LoadContext,
-        at_hour::{At, AtHour, Owner, Read},
+        at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt},
         intelligence::{Tags, branch, missing},
     },
 };
@@ -52,7 +52,7 @@ const GROUP_LAW_MISSING: &str = "The law set for this occupied country is not re
 
 pub struct OccupiedStates;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OccupiedStatesParams {
@@ -83,7 +83,7 @@ pub struct OccupiedState {
     pub law_missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OccupiedStatesReply {
@@ -275,6 +275,101 @@ fn needs_world(frame: &DecodedFrame) -> bool {
     .unwrap_or(false)
 }
 
+struct Admission<'f> {
+    frame: &'f DecodedFrame,
+    content: &'f Content,
+    links: &'f [CountryLinkRow],
+    world: OnceCell<Result<dashboard_text::triggers::World<'f>, String>>,
+    decided: Eligibility,
+    read: WorldReads,
+}
+
+impl<'f> Admission<'f> {
+    fn new(frame: &'f DecodedFrame, content: &'f Content, links: &'f [CountryLinkRow], decided: Eligibility) -> Self {
+        Self { frame, content, links, world: OnceCell::new(), decided, read: WorldReads::default() }
+    }
+
+    fn admit(&mut self, token: &str, key: Option<Key>, scope: Option<u32>) -> Result<bool, String> {
+        let laws = self.content.laws.as_ref().map_err(Clone::clone)?;
+        let definition = laws.find(token)?.ok_or_else(|| format!("Occupation law {token} has no recorded-content declaration"))?;
+        if definition.visible.is_empty() && definition.available.is_empty() {
+            return Ok(true);
+        }
+        let (controller, _, _) = key.expect("a law reaching the default has its key");
+        let occupied = scope.and_then(|raw| slot(self.links, raw)).ok_or_else(|| "The occupied-country scope is not captured or its link is unresolved".to_owned())?;
+        if definition.visible.is_empty() && controller == occupied {
+            return Ok(true);
+        }
+        let Self { frame, content, world, decided, read, .. } = self;
+        let (frame, content) = (*frame, *content);
+        decided
+            .entry((token.to_owned(), controller, occupied))
+            .or_insert_with(|| {
+                let world = world
+                    .get_or_init(|| {
+                        dashboard_text::triggers::inputs::unrecorded(|| {
+                            let cat = content.catalogue().map_err(|_| "Occupation law eligibility needs recorded content".to_owned())?;
+                            cat.scripted_content()?.recorded_world_in(HourFrame::from(frame))
+                        })
+                    })
+                    .as_ref()
+                    .map_err(Clone::clone)?;
+                let (made, inputs) = dashboard_text::triggers::inputs::capture_in(HourFrame::from(frame), || law::admitted(world, definition, controller, occupied));
+                read.note(inputs.footprint());
+                made
+            })
+            .clone()
+    }
+}
+
+fn eligibility(frame: &DecodedFrame, content: &Content) -> (Eligibility, WorldReads) {
+    (|| -> io::Result<(Eligibility, WorldReads)> {
+        let links = frame.complete::<tables::CountryLinks>()?;
+        let joins = Joins::read(frame, links, &mut Refusals::default())?;
+        let mut admission = Admission::new(frame, content, links, Eligibility::default());
+        for (_, state, key) in occupied_states(recorded_rows::<tables::StateResistance>(frame)?, recorded_rows::<tables::States>(frame)?, links) {
+            let Some(state) = state else { continue };
+            let (inputs, scope) = joins.law_inputs(slot(links, state.controller), key);
+            let _ = law::law_for(inputs, |token| admission.admit(token, key, scope));
+        }
+        Ok((admission.decided, admission.read))
+    })()
+    .unwrap_or_default()
+}
+
+const WORLD_CORE: [TableId; 1] = [TableId::Provinces];
+
+fn world_missing(params: &OccupiedStatesParams, held: &DecodedFrame, content: &Content) -> Vec<TableId> {
+    let (decided, read) = eligibility(held, content);
+    let lacking = |table: &TableId| held.tables[table.index()].held().is_not_selected();
+    let missing: Vec<TableId> = if read.undeclared {
+        OccupiedStates::tables(params).into_iter().filter(lacking).collect()
+    } else {
+        read.fields.keys().copied().filter(lacking).collect()
+    };
+    let mut world = content.world.lock().unwrap_or_else(|error| error.into_inner());
+    let before = world.clone();
+    world.add(&read);
+    if missing.is_empty() && *world == before {
+        *content.eligible.lock().unwrap_or_else(|error| error.into_inner()) = Some(((held.branch, held.hour), decided));
+    }
+    missing
+}
+
+fn world_planned(plan: &[(Vec<Read>, i32)]) -> bool {
+    plan.get(1).is_some_and(|(reads, _)| reads.iter().any(|read| read.table != TableId::LexicalTokens))
+}
+
+fn equipment_tokens(held: &DecodedFrame) -> Vec<u128> {
+    let mut tokens = BTreeSet::new();
+    for row in held.complete::<tables::StateGarrisons>().into_iter().flatten() {
+        if let Recorded::Value(inputs) = &row.equipment {
+            for entry in &inputs.rows { tokens.extend([u128::from(entry.equipment_token), u128::from(entry.archetype_token)]); }
+        }
+    }
+    tokens.into_iter().collect()
+}
+
 struct Garrison {
     required: Option<i64>,
     alert: bool,
@@ -405,8 +500,8 @@ pub(super) fn reply(frame: &DecodedFrame, content: &Content, live: &Cells) -> io
     let garrison_fields: Vec<usize> = GARRISON.iter().map(|(_, field)| dashboard_declare::field(TableId::StateGarrisons, field)).collect::<io::Result<_>>()?;
     let amount = dashboard_declare::field(TableId::StateAssignedManpower, "amount")?;
     let strength_field = dashboard_declare::field(TableId::GarrisonStrengths, "strength")?;
-    let world = OnceCell::new();
-    let mut admitted: HashMap<(String, u32, u32), Result<bool, String>> = HashMap::new();
+    let decided = content.eligible.lock().unwrap_or_else(|error| error.into_inner()).as_ref().filter(|(at, _)| *at == (frame.branch, frame.hour)).map(|(_, decided)| decided.clone());
+    let mut admission = Admission::new(frame, content, links, decided.unwrap_or_default());
     let mut complete = frame.complete::<tables::StateResistance>().is_ok();
     let mut tokens = BTreeSet::new();
     let mut rows = BTreeMap::new();
@@ -418,33 +513,7 @@ pub(super) fn reply(frame: &DecodedFrame, content: &Content, live: &Cells) -> io
         };
         let controller = slot(links, state.controller);
         let (inputs, scope) = joins.law_inputs(controller, key);
-        let made = law::law_for(inputs, |token| {
-            let laws = content.laws.as_ref().map_err(Clone::clone)?;
-            let definition = laws.find(token)?.ok_or_else(|| format!("Occupation law {token} has no recorded-content declaration"))?;
-            if definition.visible.is_empty() && definition.available.is_empty() {
-                return Ok(true);
-            }
-            let (controller, _, _) = key.expect("a law reaching the default has its key");
-            let occupied = scope.and_then(|raw| slot(links, raw)).ok_or_else(|| "The occupied-country scope is not captured or its link is unresolved".to_owned())?;
-            if definition.visible.is_empty() && controller == occupied {
-                return Ok(true);
-            }
-            admitted
-                .entry((token.to_owned(), controller, occupied))
-                .or_insert_with(|| {
-                    let world = world
-                        .get_or_init(|| {
-                            dashboard_text::triggers::inputs::unrecorded(|| {
-                                let cat = content.catalogue().map_err(|_| "Occupation law eligibility needs recorded content".to_owned())?;
-                                cat.scripted_content()?.recorded_world_in(HourFrame::from(frame))
-                            })
-                        })
-                        .as_ref()
-                        .map_err(Clone::clone)?;
-                    law::admitted(world, definition, controller, occupied)
-                })
-                .clone()
-        });
+        let made = law::law_for(inputs, |token| admission.admit(token, key, scope));
         if let Err(why) = &made {
             refused.note(why.clone(), format!("state {}", state.id));
         }
@@ -525,12 +594,43 @@ impl AtHour for OccupiedStates {
         tables
     }
 
-    fn reads(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
-        match step {
-            0 => TABLES.into_iter().map(Read::all).collect(),
-            1 if needs_world(held) => Self::tables(params).into_iter().filter(|table| !TABLES.contains(table)).map(Read::all).collect(),
-            _ => Vec::new(),
+    fn reads_in(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        if step == 0 { return TABLES.into_iter().filter(|&table| table != TableId::LexicalTokens).map(Read::all).collect(); }
+        if step > 1 { return if needs_world(held) { world_missing(params, held, at.context).into_iter().map(Read::all).collect() } else { Vec::new() }; }
+        let learned = at.context.world.lock().unwrap_or_else(|error| error.into_inner()).clone();
+        let lexicon = if learned.undeclared || learned.fields.contains_key(&TableId::LexicalTokens) { Read::all(TableId::LexicalTokens) }
+            else { Read { table: TableId::LexicalTokens, keys: Keys::These(equipment_tokens(held)) } };
+        let world: BTreeSet<TableId> = match (learned.undeclared, learned.fields.is_empty()) {
+            (true, _) if needs_world(held) => Self::tables(params).into_iter().collect(),
+            (false, false) => WORLD_CORE.into_iter().chain(learned.fields.keys().copied()).collect(),
+            (false, true) if needs_world(held) => WORLD_CORE.into_iter().collect(),
+            _ => BTreeSet::new(),
+        };
+        world.into_iter().filter(|table| !TABLES.contains(table)).map(Read::all).chain([lexicon]).collect()
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, plan: &[(Vec<Read>, i32)], content: &Self::Context) -> Option<Vec<usize>> {
+        let reply: &[&str] = match table {
+            TableId::StateResistance => &["country", "active"],
+            TableId::StateGarrisons => &["occupied", "garrison_required", "serialized_flag", "equipment"],
+            TableId::StateAssignedManpower => &["occupied", "amount"],
+            TableId::States => &["owner", "controller", "custom_name", "owner_name"],
+            TableId::Countries => &["canonical_slot", "tag"],
+            _ if TABLES.contains(&table) => return None,
+            _ => &[],
+        };
+        let mut fields = dashboard_base::products::at_hour::field_columns(table, reply).into_iter().fold(0u64, |mask, field| mask | 1 << field);
+        if world_planned(plan) {
+            let world = content.world.lock().unwrap_or_else(|error| error.into_inner());
+            if world.undeclared { return None; }
+            fields |= world.fields.get(&table).copied().unwrap_or(0);
         }
+        Some((0..table.field_count()).filter(|&field| fields >> field & 1 != 0).collect())
+    }
+
+    fn clock_dependent(plan: &[(Vec<Read>, i32)], content: &Self::Context) -> bool {
+        let world = content.world.lock().unwrap_or_else(|error| error.into_inner());
+        world_planned(plan) && (world.ends || world.undeclared)
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

@@ -3,9 +3,9 @@ use replay_data::Hour;
 use std::{collections::BTreeMap, io};
 
 pub const MAGIC: &[u8; 4] = b"PNL2";
-const VERSION: u16 = 4;
+const VERSION: u16 = 5;
 const HEAD: usize = 24;
-const PANEL_HEAD: usize = 20;
+const PANEL_HEAD: usize = 16;
 pub const REFUSED: u8 = 0;
 pub const DATA: u8 = 1;
 pub const STANDS: u8 = 3;
@@ -21,14 +21,10 @@ impl ProductBatch {
         Self { bytes: head(0, clock, (route, seek)), count: 0 }
     }
 
-    pub fn changed(&mut self, id: u32, hour: Hour, through: Hour, kind: u8, body: &[u8]) {
+    pub fn changed(&mut self, id: u32, hour: Hour, kind: u8, body: &[u8]) {
         let offset = self.bytes.len();
         record(&mut self.bytes, id, hour, kind, body);
         self.bytes[offset + 9] |= 1;
-        if through > hour {
-            self.bytes[offset + 9] |= 2;
-            self.bytes[offset + 16..offset + 20].copy_from_slice(&through.to_le_bytes());
-        }
         self.count += 1;
     }
 
@@ -76,7 +72,6 @@ fn record(out: &mut Vec<u8>, id: u32, hour: Hour, kind: u8, body: &[u8]) {
     out.extend_from_slice(&hour.to_le_bytes());
     out.extend_from_slice(&[kind, 0, 0, 0]);
     out.extend_from_slice(&(body.len() as u32).to_le_bytes());
-    out.extend_from_slice(&[0; 4]);
     out.extend_from_slice(body);
     out.resize(out.len().next_multiple_of(8), 0);
 }

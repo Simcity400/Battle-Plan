@@ -199,7 +199,10 @@
   };
   p.painted = [];
   const afterPaint = new MessageChannel();
-  afterPaint.port1.onmessage = ({ data }) => { const entry = p.painted.find(f => f.start === data); if (entry) entry.end = performance.now(); };
+  afterPaint.port1.onmessage = ({ data }) => {
+    const entry = p.painted.find(f => f.start === data); if (entry) entry.end = performance.now();
+    if (data === p.frameStart) sampleFrame();
+  };
   const frame = now => {
     p.painted.push({ start: now, end: null });
     if (p.painted.length > 8000) p.painted.splice(0, 4000);
@@ -207,10 +210,6 @@
     p.frames.push(now);
     if (p.frames.length > 8000) p.frames.splice(0, 4000);
     p.frameStart = now;
-    if ((p.tracking || p.watching || (p.done && p.doneAt === null) || (p.alt && p.altAt === null)) && document.body) {
-      if (!sizer.isConnected) { document.body.append(sizer); resized.observe(sizer); }
-      sizer.style.width = sizer.style.width === '1px' ? '2px' : '1px';
-    }
     requestAnimationFrame(frame);
   };
   let placeholderSince = null;
@@ -234,10 +233,6 @@
     if (p.alt && p.altAt === null) { try { if (p.alt()) p.altAt = p.frameStart; } catch {   } }
     p.settler?.();
   };
-  const sizer = document.createElement('div');
-  sizer.setAttribute('aria-hidden', 'true');
-  sizer.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;visibility:hidden;pointer-events:none;contain:strict';
-  const resized = new ResizeObserver(sampleFrame);
   requestAnimationFrame(frame);
 
   p.mark = (done, ignore = null, alt = null, altQuiet = 0) => {

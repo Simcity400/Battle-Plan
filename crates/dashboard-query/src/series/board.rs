@@ -122,7 +122,9 @@ fn values(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: u32) -
                         if !complete {
                             return Err(format!("{kind} was not recorded at this hour"));
                         }
-                        let slot = slots.get(&key).ok_or_else(|| format!("{tag} holds no row of {kind} at this hour"))?;
+                        let Some(slot) = slots.get(&key) else {
+                            return if lines[line].series().absent_none { Ok(0) } else { Err(format!("{tag} holds no row of {kind} at this hour")) };
+                        };
                         let view = view.as_ref().expect("a complete read");
                         lines[line].source().value(view, *slot).ok_or_else(|| format!("{tag}'s {measure} was not recorded at this hour"))
                     })
@@ -200,6 +202,30 @@ mod tests {
         let hour = both_recorded();
         let board = at(&columns, Rows::Countries(&tags), hour).unwrap();
         assert_eq!(board.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), ["ITA", "GER"]);
+    }
+
+    #[test]
+    fn a_holder_with_no_row_ranks_at_zero_where_its_series_holds_none_there() {
+        use crate::identity::{Holder, HolderRun};
+        let mut query = query();
+        let held = std::sync::Arc::make_mut(&mut query.holders);
+        held.tags.insert("POL".into(), vec![HolderRun { first: FIRST, last: LAST, holder: Holder::Found { slot: 9, id: 9003 }, starts_segment: true }]);
+        let base = dashboard_declare::series("country-measure").unwrap();
+        let series: &'static dashboard_declare::Series = Box::leak(Box::new(dashboard_declare::Series {
+            kind: base.kind, table: base.table, key: base.key, parts: base.parts, measures: base.measures, drops: base.drops, absent_none: true,
+        }));
+        let hour = both_recorded();
+        let columns = [Column { line: Line::new(&query, series, series.measure("politicalPower").unwrap()).unwrap(), partial: None }];
+        let mut wanted: Vec<(i64, &str)> = vec![(power(9001, hour).unwrap(), "GER"), (power(9002, hour).unwrap(), "ITA"), (0, "POL")];
+        wanted.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+        let most = at(&columns, Rows::Top { by: 0, n: 3, least: false }, hour).unwrap();
+        assert_eq!(most.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), wanted.iter().map(|(_, tag)| *tag).collect::<Vec<_>>());
+        wanted.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(b.1)));
+        let least = at(&columns, Rows::Top { by: 0, n: 3, least: true }, hour).unwrap();
+        assert_eq!(least.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), wanted.iter().map(|(_, tag)| *tag).collect::<Vec<_>>());
+        let pol = least.rows.iter().find(|row| row.tag == "POL").unwrap();
+        assert_eq!(pol.cells[0].value_raw.as_deref(), Some("0"));
+        assert_eq!(at(&[power_column(&query)], Rows::Top { by: 0, n: 3, least: true }, hour).unwrap().rows.len(), 2);
     }
 
     #[test]

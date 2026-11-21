@@ -8,5 +8,5 @@ export const definition = {
   kind: 'doctrine-mastery', version: 1, title: 'Doctrine mastery', icon: 'flask', category: 'Research',
   description: 'Each doctrine track’s mastery and rewards, filling down as in the game.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, countries: { max: 1 }, history: true,
-  minSize: { w: 4, h: 6 }, defaultSize: { w: 10, h: 10 }, options: OPTIONS,
+  minSize: { w: 4, h: 6 }, defaultSize: { w: 10, h: 10 }, options: OPTIONS, playsBackDated: true,
 } as const satisfies WidgetMeta;

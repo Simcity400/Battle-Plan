@@ -129,7 +129,7 @@ fn map(key: u128, cells: &[Cell], columns: &Columns, tag: impl Fn(u32) -> Option
 
 pub struct MarketLedger;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MarketLedgerParams {

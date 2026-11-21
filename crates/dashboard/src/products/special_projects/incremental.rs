@@ -228,7 +228,7 @@ pub(super) fn reader(replay: Arc<Replay>, timeline: Arc<Timeline>, holders: Arc<
             Ok(s.data.clone())
         });
         let value = answer.unwrap_or_else(|e| { *held = None; Arc::new(Err(e.to_string())) });
-        dashboard_follow::panel::ProductRead { value, rows: count, encoded: None, through: hour }
+        dashboard_follow::panel::ProductRead { value, rows: count, encoded: None, live: None, lanes: Vec::new() }
     })
 }
 

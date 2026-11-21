@@ -178,7 +178,7 @@ export function retryFlags(client: DashboardClient, sourceId: string): void {
 export const flagReadKey = (read: FlagAt) => JSON.stringify([read.branchId, read.hour, read.tag]);
 
 export function useFlagReads(client: DashboardClient, recording: DashboardSource | undefined, reads: readonly FlagAt[], active: boolean,
-  size: CountryFlagSize): ReadonlyMap<string, FlagValue> {
+  size: CountryFlagSize, exact = false): ReadonlyMap<string, FlagValue> {
   const content = useContentRevision(client);
   const readsKey = JSON.stringify(reads.map(read => [read.branchId, read.hour, read.tag]));
   const wanted = useMemo(() => JSON.parse(readsKey) as [string, number, string][], [readsKey]);
@@ -244,14 +244,14 @@ export function useFlagReads(client: DashboardClient, recording: DashboardSource
       const key = JSON.stringify([branchId, hour, tag]), country = JSON.stringify([branchId, tag]);
       const value = shown.values.get(key);
       if (value && !isFailedFact(value) && value.url) held.set(country, value);
-      else if (value === undefined && held.has(country)) (values ??= new Map(shown.values)).set(key, held.get(country)!);
+      else if (value === undefined && !exact && held.has(country)) (values ??= new Map(shown.values)).set(key, held.get(country)!);
     }
     return values ?? shown.values;
-  }, [shown, wanted]);
+  }, [shown, wanted, exact]);
 }
 
 export function useCountryFlagsRead(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  size: CountryFlagSize = 'panel'): ReadonlyMap<string, FlagValue> {
+  size: CountryFlagSize = 'panel', exact = false): ReadonlyMap<string, FlagValue> {
   const branchId = track?.branch.id ?? '';
   const bySlot = wanted.some(item => typeof countryFromKey(item.tag) === 'number');
   const slots = useSlotTags(client, track, active && bySlot);
@@ -260,7 +260,7 @@ export function useCountryFlagsRead(client: DashboardClient, track: Pick<BoundTr
     const shown = typeof slot === 'number' ? slots?.tagAt(slot, hour) ?? null : tag;
     return shown === null ? [] : [{ asked: tag, tag: shown, hour }];
   }), [wanted, slots]);
-  const flags = useFlagReads(client, track?.source, asked.map(({ tag, hour }) => ({ tag, hour, branchId })), active && !!track, size);
+  const flags = useFlagReads(client, track?.source, asked.map(({ tag, hour }) => ({ tag, hour, branchId })), active && !!track, size, exact);
   return useMemo(() => {
     const keyed = new Map<string, FlagValue>();
     for (const [key, value] of flags) {

@@ -136,6 +136,7 @@ static NEGATED: Series = Series {
         rank: 0,
     }],
     drops: false,
+    absent_none: false,
 };
 
 const SPECIAL_TOTAL: usize = 4;
@@ -159,6 +160,7 @@ static RESOURCE_SURPLUS: Series = Series {
         rank: 0,
     }],
     drops: false,
+    absent_none: false,
 };
 
 fn lane(pages: &Arc<dyn Pages>, query: &Query, columns: Vec<usize>, from: i32) -> Lane {
@@ -207,6 +209,18 @@ fn a_followed_computed_column_equals_series_state_at_every_step() {
         }
     }
     assert!(valued > 200 && unrecorded > 4, "{valued} values and {unrecorded} hours not recorded compared");
+}
+
+#[test]
+fn a_followed_series_reads_every_tag_its_holders_name_as_its_top_names_them() {
+    let state = query();
+    let identity = Identity { holders: Arc::clone(&state.holders), timeline: Arc::clone(&state.timeline) };
+    let asked = |reads: serde_json::Value| crate::parse::parse(&serde_json::json!({ "product": "series-state",
+        "params": { "branchId": "1", "family": { "kind": "country-factories", "measure": "free7" }, "reads": reads } }), &identity);
+    let Ok(Query::Series { countries, top: None, .. }) = asked(serde_json::json!("every")) else { panic!("every holder's tag, unranked") };
+    let tags: Vec<_> = countries.iter().map(|country| country.tag().expect("named by its tag, as a top names its rows")).collect();
+    assert_eq!(tags, ["GER", "ITA"]);
+    assert!(asked(serde_json::json!("some")).is_err(), "reads names every country or a list");
 }
 
 #[test]

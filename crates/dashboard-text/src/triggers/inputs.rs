@@ -987,6 +987,13 @@ impl Inputs {
             })
     }
 
+    pub fn footprint(&self) -> Option<&[TableRead]> {
+        self.reads
+            .iter()
+            .all(|read| read.uses.is_some())
+            .then_some(self.footprint.as_slice())
+    }
+
     pub fn unchanged(&self, since: &Since<'_>) -> bool {
         self.follows(since)
             && self.reads.iter().all(|read| read.uses.is_some())

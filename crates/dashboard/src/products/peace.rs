@@ -21,7 +21,7 @@ fn invalid(what: impl Into<String>) -> io::Error {
 
 pub struct PeaceDeals;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PeaceDealsParams {
@@ -281,7 +281,7 @@ pub struct PeaceCaptured {
     pub subjects: Vec<PeaceCapturedSubject>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceDeal {
@@ -321,7 +321,7 @@ pub struct PeaceDeal {
     pub limitations: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, PartialEq, Default, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceUnobserved {
@@ -335,7 +335,7 @@ pub struct PeaceUnobserved {
     pub victory_points: Vec<HourSpan>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceDealsReply {

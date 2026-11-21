@@ -59,14 +59,19 @@ export type ToWorker =
   | { type: 'bind'; branch: string; route: number; seek: number }
   | { type: 'clock'; anchor: ClockAnchor }
   | { type: 'surface'; id: number; owner: number; width: number; height: number; dpr: number; canvas?: OffscreenCanvas; model: import('./panels/view').PanelModel }
+  | { type: 'table'; id: number; owner: number; width: number; height: number; dpr: number; canvas?: OffscreenCanvas; model: import('./tables/surface').TableSurfaceModel }
+  | { type: 'dateFace'; id: number; width: number; height: number; dpr: number; canvas?: OffscreenCanvas; face: import('./dateFace').DateFaceModel }
   | { type: 'detach'; id: number }
   | { type: 'pointer'; id: number; owner: number; point: [number, number] | null }
+  | { type: 'tablePointer'; id: number; owner: number; point: [number, number] | null; scrollLeft?: number }
+  | { type: 'tableScroll'; id: number; owner: number; scrollLeft: number; scrollTop?: number }
+  | { type: 'tableRead'; id: number; owner: number; request: number; keys?: readonly string[]; rows?: { first: number; count: number }; detail?: string }
   | { type: 'race'; id: number; owner: number; model: import('./arsenal').ArsenalModel & { view: keyof typeof import('./panels/views').raceViews }; canvas?: OffscreenCanvas }
   | { type: 'closeRace'; id: number }
   | { type: 'racePointer'; id: number; owner: number; point?: { x: number; y: number } }
   | { type: 'inspectRace'; id: number; owner: number; request: number; target?: import('./arsenal').RaceTarget }
   | { type: 'inspect'; id: number; request: number }
-  | { type: 'options'; rate: number; measured: boolean; cap: number };
+  | { type: 'options'; rate: number; measured: boolean; cap: number; lane: number };
 
 export type FromWorker = { type: 'displayRate'; hz: number } | import('./notifications').Notice
   | { type: 'audit'; records: import('./notifications').DrawSample[]; done: boolean }
@@ -74,6 +79,9 @@ export type FromWorker = { type: 'displayRate'; hz: number } | import('./notific
   | { type: 'raceInspection'; id: number; owner: number; request: number; seek: number; picture?: import('./arsenal').RaceInspection }
   | { type: 'racePresent'; id: number; owner: number; seek: number; generation: number; head: number; hour: number | null; at: number; rows?: readonly { row: string; key: string; value: string }[] }
   | { type: 'inspection'; request: number; reading?: import('./followed').PageReading }
+  | { type: 'tableRead'; id: number; owner: number; request: number; reading: import('./tables/surface').TableReading | null }
+  | { type: 'tableRows'; id: number; owner: number; count: number; empty?: string }
+  | { type: 'tableColumns'; id: number; owner: number; widths: Record<string, number> }
   | { type: 'structure'; updates: import('./followed').PageReading[] }
   | { type: 'structureLead'; updates: import('./followed').PageReading[] }
   | { type: 'resetStructures'; route: number; seek: number; from: number }

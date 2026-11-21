@@ -12,7 +12,7 @@ pub struct AmountRun {
     pub amount_raw: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReadRuns<K: Ord + Copy> {
     pub runs: BTreeMap<K, Vec<AmountRun>>,
     pub spans: Vec<HourSpan>,

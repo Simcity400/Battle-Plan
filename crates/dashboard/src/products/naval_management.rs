@@ -24,7 +24,7 @@ use ts_rs::TS;
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalManagementParams {
@@ -60,7 +60,7 @@ pub struct NavalManagementSection {
     pub lines: Vec<NavalManagementLine>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalManagementReply {

@@ -19,6 +19,7 @@ export type OptionField = FieldBase & (
   | { kind: 'number'; min: number; max: number; step: number; unit?: string; default: number | null }
   | { kind: 'content-choice'; automatic: string; default: ''; titleChoice?: false; catalogue?: boolean }
   | { kind: 'content-set'; automatic: string; default: ''; catalogue?: boolean }
+  | { kind: 'table'; default: ''; columns: readonly import('../draw/tables/settings.ts').TableColumnDefaults[]; base: import('../draw/tables/settings.ts').TableBase }
 );
 
 const TOKEN_TEXT = /^[^\s\p{Cc},]*$/u;
@@ -82,6 +83,7 @@ export function validOption(field: OptionField, value: unknown): value is Option
       const tokens = contentSet(value);
       return tokens.every(storableToken) && new Set(tokens).size === tokens.length;
     }
+    case 'table': return typeof value === 'string';
     case 'number': return (value === null && field.default === null) || (typeof value === 'number' && Number.isFinite(value) && value >= field.min && value <= field.max
       && Math.abs((value - field.min) / field.step - Math.round((value - field.min) / field.step)) < 1e-9);
   }

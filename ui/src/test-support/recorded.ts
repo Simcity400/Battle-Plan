@@ -95,7 +95,7 @@ export function remapMessage(bytes: Uint8Array, idOf: (recorded: number) => numb
   const countAt = panel ? 8 : 12;
   const kept: [number, number, number][] = [];
   for (let at = 24, count = view.getUint32(countAt, true), answer = 0; answer < count; answer++) {
-    const end = panel ? at + ((20 + view.getUint32(at + 12, true) + 7) & ~7) : at + 16 + view.getUint32(at + 8, true);
+    const end = panel ? at + ((16 + view.getUint32(at + 12, true) + 7) & ~7) : at + 16 + view.getUint32(at + 8, true);
     const id = mapped(view.getUint32(at, true));
     if (id !== undefined) kept.push([at, end, id]);
     at = end;
@@ -142,7 +142,7 @@ export class RecordedClient implements DashboardClient {
   private readonly anchors = new Map<string, ReplyEntry[]>();
   private unfollow?: ReplyEntry;
   private readonly ids = new Map<number, number>();
-  private port?: MessagePort;
+  private ports: readonly MessagePort[] = [];
   private readonly decoder = new FollowDecoder();
 
   constructor(entries: readonly RecordedEntry[]) {
@@ -247,22 +247,23 @@ export class RecordedClient implements DashboardClient {
     return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: data as T };
   }
 
-  async openFollow(port: MessagePort) {
-    this.port = port;
-    port.onmessage = ({ data }: MessageEvent<Release>) => this.decoder.release(data);
+  async openFollow(ports: readonly MessagePort[]) {
+    this.ports = ports;
+    for (const port of ports) port.onmessage = ({ data }: MessageEvent<Release>) => this.decoder.release(data);
   }
 
   private replay(ids: ReadonlySet<number>): void {
     for (const bytes of this.window) {
       const mapped = remapMessage(bytes, id => ids.has(id) ? this.ids.get(id) : undefined);
-      if (mapped) this.port?.postMessage([this.decoder.item(mapped.slice().buffer)]);
+      if (mapped) { const item = this.decoder.item(mapped.slice().buffer); for (const port of this.ports) port.postMessage([item]); }
     }
   }
 
   deliver(bytes: Uint8Array): boolean {
     const mapped = remapMessage(bytes, id => this.ids.get(id));
     if (!mapped) return false;
-    this.port?.postMessage([this.decoder.item(mapped.slice().buffer)]);
+    const item = this.decoder.item(mapped.slice().buffer);
+    for (const port of this.ports) port.postMessage([item]);
     return true;
   }
 

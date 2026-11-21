@@ -1,7 +1,2 @@
 .occupied-states { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.occupied-states > .chart-table { flex: 1; }
 .occupation-note { margin: var(--space-2); color: var(--muted); font-size: var(--type-sm); }
-.occupation-law { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; vertical-align: top; }
-.occupation-law > span { overflow: hidden; text-overflow: ellipsis; }
-.occupation-law img { width: var(--space-4); height: var(--space-4); flex: none; object-fit: contain; }
-.occupation-garrison-alert { color: var(--error); }

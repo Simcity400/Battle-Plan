@@ -64,9 +64,9 @@ export function message(hour: number, answers: { id: number; hour?: number; answ
 
 export function datedPanel(id: number, hour: number, data?: unknown, seek = 1) {
   const body = data === undefined ? new Uint8Array() : encode(data);
-  const out = new Uint8Array((44 + body.length + 7) & ~7), words = new Uint32Array(out.buffer);
-  words.set([0x324c4e50, 4, 1, 0, 9, seek, id, hour, data === undefined ? 3 : 1, body.length]);
-  out.set(body, 44);
+  const out = new Uint8Array((40 + body.length + 7) & ~7), words = new Uint32Array(out.buffer);
+  words.set([0x324c4e50, 5, 1, 0, 9, seek, id, hour, data === undefined ? 3 : 1, body.length]);
+  out.set(body, 40);
   return out;
 }
 
@@ -82,6 +82,7 @@ export function fakeTransport() {
       const step = parseFollowed(bytes);
       for (const { id, hour, answer } of step.answers) receive?.({ id, hour, answer, through: step.hour, seek: 0 });
     },
+    reading: (reading: PageReading) => { receive?.(reading); },
   };
 }
 

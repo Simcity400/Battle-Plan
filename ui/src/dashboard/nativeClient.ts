@@ -122,7 +122,7 @@ async function releaseSource(sourceId: string): Promise<void> {
 export const nativeDashboardClient: DashboardClient = {
   available: desktopAvailable,
   ...(desktopAvailable ? {
-    openFollow(port: MessagePort) {
+    openFollow(ports: readonly MessagePort[]) {
       return new Promise<void>((resolve, reject) => {
         const reader = new Worker(new URL('./pull.worker.ts', import.meta.url), { type: 'module' });
         const fail = (reason: string) => { reader.terminate(); reject(new Error(reason)); };
@@ -131,7 +131,7 @@ export const nativeDashboardClient: DashboardClient = {
           else if (data.reason) fail(data.reason);
         };
         reader.onerror = event => fail(event.message);
-        reader.postMessage({ port, session: crypto.randomUUID() }, [port]);
+        reader.postMessage({ ports, session: crypto.randomUUID() }, [...ports]);
       });
     },
     replayLibrary: () => invoke<ReplayLibrary>('replay_library'),

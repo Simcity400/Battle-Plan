@@ -2205,6 +2205,95 @@ fn the_overlord_scope_declares_the_appearances_links_and_tags_it_reads() {
     check_mode_reports_each_wrong_declaration(&frame, &keys, &tables, &digests);
 }
 
+#[test]
+fn the_capital_scope_declares_the_politics_links_and_tags_it_reads() {
+    use crate::scope::{Context, RecordedScopes, Target};
+    use content_reader_core::scope::{Keyword, Scope};
+    use replay_data::rows::PoliticsRow;
+    let mut frame = frame(100, BASE);
+    set::<tables::Politics>(
+        &mut frame,
+        [(101, 7), (102, 0)]
+            .into_iter()
+            .map(|(country, capital)| PoliticsRow {
+                country,
+                capital,
+                last_election: 3,
+                ..Default::default()
+            })
+            .collect(),
+    );
+    let aliases = Arc::new(content_reader_core::tag_aliases::TagAliases::default());
+    let scopes = RecordedScopes::read(&frame, aliases.clone());
+    let capital = |this| {
+        scopes.resolve(
+            &Scope::Keyword(Keyword::CapitalScope),
+            &Context {
+                this: Some(this),
+                ..Context::default()
+            },
+        )
+    };
+    assert_eq!(capital(Target::Country(1)), Ok(Target::State(7)));
+    let (_, inputs) = capture(&frame, || {
+        for this in [
+            Target::Country(1),
+            Target::Country(2),
+            Target::Country(3),
+            Target::State(1),
+        ] {
+            let _ = capital(this);
+        }
+    });
+    let keys: Vec<Key> = inputs.keys().cloned().collect();
+    assert_eq!(keys.len(), 4, "{keys:?}");
+    for key in &keys {
+        assert!(key.dependence().is_some(), "{key:?}");
+    }
+    let digests = |frame: &DecodedFrame, keys: &[Key]| {
+        let scopes = RecordedScopes::read(frame, aliases.clone());
+        keys.iter()
+            .map(|key| match key {
+                Key::Scopes(query) => Some(scopes.reread(query)),
+                _ => None,
+            })
+            .collect()
+    };
+    let tables = tables_each_key_reads(&frame, &keys, &digests);
+    assert_eq!(tables.len(), 3, "every country's resolution reads a table");
+    let edits = vec![
+        Change::new(TableId::Politics, &["capital"], Some(101), |rows| {
+            if let TableRows::Politics(rows) = rows {
+                rows[0].capital = 9;
+            }
+        }),
+        Change::new(TableId::Politics, &["last_election"], None, |rows| {
+            if let TableRows::Politics(rows) = rows {
+                for row in rows {
+                    row.last_election = 4;
+                }
+            }
+        }),
+        Change::new(
+            TableId::CountryLinks,
+            &["canonical_slot"],
+            Some(102),
+            |rows| {
+                if let TableRows::CountryLinks(rows) = rows {
+                    rows[1].canonical_slot = 3;
+                }
+            },
+        ),
+        Change::new(TableId::Countries, &["tag"], None, |rows| {
+            if let TableRows::Countries(rows) = rows {
+                rows[1].tag = b"ZZZ".to_vec();
+            }
+        }),
+    ];
+    assert!(changes_each_key_reads(&frame, &keys, &digests, &edits) > 0);
+    check_mode_reports_each_wrong_declaration(&frame, &keys, &tables, &digests);
+}
+
 fn character_frame(hour: Hour, required: i32, skill: i32) -> DecodedFrame {
     use replay_data::{rows::CharacterRow, rows::UnitLeaderRow};
     let mut frame = frame(hour, BASE);

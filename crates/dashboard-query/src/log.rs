@@ -91,7 +91,7 @@ pub struct Counts {
     pub bins: Vec<(u32, u64)>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Default, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FacetFilter {
     pub name: String,

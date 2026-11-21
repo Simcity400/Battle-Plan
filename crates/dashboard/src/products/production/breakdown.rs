@@ -761,7 +761,7 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
 
 pub struct ProductionLineBreakdown;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionBreakdownParams {
@@ -774,7 +774,7 @@ pub struct ProductionBreakdownParams {
     pub hour: i32,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionModifierChoice {
@@ -782,7 +782,7 @@ pub struct ProductionModifierChoice {
     pub label: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionLineBreakdownReply {

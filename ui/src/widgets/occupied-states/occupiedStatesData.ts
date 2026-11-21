@@ -1,4 +1,5 @@
-import { formatAmount, formatFixed, formatNativeFixed5, formatSigned } from '../../charts/valueAxis.ts';
+import { formatAmount, formatFixed, formatSigned } from '../../charts/valueAxis.ts';
+import { amountCell, strengthBar } from '../../draw/tables/logic.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
@@ -31,6 +32,15 @@ export function validateOccupiedStates(data: unknown): OccupiedStatesReply {
   return data as unknown as OccupiedStatesReply;
 }
 
+export const occupiedStructure = (reply: OccupiedStatesReply) => JSON.stringify([reply.complete, reply.missing, reply.warnings,
+  reply.states.some(state => state.occupier === null), reply.states.some(state => state.occupied === null)]);
+
+export interface OccupiedDetail { value: OccupiedState; law: OccupiedStatesReply['laws'][number] | null; strengthMissing: string }
+export function occupiedDetail(reply: OccupiedStatesReply, key: string): OccupiedDetail | null {
+  const value = reply.states.find(state => String(state.state) === key);
+  return value ? { value, law: reply.laws.find(law => law.token === value.law) ?? null, strengthMissing: reply.strengthMissing } : null;
+}
+
 export interface OccupiedRow { key: string; state: number; value: OccupiedState }
 export type CountryRole = 'occupier' | 'occupied';
 export const stateName = (row: OccupiedRow) => row.value.name ?? `State ${row.state}`;
@@ -50,6 +60,14 @@ export function occupiedRows(reply: OccupiedStatesReply, matches: ((tag: string)
   return { rows, selectionUnknown, membership };
 }
 
+export function emptyReason(reply: OccupiedStatesReply, view: { rows: readonly unknown[]; selectionUnknown: boolean; membership: string | null }): string | null {
+  if (reply.missing !== null) return `Occupied states weren’t recorded at this time: ${reply.missing}`;
+  if (view.rows.length) return null;
+  if (view.membership) return view.membership;
+  if (view.selectionUnknown) return 'Occupied states unavailable for these countries.';
+  return reply.complete ? 'No occupied states match these countries at this moment.' : 'Some occupied states are missing.';
+}
+
 export function liveRaw(values: LiveValues<number>, row: string, column: string): string | null {
   const value = values.get(liveKey(row, column));
   return value === undefined || !Number.isFinite(value) ? null : BigInt(Math.trunc(value)).toString();
@@ -58,23 +76,9 @@ export function liveRaw(values: LiveValues<number>, row: string, column: string)
 export const strengthPercent = (raw: string) => `${formatAmount((BigInt(raw) * 100n).toString(), 5, 5)}%`;
 export const percent = (raw: string) => `${formatAmount(raw, 5, 5)}%`;
 
-export function percentCell(raw: string): string {
-  const value = BigInt(raw);
-  const rounded = BigInt.asIntN(32, (value + (value < 0n ? -50000n : 50000n)) / 100000n);
-  const clamped = rounded < 0n ? 0n : rounded > 100n ? 100n : rounded;
-  return `${formatNativeFixed5(clamped * 100000n, 0)}%`;
-}
+export { percentCell, strengthBar } from '../../draw/tables/logic.ts';
 
-export function strengthBar(raw: string): bigint {
-  const percent = BigInt.asIntN(64, BigInt(raw) * 100n);
-  const biased = BigInt.asIntN(64, percent + (percent < 0n ? -50000n : 50000n));
-  return BigInt.asIntN(32, biased / 100000n) * 1000n;
-}
-
-export function garrisonText(raw: number): string {
-  const amount = BigInt(Math.trunc(raw));
-  return amount === 0n ? '-' : amount < 0n ? '!' : formatNativeFixed5(amount, 2);
-}
+export const garrisonText = (raw: number) => amountCell(BigInt(Math.trunc(raw)));
 
 export function garrisonCell(value: OccupiedState): { bar: 0n | 'cell' | null; red: boolean } {
   if (value.garrisonRequiredSign === null || value.garrisonRequiredSign === 0) return { bar: null, red: false };
@@ -101,26 +105,38 @@ function strengthText(row: OccupiedRow, values: LiveValues<number>, strengthMiss
 
 export const NOT_NAMED = 'Not a live cell of this reply';
 
-export function occupationTooltip(row: OccupiedRow, values: LiveValues<number>, countryName: (tag: string) => string, strengthMissing: string): TooltipContent {
+export const occupationTooltipKeys = (row: string) =>
+  ['resistance', 'resistanceSpeed', 'compliance', 'complianceSpeed', 'requiredManpower', 'assignedManpower', 'garrison', STRENGTH].map(column => liveKey(row, column));
+
+export function occupationTooltip(row: OccupiedRow, values: LiveValues<number>, countryName: (tag: string) => string, strengthMissing: string,
+  lawName: (token: string) => string): TooltipContent {
   const v = row.value;
-  const cell = (column: string, show: (raw: string) => string) => {
+  const shown = (label: string, value: string) => ({ label, value });
+  const missing = (label: string, why: string) => ({ label, value: why, tone: 'muted' as const });
+  const cell = (label: string, column: string, show: (raw: string) => string) => {
     const at = liveRaw(values, row.key, column);
-    return at === null ? values.missing(liveKey(row.key, column)) : show(at);
+    return at === null ? missing(label, values.missing(liveKey(row.key, column))) : shown(label, show(at));
   };
   const whole = (raw: string) => formatFixed(BigInt(raw), 0, 0);
-  const garrison = (column: string, show: (raw: string) => string) => v.garrisonRequiredSign === null ? '—' : cell(column, show);
-  const assigned = !v.assignedKnown ? '—' : liveRaw(values, row.key, 'assignedManpower') === null
-    && values.missing(liveKey(row.key, 'assignedManpower')) === NOT_NAMED ? '0' : cell('assignedManpower', whole);
+  const garrison = (label: string, column: string, show: (raw: string) => string) => v.garrisonRequiredSign === null ? shown(label, '—') : cell(label, column, show);
+  const assigned = !v.assignedKnown ? shown('Assigned manpower', '—') : liveRaw(values, row.key, 'assignedManpower') === null
+    && values.missing(liveKey(row.key, 'assignedManpower')) === NOT_NAMED ? shown('Assigned manpower', '0') : cell('Assigned manpower', 'assignedManpower', whole);
+  const country = (label: string, tag: string | null, unknown: string) => tag === null ? missing(label, unknown) : shown(label, countryName(tag));
+  const strength = liveRaw(values, row.key, STRENGTH) === null ? missing('Garrison strength', strengthText(row, values, strengthMissing))
+    : shown('Garrison strength', strengthText(row, values, strengthMissing));
   return { title: stateName(row), rows: [
-    { label: 'Resistance', value: cell('resistance', percent) },
-    { label: 'Resistance speed', value: cell('resistanceSpeed', raw => `${formatSigned(raw, 5, 5)} pp/day`) },
-    { label: 'Compliance', value: cell('compliance', percent) },
-    { label: 'Compliance speed', value: cell('complianceSpeed', raw => `${formatSigned(raw, 5, 5)} pp/day`) },
-    { label: 'Required manpower', value: garrison('requiredManpower', whole) },
-    { label: 'Assigned manpower', value: assigned },
-    { label: 'Required garrison amount', value: garrison('garrison', raw => formatAmount(raw, 5, 5)) },
-    { label: 'Garrison strength', value: strengthText(row, values, strengthMissing) },
-    { label: 'Occupied country', value: v.occupied === null ? 'Unknown' : countryName(v.occupied) },
+    country('Owner', v.owner, 'Unknown country'),
+    country('Occupier', v.occupier, 'Unknown country'),
+    cell('Resistance', 'resistance', percent),
+    cell('Resistance speed', 'resistanceSpeed', raw => `${formatSigned(raw, 5, 5)} pp/day`),
+    cell('Compliance', 'compliance', percent),
+    cell('Compliance speed', 'complianceSpeed', raw => `${formatSigned(raw, 5, 5)} pp/day`),
+    garrison('Required manpower', 'requiredManpower', whole),
+    assigned,
+    garrison('Required garrison amount', 'garrison', raw => formatAmount(raw, 5, 5)),
+    strength,
+    v.law === null ? missing('Occupation law', v.lawMissing ?? 'Not recorded') : shown('Occupation law', lawName(v.law)),
+    country('Occupied country', v.occupied, 'Unknown'),
     ...(v.garrisonAlert ? [{ label: 'Garrison requirement not met.', tone: 'negative' as const }] : []),
   ] };
 }

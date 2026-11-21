@@ -13,7 +13,7 @@ use replay_columnar::{
     summary::{Cells, Source},
 };
 use replay_data::Hour;
-use std::{cmp::Ordering, collections::HashMap, io};
+use std::{cmp::Ordering, collections::{HashMap, HashSet}, io};
 
 pub(crate) trait Find {
     fn slot(&self, key: u128) -> Option<u32>;
@@ -154,7 +154,7 @@ impl Ranking {
     }
 
     pub(crate) fn write(&mut self, query: &Query, lane: &Lane, changes: Option<&playhead::changes::Changes>, tags: &Tags, reasons: &Reasons, table: &mut Table, out: &mut Vec<u8>) -> Option<u64> {
-        let Query::Series { countries: names, top: Some(n), least, parts: false, .. } = query else { return None };
+        let Query::Series { series, countries: names, top: Some(n), least, parts: false, .. } = query else { return None };
         let source = query.source()?;
         let cells = lane.cells();
         out.clear();
@@ -195,7 +195,20 @@ impl Ranking {
             self.slots.insert(slot, ranked);
         }
         table.clear(1, false);
-        for &(value, _, key) in self.sorted.iter().take(*n) {
+        let mut top: Vec<(i64, u32, u128)> = self.sorted.iter().take(*n).copied().collect();
+        if series.absent_none {
+            let held: HashSet<u128> = cells.rows().filter_map(|slot| cells.key(slot)).collect();
+            let zero = if *least { 0 } else { !0 };
+            let mut absent: Vec<(i64, u32, u128)> = tags.by_key.iter().filter(|(key, _)| !held.contains(key)).map(|(&key, &at)| (zero, self.order[at as usize], key)).collect();
+            if absent.len() > *n && *n > 0 {
+                absent.select_nth_unstable(*n - 1);
+                absent.truncate(*n);
+            }
+            top.extend(absent);
+            top.sort_unstable();
+            top.truncate(*n);
+        }
+        for (value, _, key) in top {
             table.row(key);
             table.cell(if *least { value } else { !value }, State::Value);
             table.name(&names[tags.by_key[&key] as usize].key());
@@ -319,7 +332,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 }
             }
         }
-        Query::Series { countries: names, top: Some(n), least, .. } => {
+        Query::Series { series, countries: names, top: Some(n), least, .. } => {
             let source = query.source().expect("a checked series");
             table.clear(1, false);
             ranked.clear();
@@ -330,6 +343,10 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 }
                 _ => None,
             }));
+            if series.absent_none {
+                let held: HashSet<u128> = cells.rows().filter_map(|slot| cells.key(slot)).collect();
+                ranked.extend(tags.by_key.iter().filter(|(key, _)| !held.contains(key)).map(|(&key, &at)| (0, key, at)));
+            }
             let by_tag = |a: &(i64, u128, u32), b: &(i64, u128, u32)| {
                 let (a0, b0) = if *least { (b.0, a.0) } else { (a.0, b.0) };
                 b0.cmp(&a0).then_with(|| names[a.2 as usize].key().cmp(&names[b.2 as usize].key()))
@@ -345,7 +362,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 table.name(&names[at as usize].key());
             }
         }
-        Query::Series { measure, countries: names, top: None, .. } => {
+        Query::Series { series, measure, countries: names, top: None, .. } => {
             let source = query.source().expect("a checked series");
             table.clear(1, false);
             let unread = |at: usize| format!("{}'s {} was not recorded at this hour", names[at], measure.name);
@@ -362,6 +379,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 table.row(key);
                 table.name(&names[at].key());
                 match find.slot(key) {
+                    None if series.absent_none => table.cell(0, State::Value),
                     None => table.absent(&unread(at)),
                     Some(slot) => {
                         let (value, state) = series_value(&source, cells, slot);

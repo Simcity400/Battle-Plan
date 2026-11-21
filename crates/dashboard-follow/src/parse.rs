@@ -18,6 +18,13 @@ pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
             let series = dashboard_declare::series(kind).ok_or_else(|| invalid(format!("No declared series {kind}")))?;
             let measure = measure(series, text(family, "measure")?)?;
             let mut tags: Vec<Country> = Vec::new();
+            match params.get("reads") {
+                Some(Value::String(word)) if word == "every" => {
+                    tags = identity.holders.tags.keys().map(|tag| Country::Tag(tag.clone())).collect();
+                }
+                Some(Value::String(word)) => return Err(invalid(format!("A followed series reads every country or a list of reads, not {word}"))),
+                _ => {}
+            }
             for read in params.get("reads").and_then(Value::as_array).into_iter().flatten() {
                 if read.get("part").is_some_and(|part| !part.is_null()) {
                     return Err(invalid("A followed series follows an owner's parts, all or the top N, not one part"));

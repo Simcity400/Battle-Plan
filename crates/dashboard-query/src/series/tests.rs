@@ -307,6 +307,7 @@ static SURPLUS: Series = Series {
         rank: 0,
     }],
     drops: false,
+    absent_none: false,
 };
 
 #[test]
@@ -344,6 +345,7 @@ static NEGATED: Series = Series {
         rank: 0,
     }],
     drops: false,
+    absent_none: false,
 };
 
 #[test]
@@ -555,6 +557,7 @@ static WORLD: Series = Series {
     parts: None,
     measures: &[Measure { name: "tension", column: Column::Cell("total_raw"), decimals: 3, aggregates: 0, carry: Carry::None, rank: 0 }],
     drops: false,
+    absent_none: false,
 };
 
 #[test]

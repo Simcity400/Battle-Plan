@@ -66,7 +66,7 @@ test('the recorded client answers a request the app made, whatever order its par
   assert.deepEqual((await clock(false)).data, { route: 2, epoch: 7, generation: 7 });
   assert.deepEqual((await clock(true)).data, { route: 2, epoch: 8, generation: 8 });
   const { port1, port2 } = new MessageChannel();
-  await client.openFollow(port1);
+  await client.openFollow([port1]);
   const delivered = new Promise<number[]>(resolve => {
     port2.onmessage = ({ data: [item] }) => resolve(item.message.answers.map((answer: { id: number }) => answer.id));
   });

@@ -1,7 +1,7 @@
 
 use super::*;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Whole {
     pub family: MilitaryAirFamily,

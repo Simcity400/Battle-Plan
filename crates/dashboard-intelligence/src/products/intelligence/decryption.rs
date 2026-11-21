@@ -37,7 +37,7 @@ const fn pair_key(owner: u32, target: u32) -> u64 {
 
 pub struct Decryption;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DecryptionParams {
@@ -64,7 +64,7 @@ pub struct CipherPair {
     pub broken_at: Option<Observation>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DecryptionReply {

@@ -160,7 +160,7 @@ const NAMES: FactSpec<string> = {
 };
 
 export function useCountryNamesAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  maxHours = Infinity, attempt = 0): ReadonlyMap<string, NameRead> {
+  maxHours = Infinity, attempt = 0, exact = false): ReadonlyMap<string, NameRead> {
   const available = useMemo(() => wanted.filter(item => track && Number.isSafeInteger(item.hour)
     && item.hour >= track.branch.firstHour && item.hour <= track.branch.lastHour), [wanted, track]);
   const read = useCountryFactsByKey(client, track, available, active, NAMES, maxHours, attempt);
@@ -175,10 +175,10 @@ export function useCountryNamesAt(client: DashboardClient, track: Pick<BoundTrac
       const key = nameKey(item.hour, item.tag), before = previous.current.get(key);
       let value = nameReadFrom(read.get(key), active && requested.has(key));
       if (value.kind === 'value' || value.kind === 'failed') held.set(item.tag, value);
-      else if (value.kind === 'loading') value = held.get(item.tag) ?? value;
+      else if (value.kind === 'loading' && !exact) value = held.get(item.tag) ?? value;
       return [key, sameNameRead(before, value) ? before! : value] as const;
     }));
     if (next.size !== previous.current.size || [...next].some(([key, value]) => previous.current.get(key) !== value)) previous.current = next;
     return previous.current;
-  }, [read, available, wanted, active]);
+  }, [read, available, wanted, active, exact]);
 }
