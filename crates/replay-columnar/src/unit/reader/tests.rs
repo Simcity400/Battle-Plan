@@ -2,6 +2,10 @@ use super::*;
 use crate::unit::{FrameEntry, PartEntry, column_stream, put_varint, put_wide, zig_wide};
 
 fn part_of(tracks: u64, directory: &[u8], events: &[u8]) -> (Vec<u8>, PartEntry) {
+    part_in(column_stream(0), tracks, directory, events)
+}
+
+fn part_in(stream: u32, tracks: u64, directory: &[u8], events: &[u8]) -> (Vec<u8>, PartEntry) {
     let mut raw = vec![0_u8];
     put_varint(&mut raw, tracks);
     put_varint(&mut raw, directory.len() as u64);
@@ -11,7 +15,7 @@ fn part_of(tracks: u64, directory: &[u8], events: &[u8]) -> (Vec<u8>, PartEntry)
     raw.extend_from_slice(events);
     let stored = zstd::bulk::compress(&raw, 1).unwrap();
     let digest = blake3::hash(&stored).as_bytes()[..16].try_into().unwrap();
-    let frame = FrameEntry { streams: vec![column_stream(0)], offset: 0, stored: stored.len() as u32, raw: raw.len() as u32, digest, chained: false, small: false };
+    let frame = FrameEntry { streams: vec![stream], offset: 0, stored: stored.len() as u32, raw: raw.len() as u32, digest, chained: false, small: false };
     (stored, PartEntry { first: 0, frames: vec![frame], ..PartEntry::default() })
 }
 
@@ -58,6 +62,10 @@ fn an_event_running_into_the_next_track_is_refused_by_name() {
     let part = fetch(&bytes, &entry, BLOCK as u16 - 1, &[0], None).unwrap();
     let walked = part.tracks(0, false, |_, _, _| {}).unwrap_err();
     assert!(walked.to_string().contains("ends inside a number"), "the event walk reads no byte of the next track: {walked}");
+    let (bytes, entry) = part_in(crate::unit::READ, 2, &[0, 2, 2, 1, 2, 2], &[0, 0x82, 1, 2]);
+    let part = fetch(&bytes, &entry, BLOCK as u16 - 1, &[], None).unwrap();
+    let marked = part.reads(0, BLOCK as u16 - 1, &mut Vec::new()).unwrap_err();
+    assert!(marked.to_string().contains("ends inside a number"), "a read mark's gap reads no byte of the next track: {marked}");
 }
 
 #[test]

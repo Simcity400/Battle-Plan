@@ -962,14 +962,15 @@ impl Part {
             let tracks = opened.group(born);
             let mut hour = u32::from(tracks.next[index]);
             let mut at = tracks.at[index] as usize;
+            let track = raw.get(..tracks.end[index] as usize).ok_or_else(|| invalid("A track passes its stream"))?;
             while hour <= u32::from(to) {
                 if hour >= u32::from(from) {
                     out.push((hour as u16, tracks.slot[index]));
                 }
-                if at >= tracks.end[index] as usize {
+                if at >= track.len() {
                     break;
                 }
-                hour += get_varint(raw, &mut at)?.min(u64::from(BLOCK) + 1) as u32;
+                hour += get_varint(track, &mut at)?.min(u64::from(BLOCK) + 1) as u32;
             }
         }
         Ok(())
