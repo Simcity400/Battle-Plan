@@ -5,13 +5,8 @@ use loader::Loader;
 use sha2::Digest;
 use std::path::Path;
 
-fn initialize() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime reader metadata");
-}
-
 fn fixture(name: &str) -> Stack {
-    initialize();
+    content_reader_core::test_game::enter();
     let stack = Stack::new(name);
     let base = stack.base();
     stack.write(

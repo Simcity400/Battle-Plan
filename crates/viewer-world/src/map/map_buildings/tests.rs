@@ -782,8 +782,7 @@ fn one_row_frame(row: BuildingRow, byte: Option<u8>) -> (DecodedFrame, Vision) {
 
 #[test]
 fn a_ruin_with_its_own_mesh_keeps_variant_selector_zero_across_levels() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let types = buildings::parse(
             b"buildings={ arms_factory={ show_on_map=1 show_on_map_meshes=2 has_destroyed_mesh=yes level_cap={ state_max=20 } } }", &content_reader_core::key_names::KeyNames::default(),
         )
@@ -816,8 +815,7 @@ fn a_ruin_with_its_own_mesh_keeps_variant_selector_zero_across_levels() {
 
 #[test]
 fn the_fog_loop_hides_below_fifty_and_keeps_the_undecided() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let assets = one_slot_assets(
         &types(),
         BTreeMap::from([(("arms_factory".to_owned(), 0), 0)]),
@@ -858,8 +856,7 @@ fn the_fog_loop_hides_below_fifty_and_keeps_the_undecided() {
 
 #[test]
 fn the_level_uses_the_content_denominator() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let types = types();
     let factory = &types.types["arms_factory"];
     for (level, slots) in [(0, 0), (-3, 0), (1, 1), (4, 2), (10, 4), (20, 6), (99, 6)] {
@@ -996,8 +993,7 @@ fn assets_of(ordered: Vec<BuildingType>) -> MapBuildingAssets {
 
 #[test]
 fn province_sites_are_indexed_and_ambiguous_facility_tokens_are_refused() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut types = types();
     let factory = types.types.get_mut("arms_factory").unwrap();
     factory.air_base = true;
@@ -1090,8 +1086,7 @@ fn buildings_frame(tokens: TableView, types: &[u32]) -> (DecodedFrame, Vision) {
 
 #[test]
 fn building_rows_refuse_their_unnamed_type_tokens_by_reason() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let assets = MapBuildingAssets::assemble(
         ModelLibrary::default(),
         &types(),
@@ -1395,8 +1390,7 @@ fn repeated_slot_assets(types: &Buildings) -> MapBuildingAssets {
 
 #[test]
 fn missing_building_meshes_are_counted_per_reached_slot() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut types = types();
     types
         .types
@@ -1446,8 +1440,7 @@ fn missing_building_meshes_are_counted_per_reached_slot() {
 
 #[test]
 fn damaged_only_building_meshes_supply_definition_fallback_per_slot() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut types = types();
     let building = types.types.get_mut("arms_factory").unwrap();
     building.show_on_map_meshes = 3;

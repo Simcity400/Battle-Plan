@@ -166,8 +166,7 @@ fn display_content_pressure_is_retryable_without_changing_source_evidence() {
 #[test]
 fn building_bank_survives_dependency_binding_changes_and_replacement() {
     use viewer_world::map::map_buildings::{CityTerrain, MapBuildingAssets};
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime reader metadata");
+    content_reader_core::test_game::enter();
     let stack = fixture("building_bank_immutable_binding");
     stack.write(
         &stack.base(),

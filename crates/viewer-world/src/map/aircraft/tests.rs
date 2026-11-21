@@ -2757,8 +2757,7 @@ fn an_explosion_has_played_once_its_own_player_reads_the_delay() {
 
 #[test]
 fn a_chosen_aircraft_bakes_lazily_or_is_refused_with_why() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let root = std::env::temp_dir().join(format!("viewer-aircraft-player-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let mut mesh = b"@@b@[object\0[[frame\0[[[mesh\0".to_vec();

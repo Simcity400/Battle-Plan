@@ -390,8 +390,7 @@ mod tests {
 
     #[test]
     fn owner_local_first_requirement_preserves_zero_and_differs_from_global() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         use replay_data::{
             rows::CountryLinkRow, rows::CountryLocalSubunitRow, rows::LexicalTokenRow,
             rows::LocalSubunitRequirement, rows::TableRows, rows::TableSchema,

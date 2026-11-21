@@ -467,8 +467,7 @@ fn naval_rows(frame: &mut DecodedFrame, hour: i32) {
 
 #[test]
 fn retained_bridge_keeps_reference_census_and_cold_hour_records_across_live_changes() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("supported installation metadata");
+    content_reader_core::test_game::enter();
     let mut reference = assets();
     let new = assets();
     let base = frame();
@@ -657,8 +656,7 @@ fn retained_bridge_keeps_reference_census_and_cold_hour_records_across_live_chan
 
 #[test]
 fn coarse_selection_scopes_keep_hour_records_and_lazy_join_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("supported installation metadata");
+    content_reader_core::test_game::enter();
     let plain = assets();
     let profiled = assets();
     let base = frame();
