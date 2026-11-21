@@ -1,3 +1,4 @@
+import { countryKey } from '../../dashboard/countryKey.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
@@ -57,6 +58,9 @@ test('a reply\'s cells are exact amounts by the columns asked, a missing value k
   ] }, 2);
   const [row] = replyRows(reply, ['casualtiesTaken', 'stability']);
   assert.deepEqual(row!.cells.get('casualtiesTaken'), { amount: -wide, missing: null, partial: true });
+  const [slotted] = replyRows({ ...reply, rows: [{ ...reply.rows[0]!, country: 5 }] }, ['casualtiesTaken', 'stability']);
+  assert.equal(slotted!.key, countryKey(5), 'a country chosen by slot keys its row by that slot, as the followed rows and the exact reads do');
+  assert.equal(slotted!.tag, 'GER');
   assert.equal(row!.cells.get('stability')!.amount, null);
   assert.equal(formatCell(taken, -wide, true), '† −1,208,925,819,614,629,174,706,177');
   assert.equal(formatCell(stability, 50_000n), '50%');

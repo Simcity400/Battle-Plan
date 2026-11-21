@@ -236,7 +236,10 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const byKey = useMemo(() => new Map(rows.map(row => [row.key, row])), [rows]);
   const tooltipOwner = `scoreboard-table:${widget.id}`;
   useEffect(() => () => hideTooltip(tooltipOwner), [tooltipOwner]);
-  const tooltipKeys = useCallback((tag: string) => shown.flatMap(column => [liveKey(tag, column.key), liveKey(tag, partialSource(column.key))]), [shown]);
+  const tooltipKeys = useCallback((key: string) => {
+    const tag = byKey.get(key)?.tag ?? key;
+    return shown.flatMap(column => [liveKey(tag, column.key), liveKey(tag, partialSource(column.key))]);
+  }, [shown, byKey]);
   const tooltip = useCallback((row: BoardRow, drawn: TableReading) => {
     const runs = looks.get(row.tag), at = lookAt(runs, Math.floor(drawn.hour)), held = label(row.tag);
     const look = runs ? { ...held, name: at?.name ?? at?.status ?? 'Country name unavailable', flag: at?.flag } : held;

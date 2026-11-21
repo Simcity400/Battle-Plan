@@ -1,4 +1,4 @@
-import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { Sort } from '../../charts/table/logic';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
@@ -85,7 +85,7 @@ export interface BoardRow { key: string; tag: string; hour: number; cells: Reado
 const NO_CELLS: ReadonlyMap<string, Cell> = new Map();
 
 export function replyRows(reply: ScoreboardReply, asked: readonly ScoreboardColumnKey[]): BoardRow[] {
-  return reply.rows.map(row => ({ key: row.tag, tag: row.tag, hour: reply.hour,
+  return reply.rows.map(row => ({ key: countryKey(row.country), tag: row.tag, hour: reply.hour,
     cells: new Map(asked.map((key, at) => {
       const cell = row.cells[at]!;
       return [key, { amount: cell.valueRaw === null ? null : BigInt(cell.valueRaw), missing: cell.missing, partial: cell.partial }];
