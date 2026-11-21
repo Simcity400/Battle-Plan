@@ -717,6 +717,21 @@ fn reply_through(query: Query<'_>, params: &SpecialProjectsParams, content: &Pro
 
 type Spelling = (BTreeMap<u32, i32>, BTreeMap<u32, i32>, Spelled, Refusals, BTreeMap<String, u64>);
 
+enum Respell {
+    Kept,
+    Added(BTreeMap<u32, i32>, BTreeMap<u32, i32>),
+    All,
+}
+
+fn respell(held: Option<(&BTreeMap<u32, i32>, &BTreeMap<u32, i32>)>, definitions: &BTreeMap<u32, i32>, characters: &BTreeMap<u32, i32>) -> Respell {
+    let Some((held_definitions, held_characters)) = held else { return Respell::All };
+    let kept = |held: &BTreeMap<u32, i32>, now: &BTreeMap<u32, i32>| held.iter().all(|(id, hour)| now.get(id) == Some(hour));
+    if !kept(held_definitions, definitions) || !kept(held_characters, characters) { return Respell::All; }
+    let added = |held: &BTreeMap<u32, i32>, now: &BTreeMap<u32, i32>| now.iter().filter(|(id, _)| !held.contains_key(id)).map(|(&id, &hour)| (id, hour)).collect::<BTreeMap<_, _>>();
+    let (new_definitions, new_characters) = (added(held_definitions, definitions), added(held_characters, characters));
+    if new_definitions.is_empty() && new_characters.is_empty() { Respell::Kept } else { Respell::Added(new_definitions, new_characters) }
+}
+
 fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, fold: &Fold, observed: Vec<(i32, i32)>, identities: Vec<CountryIdentityRun>, tag: &str, cancelled: &AtomicBool, cache: &mut Option<Spelling>) -> io::Result<SpecialProjectsReply> {
     let mut naming = Naming::new(content);
     let mut definitions: BTreeMap<u32, i32> = BTreeMap::new();
@@ -730,9 +745,21 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
             *first = (*first).min(run.first_hour);
         }
     }
-    if cache.as_ref().is_none_or(|(defs, chars, ..)| *defs != definitions || *chars != characters) {
-        let spelled = spell(query, &mut naming, &definitions, &characters, cancelled)?;
-        *cache = Some((definitions, characters, spelled, naming.refusals.get_mut().unwrap().clone(), naming.art.clone()));
+    match respell(cache.as_ref().map(|(defs, chars, ..)| (defs, chars)), &definitions, &characters) {
+        Respell::Kept => {}
+        Respell::All => {
+            let spelled = spell(query, &mut naming, &definitions, &characters, cancelled)?;
+            *cache = Some((definitions, characters, spelled, naming.refusals.get_mut().unwrap().clone(), naming.art.clone()));
+        }
+        Respell::Added(new_definitions, new_characters) => {
+            let (_, _, mut spelled, refused, art) = cache.take().expect("a spelling to add to");
+            *naming.refusals.get_mut().unwrap() = refused;
+            naming.art = art;
+            let more = spell(query, &mut naming, &new_definitions, &new_characters, cancelled)?;
+            spelled.tokens.extend(more.tokens);
+            spelled.people.extend(more.people);
+            *cache = Some((definitions, characters, spelled, naming.refusals.get_mut().unwrap().clone(), naming.art.clone()));
+        }
     }
     let (_, _, spelled, refused, art) = cache.as_ref().expect("spelled");
     *naming.refusals.get_mut().unwrap() = refused.clone();

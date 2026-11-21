@@ -124,6 +124,20 @@ fn owners_are_every_raw_id_linking_to_the_slot_and_edges_stay_in_the_piece() {
 
 #[test]
 fn a_dated_project_request_accepts_the_displayed_hour() {
-    let params: SpecialProjectsParams = serde_json::from_value(serde_json::json!({"branchId":"1","tag":"GER","hour":23})).unwrap();
+    let params: SpecialProjectsParams = serde_json::from_value(serde_json::json!({"branchId":"1","country":"GER","hour":23})).unwrap();
     assert_eq!(params.hour, Some(23));
+}
+
+#[test]
+fn a_reply_spells_only_the_projects_and_scientists_that_first_appeared_since_the_last() {
+    let at = |pairs: &[(u32, i32)]| pairs.iter().copied().collect::<BTreeMap<u32, i32>>();
+    let (defs, chars) = (at(&[(40, START), (41, START + 24)]), at(&[(7, START)]));
+    assert!(matches!(respell(None, &defs, &chars), Respell::All), "nothing spelled yet");
+    assert!(matches!(respell(Some((&defs, &chars)), &defs, &chars), Respell::Kept), "the same projects and scientists");
+    let Respell::Added(new_defs, new_chars) = respell(Some((&defs, &chars)), &at(&[(40, START), (41, START + 24), (42, START + 48)]), &at(&[(7, START), (8, START + 48)])) else {
+        panic!("a project and a scientist appeared");
+    };
+    assert_eq!((new_defs, new_chars), (at(&[(42, START + 48)]), at(&[(8, START + 48)])), "spelled at the hour each first appeared, the rest kept");
+    assert!(matches!(respell(Some((&defs, &chars)), &at(&[(40, START - 24), (41, START + 24)]), &chars), Respell::All), "a project first seen earlier is spelled again where it now starts");
+    assert!(matches!(respell(Some((&defs, &chars)), &at(&[(40, START)]), &chars), Respell::All), "a project gone leaves its refusals behind unless all are spelled again");
 }
