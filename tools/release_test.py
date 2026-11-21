@@ -130,6 +130,11 @@ class ReleaseOrder(unittest.TestCase):
         self.assertEqual(self.order("b" * 40, published, feed=offered), (offered, published, True))
         with self.assertRaisesRegex(release.Refused, "already offers bbbbbbbbbbbb, as 1.4.2"):
             self.order("b" * 40, published, feed={"commit": "b" * 40, "version": "1.4.2"})
+        with self.assertRaisesRegex(release.Refused, "no longer names bbbbbbbbbbbb"):
+            self.order("c" * 40, published, feed=offered)
+        with mock.patch.multiple(release, on_main=mock.DEFAULT, read_feed=mock.Mock(return_value=offered)):
+            self.assertEqual(release.release_order("owner/repo", "stable", "1.4.3", "b" * 40, "dry-run", draft=True),
+                             (offered, None, False))
 
     def test_a_tag_on_another_commit_is_refused(self):
         with self.assertRaisesRegex(release.Refused, "already names aaaaaaaaaaaa"):
@@ -178,27 +183,42 @@ class MainCi(unittest.TestCase):
         with mock.patch.object(release, "run", answers(self.runs((1, "Release candidate", 4, 1, "completed", "failure")))):
             self.assertIn("Release candidate run ended failure", release.ci_state("owner/repo", "b" * 40))
 
-    def test_a_candidate_is_the_kept_artifact_of_a_successful_run(self):
-        def artifacts(*found):
-            return json.dumps({"artifacts": [{"expired": expired, "created_at": created, "workflow_run": {"id": run}}
-                                             for expired, created, run in found]})
+    def test_the_newest_kept_candidate_mains_ci_built_is_taken_and_an_unusable_newer_one_passed_by(self):
+        def artifact(expired, created, run):
+            return {"expired": expired, "created_at": created, "workflow_run": {"id": run}}
 
-        done = json.dumps({"status": "completed", "conclusion": "success"})
-        cases = [
-            ((artifacts(),), (None, "no candidate")),
-            ((artifacts((True, "2026-11-20", 7)),), (None, "has expired")),
-            ((artifacts((False, "2026-11-20", 7), (False, "2026-11-21", 9)), done), (9, None)),
-            ((artifacts((False, "2026-11-21", 9)), json.dumps({"status": "in_progress", "conclusion": None})),
-             (None, "still going")),
-            ((artifacts((False, "2026-11-21", 9)), json.dumps({"status": "completed", "conclusion": "failure"})),
-             (None, "ended failure")),
-        ]
-        for replies, (built, why) in cases:
-            with mock.patch.object(release, "run", answers(*replies)):
-                found, reason = release.find_candidate("owner/repo", "candidate-nightly-" + "b" * 40)
-            self.assertEqual(found, built)
-            if why:
-                self.assertIn(why, reason)
+        listing = json.dumps({"artifacts": [artifact(False, "2026-11-20", 7), artifact(False, "2026-11-21", 9),
+                                            artifact(True, "2026-11-19", 5)]})
+        verdicts = {9: "the run that built it ended failure", 7: None}
+        with mock.patch.multiple(release, run=answers(listing),
+                                 produced=mock.Mock(side_effect=lambda repo, found, channel: verdicts[found["workflow_run"]["id"]])):
+            self.assertEqual(release.find_candidate("owner/repo", "candidate-nightly-b", "nightly"), (7, None))
+        expired = json.dumps({"artifacts": [artifact(True, "2026-11-19", 5)]})
+        with mock.patch.object(release, "run", answers(expired)):
+            self.assertIn("has expired", release.find_candidate("owner/repo", "candidate-nightly-b", "nightly")[1])
+        with mock.patch.object(release, "run", answers(json.dumps({"artifacts": []}))):
+            self.assertIn("no candidate", release.find_candidate("owner/repo", "candidate-nightly-b", "nightly")[1])
+
+    def test_only_mains_candidate_workflow_or_the_release_build_job_produces_a_candidate(self):
+        def artifact(branch="main", head=1):
+            return {"workflow_run": {"id": 9, "repository_id": 1, "head_repository_id": head, "head_branch": branch}}
+
+        def state(path, event, conclusion="success"):
+            return json.dumps({"path": f".github/workflows/{path}", "event": event, "status": "completed", "conclusion": conclusion})
+
+        self.assertIn("not built from this repository's main", release.produced("owner/repo", artifact(branch="feature"), "nightly"))
+        self.assertIn("not built from this repository's main", release.produced("owner/repo", artifact(head=2), "nightly"))
+        with mock.patch.object(release, "run", answers(state("release-candidate.yml", "push"))):
+            self.assertIsNone(release.produced("owner/repo", artifact(), "nightly"))
+        with mock.patch.object(release, "run", answers(state("release-candidate.yml", "pull_request"))):
+            self.assertIn("does not build release candidates", release.produced("owner/repo", artifact(), "nightly"))
+        with mock.patch.object(release, "run", answers(state("comments.yml", "push"))):
+            self.assertIn("does not build release candidates", release.produced("owner/repo", artifact(), "nightly"))
+        built = "Build / Windows x64 installer\tsuccess\nPublish\tfailure"
+        with mock.patch.object(release, "run", answers(state("release.yml", "workflow_dispatch", "failure"), built)):
+            self.assertIsNone(release.produced("owner/repo", artifact(), "stable"))
+        with mock.patch.object(release, "run", answers(state("release.yml", "workflow_dispatch"))):
+            self.assertIn("does not build release candidates", release.produced("owner/repo", artifact(), "nightly"))
 
 
 class Resolve(unittest.TestCase):
@@ -238,10 +258,18 @@ class Finalize(unittest.TestCase):
         for released in ("1.4.3", "1.4.4"):
             with mock.patch.multiple(release, repository=mock.Mock(return_value="owner/repo"),
                                      git=mock.Mock(side_effect=lambda *args: main if args[0] == "show" else ""),
+                                     bump_pulls=mock.Mock(return_value=[]), build_candidate_for=mock.DEFAULT,
                                      run=mock.DEFAULT, stamp=mock.DEFAULT):
                 self.assertEqual(release.finalize(argparse.Namespace(version=released)), 0)
                 release.run.assert_not_called()
                 release.stamp.assert_not_called()
+
+    def test_only_the_repositorys_own_bump_branch_counts(self):
+        found = json.dumps([{"url": "fork", "headRepository": {"name": "repo"}, "headRepositoryOwner": {"login": "someone"}},
+                            {"url": "own", "headRepository": {"name": "repo"}, "headRepositoryOwner": {"login": "Owner"}}])
+        with mock.patch.object(release, "run", answers(found)):
+            self.assertEqual([pull["url"] for pull in release.bump_pulls("owner/repo", "release/v1.4.3-workspace-version", "open")],
+                             ["own"])
 
 
 class TakenUp(unittest.TestCase):

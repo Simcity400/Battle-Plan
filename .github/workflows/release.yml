@@ -31,8 +31,9 @@ on:
         default: false
 
 concurrency:
-  group: release-${{ inputs.channel || 'nightly' }}
+  group: release-${{ inputs.channel || 'nightly' }}${{ inputs.draft && format('-draft-{0}', github.run_id) || '' }}
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
@@ -139,6 +140,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CHANNEL: ${{ inputs.channel || 'nightly' }}
+          COMMIT: ${{ needs.resolve.outputs.commit }}
+          VERSION: ${{ inputs.channel == 'stable' && needs.resolve.outputs.version || '' }}
           DRAFT: ${{ inputs.draft && '--draft' || '' }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -149,12 +152,12 @@ jobs:
           AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
           AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
           LEAK_GATE_TERMS: ${{ secrets.LEAK_GATE_TERMS }}
-        run: python tools/release.py publish --channel "$CHANNEL" --candidate candidate $DRAFT
+        run: python tools/release.py publish --channel "$CHANNEL" --candidate candidate --commit "$COMMIT" --version "$VERSION" $DRAFT
 
   finalize:
     name: Set main's workspace version
     needs: [resolve, publish]
-    if: needs.publish.result == 'success' && inputs.channel == 'stable' && !inputs.draft
+    if: ${{ !cancelled() && needs.publish.result == 'success' && inputs.channel == 'stable' && !inputs.draft }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
