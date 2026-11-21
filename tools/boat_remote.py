@@ -188,13 +188,15 @@ def toolchain_fault(channel):
     """Why the installed toolchain of `channel`, the incoming tree's, does not run Cargo, or None; a toolchain the VM lacks is rustup's to install."""
     if not channel:
         return None
-    name = channel if channel.endswith('-' + HOST) else f'{channel}-{HOST}'
-    if not (Path(os.environ.get('RUSTUP_HOME', '/usr/local/rustup')) / 'toolchains' / name).is_dir():
+    toolchains = Path(os.environ.get('RUSTUP_HOME', '/usr/local/rustup')) / 'toolchains'
+    if not any((toolchains / name).is_dir() for name in (channel, f'{channel}-{HOST}')):
         return None
     try:
         result = subprocess.run(['cargo', '--version'], cwd=ROOT, env={**os.environ, 'RUSTUP_TOOLCHAIN': channel, 'RUSTUP_AUTO_INSTALL': '0'}, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except FileNotFoundError as error:
         return repr(error)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
     return ((result.stderr or result.stdout).strip() or f'exit {result.returncode}') if result.returncode else None
 
 def manifest():
@@ -382,7 +384,8 @@ elif mode == 'acquire':
     broken = toolchain_fault(sys.argv[3] if len(sys.argv) > 3 else '')
     if broken:
         print(f'The toolchain does not run: {broken}', file=sys.stderr)
-        shutil.rmtree(CLAIM)
+        if CLAIM.exists() and owned(token):
+            shutil.rmtree(CLAIM)
         sys.exit(72)
     print(json.dumps(manifest()))
 elif mode == 'release':

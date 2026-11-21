@@ -711,7 +711,7 @@ def choose(state, lane, size, passed=(), rebuilds=lambda vmid: (0, 0)):
         allocator.close()
 
 
-def clone(state, lane, size, allocator, **fields):
+def clone(state, lane, size, allocator):
     """Clones a VM from SNAPSHOT, each create spaced from every other, letting the allocator go while it creates; returns (vmid, its lock, its size)."""
     for size in dict.fromkeys((size, "large")):
         allocator = allocator or state.allocator()
@@ -735,11 +735,11 @@ def clone(state, lane, size, allocator, **fields):
             atomic_json(state.pool / (vmid + ".json"), {"id": vmid, "snapshot": SNAPSHOT})
         raise Failure(f"Boat could not clone {SNAPSHOT} as a {size} VM ({creation.returncode}), sandbox {vmid}: {reason}")
     lock = state.lock(vmid)
-    atomic_json(state.pool / (vmid + ".json"), {"id": vmid, "snapshot": SNAPSHOT, **fields})
+    atomic_json(state.pool / (vmid + ".json"), {"id": vmid, "snapshot": SNAPSHOT})
     return vmid, lock, size
 
 
-def wake(state, lane, size, rebuilds=lambda vmid: (0, 0)):
+def wake(state, lane, size, rebuilds=lambda vmid: (0, 0), begun=None):
     """Starts resuming, or clones, the VM a run would take now, without claiming it or waiting for its disk; returns (vmid, what it found)."""
     try:
         waking = state.waking(lane)
@@ -750,6 +750,9 @@ def wake(state, lane, size, rebuilds=lambda vmid: (0, 0)):
         allocator = state.allocator()
         if state.run_active(lane):
             return None, "a run of this worktree is under way"
+        served = state.lane_vm(lane)
+        if begun is not None and served and state.entry(served).get("used", 0) > begun:
+            return None, "a run of this worktree ended since the wake began"
         states = listing()
         now = time.time()
         for vmid in rank(state.registered(), states, state.lane_vm(lane), size, lambda vmid: state.cooling(vmid, now), lambda vmid: state.entry(vmid).get("used", 0), rebuilds):
@@ -765,7 +768,8 @@ def wake(state, lane, size, rebuilds=lambda vmid: (0, 0)):
             boat("resume", vmid, "--ttl", str(LEASE_SECONDS), "--no-wait", *(["--type", grow] if grow else []))
             state.update(vmid, woken=now)
             return vmid, "resuming"
-        vmid, lock, _ = clone(state, lane, size, allocator, woken=now)
+        vmid, lock, _ = clone(state, lane, size, allocator)
+        state.update(vmid, woken=time.time())
         lock.close()
         return vmid, "cloned"
     finally:
@@ -1428,6 +1432,7 @@ def machine_size(mode, cargo):
 
 def wake_command(argv):
     """`wake <arguments of a check, build, test or ui run>`: starts resuming the VM that run would take."""
+    begun = time.time()
     try:
         mode, cargo, _, _ = parse(argv)
     except Failure as error:
@@ -1444,7 +1449,7 @@ def wake_command(argv):
         raise Refused(str(error)) from None
     plan = Plan(worktree, source_manifest(worktree), cargo) if mode != "ui" else None
     try:
-        vmid, found = wake(state, lane, size, (lambda vmid: plan.rebuilds(state.entry(vmid))) if plan else (lambda vmid: (0, 0)))
+        vmid, found = wake(state, lane, size, (lambda vmid: plan.rebuilds(state.entry(vmid))) if plan else (lambda vmid: (0, 0)), begun)
     except Failure as error:
         say(f"Boat wake started no VM: {error}; the run chooses one itself")
         return UNAVAILABLE

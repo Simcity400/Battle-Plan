@@ -841,8 +841,11 @@ class Wake(Harness):
 
     def test_clones_the_vm_the_run_would_clone_and_leaves_it_free(self):
         fake = self.use(FakeBoat([vm("a", "stopping")]))
-        self.assertEqual(bt.wake(self.state, "lane", "default"), ("n", "cloned"))
-        self.assertGreater(self.state.entry("n")["woken"], 0)
+        clock = [1000.0]
+        bt.atomic_json(self.state.claims / "create-schedule.json", {"next": 1120.0})
+        with mock.patch.object(bt.time, "time", lambda: clock[0]), mock.patch.object(bt.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+            self.assertEqual(bt.wake(self.state, "lane", "default"), ("n", "cloned"))
+        self.assertEqual(self.state.entry("n")["woken"], 1120.0)
         self.state.lock("n").close()
         self.state.allocator().close()
         self.assertEqual(sum(call[0] == "new" for call in fake.calls), 1)
@@ -875,6 +878,14 @@ class Wake(Harness):
         self.assertEqual(fake.calls, [])
         self.assertFalse(self.state.run_active("lane"))
         self.assertEqual(list(self.state.lanes.glob("lane.running-*")), [])
+
+    def test_a_wake_whose_worktree_ran_since_it_began_starts_nothing(self):
+        fake = self.use(FakeBoat([vm("a")]))
+        bt.atomic_json(self.state.lanes / "lane.json", {"id": "a"})
+        self.state.update("a", used=2000.0)
+        self.assertEqual(bt.wake(self.state, "lane", "large", begun=1000.0), (None, "a run of this worktree ended since the wake began"))
+        self.assertEqual(bt.wake(self.state, "lane", "large", begun=3000.0), ("a", "idle"))
+        self.assertEqual(fake.ttl_calls("a"), [bt.LEASE_SECONDS])
 
     def test_a_run_takes_its_marker_from_a_check_holding_it_for_a_moment(self):
         held = bt.Lock(self.state.lanes / "lane.running-t")
@@ -923,9 +934,12 @@ class RemoteToolchain(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         (Path(self.temp.name) / "toolchains" / "1.96.0-x86_64-unknown-linux-gnu").mkdir(parents=True)
 
-    def probe(self, channel, returncode=0, stderr=""):
-        with mock.patch.dict(os.environ, {"RUSTUP_HOME": self.temp.name}), mock.patch.object(subprocess, "run", return_value=types.SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)) as run:
-            return self.remote["toolchain_fault"](channel), [call.kwargs["env"]["RUSTUP_TOOLCHAIN"] for call in run.call_args_list]
+    def probe(self, channel, returncode=0, stderr="", raises=None):
+        result = types.SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)
+        with mock.patch.dict(os.environ, {"RUSTUP_HOME": self.temp.name}), mock.patch.object(subprocess, "run", return_value=result, side_effect=raises) as run:
+            fault = self.remote["toolchain_fault"](channel)
+        self.assertTrue(all(call.args[0] == ["cargo", "--version"] for call in run.call_args_list))
+        return fault, [call.kwargs["env"]["RUSTUP_TOOLCHAIN"] for call in run.call_args_list]
 
     def test_an_installed_toolchain_whose_cargo_fails_is_named_and_one_the_vm_lacks_is_rustups(self):
         missing = "error: 'cargo' is not installed for the toolchain '1.96.0-x86_64-unknown-linux-gnu'."
@@ -935,6 +949,13 @@ class RemoteToolchain(unittest.TestCase):
         self.assertEqual(self.probe("1.96.0"), (None, ["1.96.0"]))
         self.assertEqual(self.probe("1.97.0", 1), (None, []))
         self.assertEqual(self.probe("", 1), (None, []))
+
+    def test_a_linked_toolchain_is_probed_and_a_launch_that_fails_for_now_quarantines_nothing(self):
+        (Path(self.temp.name) / "toolchains" / "local-ci").mkdir()
+        self.assertEqual(self.probe("local-ci", 1, "broken"), ("broken", ["local-ci"]))
+        self.assertEqual(self.probe("1.96.0", raises=BlockingIOError(11, "Resource temporarily unavailable")), (None, ["1.96.0"]))
+        self.assertEqual(self.probe("1.96.0", raises=subprocess.TimeoutExpired("cargo", 60)), (None, ["1.96.0"]))
+        self.assertIn("FileNotFoundError", self.probe("1.96.0", raises=FileNotFoundError(2, "No such file", "cargo"))[0])
 
     def test_an_exec_reply_without_output_reads_as_empty(self):
         with mock.patch.object(bt, "boat", return_value=(OK, [{"exitCode": 0, "stdout": None}])):
