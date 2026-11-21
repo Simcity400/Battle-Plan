@@ -907,12 +907,18 @@ def finalize(args):
             user = run(["gh", "api", f"users/{slug}%5Bbot%5D", "--jq", ".id"]).stdout.strip()
             email = f"{user}+{author}@users.noreply.github.com"
         git("checkout", "--quiet", "--force", "--detach", "origin/main")
+        base = git("rev-parse", "HEAD")
         stamp(ROOT, args.version)
         git("-c", f"user.name={author}", "-c", f"user.email={email}", "commit", "--quiet", "--all",
             "--message", f"Release: v{args.version} is the workspace version")
-        if run(["git", "push", "--quiet", "origin", "HEAD:main"], check=False).returncode == 0:
+        pushed = run(["git", "push", "--quiet", "origin", "HEAD:main"], check=False)
+        if pushed.returncode == 0:
             say(f"Main's workspace version is now {args.version}, at {git('rev-parse', 'HEAD')[:12]}.")
             return 0
+        git("fetch", "--quiet", "origin", "main")
+        if git("rev-parse", "origin/main") == base:
+            raise Refused(f"Main refused the release App's push of {args.version}, and main had not moved: "
+                          f"{pushed.stderr.strip()}")
         say(f"Main moved while its version was set (attempt {attempt}); trying again on its new head.")
     raise Refused(f"Main moved during each of {PUSH_ATTEMPTS} attempts to set its version to {args.version}; "
                   "re-run the finalize job.")

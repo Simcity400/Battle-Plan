@@ -270,18 +270,25 @@ class Resolve(unittest.TestCase):
 
 
 class Finalize(unittest.TestCase):
-    def finalize(self, main, pushes):
+    def finalize(self, main, pushes, moved=True):
         calls = []
+        heads = iter(range(100))
+
+        def git(*args, **_):
+            if args[0] == "show":
+                return main
+            if args[:2] == ("rev-parse", "origin/main"):
+                return f"moved-{next(heads)}" if moved else "base"
+            return "base"
 
         def run(command, **_):
             calls.append(command)
             if command[:2] == ["gh", "api"]:
                 return mock.Mock(stdout="41898282\n", returncode=0)
-            return mock.Mock(returncode=pushes.pop(0))
+            return mock.Mock(returncode=pushes.pop(0), stderr="GH013: Repository rule violations found for refs/heads/main.")
 
         with mock.patch.dict(os.environ, {"APP_SLUG": "battle-plan-release"}), \
-                mock.patch.multiple(release, git=mock.Mock(side_effect=lambda *args, **_: main if args[0] == "show" else "c" * 40),
-                                    run=run, stamp=mock.DEFAULT):
+                mock.patch.multiple(release, git=mock.Mock(side_effect=git), run=run, stamp=mock.DEFAULT):
             result = release.finalize(argparse.Namespace(version="1.4.4"))
             return result, calls, release.stamp.call_count
 
@@ -297,6 +304,10 @@ class Finalize(unittest.TestCase):
         self.assertEqual(pushes[0][-2:], ["origin", "HEAD:main"])
         with self.assertRaisesRegex(release.Refused, "Main moved during each of 5 attempts"):
             self.finalize('[workspace.package]\nversion = "1.4.3"\n', [1] * 5)
+
+    def test_a_push_main_refused_without_moving_is_named_with_gits_reason(self):
+        with self.assertRaisesRegex(release.Refused, "main had not moved: GH013: Repository rule violations"):
+            self.finalize('[workspace.package]\nversion = "1.4.3"\n', [1], moved=False)
 
 
 class TakenUp(unittest.TestCase):

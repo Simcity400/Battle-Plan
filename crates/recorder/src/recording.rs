@@ -709,8 +709,8 @@ use crate::replay_io::write_json;
 pub use crate::replay_io::{Omission, Refusal};
 
 pub(crate) const RECORDER_VERSION: &str = match option_env!("BATTLE_PLAN_VERSION") {
-    Some(version) => version,
-    None => env!("CARGO_PKG_VERSION"),
+    Some(version) if !version.is_empty() => version,
+    _ => env!("CARGO_PKG_VERSION"),
 };
 
 static CONSOLE: Control = Control::new();

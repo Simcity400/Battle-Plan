@@ -16,8 +16,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const RELEASES: Option<&str> = option_env!("BATTLE_PLAN_RELEASES");
 const VERSION: &str = match option_env!("BATTLE_PLAN_VERSION") {
-    Some(version) => version,
-    None => env!("CARGO_PKG_VERSION"),
+    Some(version) if !version.is_empty() => version,
+    _ => env!("CARGO_PKG_VERSION"),
 };
 pub const STATE_EVENT: &str = "app-update-state";
 const FIRST_CHECK: Duration = Duration::from_secs(15);
