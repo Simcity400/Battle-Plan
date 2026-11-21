@@ -9,7 +9,7 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const mode = process.argv[2];
 let interrupted = false;
 if (!["dev", "build"].includes(mode)) {
-  console.error("Usage: node tools/desktop.mjs dev|build [--updater-artifacts] [--authenticode]");
+  console.error("Usage: node tools/desktop.mjs dev|build");
   process.exit(2);
 }
 
@@ -64,18 +64,6 @@ function flagValue(args, ...names) {
 }
 
 const extra = process.argv.slice(3);
-function own(flag) {
-  const at = extra.indexOf(flag);
-  if (at < 0 || (extra.includes("--") && at > extra.indexOf("--"))) return false;
-  extra.splice(at, 1);
-  return true;
-}
-const updaterArtifacts = own("--updater-artifacts");
-const authenticode = own("--authenticode");
-if (mode === "dev" && (updaterArtifacts || authenticode)) {
-  console.error("--updater-artifacts and --authenticode apply to build only.");
-  process.exit(2);
-}
 const separator = extra.indexOf("--");
 const cliArgs = separator < 0 ? extra : extra.slice(0, separator);
 const runnerArgs = separator < 0 ? [] : extra.slice(separator + 1);
@@ -109,6 +97,8 @@ const forwardedRunnerArgs = appSeparator < 0 ? forwardedCargoArgs : [...forwarde
 
 try {
   const notices = mode === "build" ? await thirdPartyNotices(path.join(root, "LICENSES"), SHIPPED.notices.components) : null;
+  const releaseVersion = mode === "build" ? process.env.BATTLE_PLAN_VERSION || undefined : undefined;
+  if (releaseVersion) process.env.TAURI_CONFIG = JSON.stringify({ version: releaseVersion });
   if (mode === "build") {
     if (!process.env.npm_execpath) throw new Error("Run the build through npm: npm run build:desktop");
     await run(process.execPath, [process.env.npm_execpath, "run", "build:ui"]);
@@ -146,16 +136,11 @@ try {
     for (const name of SHIPPED.repository) await shipped(path.join(root, name), name, resources);
     await writeFile(path.join(root, "crates", "desktop", STAGE, SHIPPED.notices.file), notices);
     resources[`${STAGE}/${SHIPPED.notices.file}`] = SHIPPED.notices.file;
-    const signCommand = { cmd: "powershell", args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-      "../../tools/sign-release.ps1", "%1"] };
     const desktop = metadata.packages.find((member) => path.relative(path.join(root, "crates", "desktop"), path.dirname(member.manifest_path)) === "");
     if (!desktop) throw new Error("Cargo metadata names no package in crates/desktop.");
-    const nightly = desktop.version.includes("-nightly.");
-    const windows = { ...(authenticode ? { signCommand } : {}), ...(nightly ? { nsis: { installerIcon: "icons/nightly.ico" } } : {}) };
-    config = { build: { beforeBuildCommand: null }, bundle: { resources,
-      ...(nightly ? { icon: ["icons/nightly.ico", "icons/nightly.png"] } : {}),
-      ...(updaterArtifacts ? { createUpdaterArtifacts: true } : {}),
-      ...(Object.keys(windows).length ? { windows } : {}) } };
+    const nightly = (releaseVersion ?? desktop.version).includes("-nightly.");
+    config = { ...(releaseVersion ? { version: releaseVersion } : {}), build: { beforeBuildCommand: null }, bundle: { resources,
+      ...(nightly ? { icon: ["icons/nightly.ico", "icons/nightly.png"], windows: { nsis: { installerIcon: "icons/nightly.ico" } } } : {}) } };
   }
   const args = mode === "build"
     ? [...cliArgs, ...(separator < 0 && forwardedRunnerArgs.length === 0 ? [] : ["--", ...forwardedRunnerArgs])]

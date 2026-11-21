@@ -1,17 +1,18 @@
-"""The release smoke, on the release runner (Python 3.11+): the installer's layout holds exactly the
-shipped files, and the installed Battle Plan opens a recording and draws its map.
+"""The release smoke (Python 3.11+): the installer's layout holds exactly the shipped files, and the
+installed Battle Plan opens a recording and draws its map. Main's CI runs the layout on each release
+candidate (`--layout-only`: a hosted runner has no game to draw from), and tools/release.py runs it
+again on the signed installer it publishes.
 
-    release_smoke.py --installer <setup.exe> --out <new folder> [--recording <file>] [--hour H]
-        [--game-dir <folder>] [--user-dir <folder>]
+    release_smoke.py --installer <setup.exe> --out <new folder> [--layout-only | [--recording <file>] [--hour H]
+        [--game-dir <folder>] [--user-dir <folder>]]
 
 The installer is opened with 7-Zip into <out>/installed, as tools/leak-gate.py opens it, so nothing is
 installed on the machine. Its executables and libraries must be exactly tools/shipped.json's: the app,
 the recorder, the collector and the shader compiler's two DLLs, beside each other, with LICENSE and the
 combined THIRD-PARTY-NOTICES.txt and no LICENSES folder. Then the installed replay-desktop.exe draws one
 frame of the recording's map through its own window (`--window-dump`), with LOCALAPPDATA and APPDATA in
-<out>, so no user data or saved preference is read or written. The recording
-and folders default to BATTLE_PLAN_RELEASE_SMOKE_RECORDING, BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR, which the runner's
-.env names (tools/release-runner.ps1).
+<out>, so no user data or saved preference is read or written. The recording and folders default to
+BATTLE_PLAN_RELEASE_SMOKE_RECORDING, BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR, or their older HOI4_ names.
 """
 import argparse
 import json
@@ -26,17 +27,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 NSIS_INTERNAL = ("uninstall.exe",)
 FRAME = (1280, 720)
+SECRET_PREFIXES = ("TAURI_SIGNING_", "TAURI_PRIVATE_KEY", "AZURE_", "LEAK_GATE_TERMS", "GH_TOKEN", "GITHUB_TOKEN")
 DRAW_SECONDS = 600
 
 
+class SmokeFailed(Exception):
+    """Why the smoke did not pass."""
+
+
 def fail(message):
-    print(message, file=sys.stderr)
-    sys.exit(1)
+    raise SmokeFailed(message)
 
 
-def shipped_binaries():
+def shipped_binaries(root=ROOT):
     """The executables and libraries the installer must place, all in the install folder."""
-    shipped = json.loads((ROOT / "tools" / "shipped.json").read_text(encoding="utf-8"))
+    shipped = json.loads((root / "tools" / "shipped.json").read_text(encoding="utf-8"))
     return sorted([shipped["main"], *shipped["built"], *shipped["compiler"]], key=str.lower)
 
 
@@ -121,7 +126,8 @@ def png_colours(path, most=64):
 
 
 def draw(app, recording, out, hour, game_dir, user_dir):
-    """The installed app draws one frame of the recording's map; the frame, or why not."""
+    """The installed app draws one frame of the recording's map, given no signing key, release
+    secret or token; the frame, or why not."""
     local, roaming = out / "local", out / "roaming"
     local.mkdir()
     roaming.mkdir()
@@ -133,7 +139,8 @@ def draw(app, recording, out, hour, game_dir, user_dir):
         command += ["--game-dir", str(game_dir)]
     if user_dir:
         command += ["--user-dir", str(user_dir)]
-    environment = {**os.environ, "LOCALAPPDATA": str(local), "APPDATA": str(roaming)}
+    environment = {name: value for name, value in os.environ.items() if not name.upper().startswith(SECRET_PREFIXES)}
+    environment.update(LOCALAPPDATA=str(local), APPDATA=str(roaming))
     try:
         drawn = subprocess.run(command, cwd=out, env=environment, capture_output=True, timeout=DRAW_SECONDS)
     except subprocess.TimeoutExpired:
@@ -147,15 +154,20 @@ def draw(app, recording, out, hour, game_dir, user_dir):
     return frame
 
 
+def setting(name):
+    return os.environ.get(f"BATTLE_PLAN_{name}") or os.environ.get(f"HOI4_{name}") or None
+
+
 def arguments(argv=None):
     """The command line, every path in it as the caller's folder names it: the app runs elsewhere."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--installer", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
-    parser.add_argument("--recording", type=Path, default=os.environ.get("BATTLE_PLAN_RELEASE_SMOKE_RECORDING", os.environ.get("HOI4_RELEASE_SMOKE_RECORDING")) or None)
+    parser.add_argument("--layout-only", action="store_true")
+    parser.add_argument("--recording", type=Path, default=setting("RELEASE_SMOKE_RECORDING"))
     parser.add_argument("--hour", type=int)
-    parser.add_argument("--game-dir", type=Path, default=os.environ.get("BATTLE_PLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")) or None)
-    parser.add_argument("--user-dir", type=Path, default=os.environ.get("BATTLE_PLAN_USER_DIR", os.environ.get("HOI4_USER_DIR")) or None)
+    parser.add_argument("--game-dir", type=Path, default=setting("GAME_DIR"))
+    parser.add_argument("--user-dir", type=Path, default=setting("USER_DIR"))
     args = parser.parse_args(argv)
     for name in ("installer", "out", "recording", "game_dir", "user_dir"):
         if getattr(args, name) is not None:
@@ -163,28 +175,50 @@ def arguments(argv=None):
     return args
 
 
-def main():
-    args = arguments()
-    if not args.recording or not args.recording.is_file():
-        fail("Name the recording to draw: --recording or BATTLE_PLAN_RELEASE_SMOKE_RECORDING (the runner's .env).")
-    if args.out.exists():
-        fail(f"{args.out} exists; the smoke writes to a new folder.")
-    args.out.mkdir(parents=True)
-    opened = args.out / "installed"
-    open_installer(args.installer, opened)
+def installed_layout(installer, out, expected=None, notices=None):
+    """The installer opened into <out>/installed and its layout checked against `expected`, by
+    default this checkout's shipped binaries; the install folder."""
+    opened = out / "installed"
+    open_installer(installer, opened)
     installed = opened / "$INSTDIR" if (opened / "$INSTDIR").is_dir() else opened
-    problems = layout_problems(installed, shipped_binaries(), shipped_notices())
+    problems = layout_problems(installed, expected or shipped_binaries(), notices or shipped_notices())
     if problems:
         fail("The installer's layout is not the shipped one:\n" + "\n".join(problems))
-    print(f"Layout: exactly {', '.join(shipped_binaries())}, with {' and '.join(shipped_notices())}.")
-    frame = draw(installed / "replay-desktop.exe", args.recording, args.out, args.hour, args.game_dir, args.user_dir)
+    return installed
+
+
+def drawn_map(installed, recording, out, hour=None, game_dir=None, user_dir=None):
+    """The installed app draws the recording's map: the frame, and how many colours it holds, 16 or more."""
+    frame = draw(installed / "replay-desktop.exe", recording, out, hour, game_dir, user_dir)
     try:
         colours = png_colours(frame)
     except (ValueError, struct.error, zlib.error, TypeError) as error:
         fail(f"The frame is not a picture the smoke reads: {error}")
     if colours < 16:
         fail(f"The frame holds {colours} colours: the map was not drawn.")
+    return frame, colours
+
+
+def smoke(args):
+    if not args.layout_only and (not args.recording or not args.recording.is_file()):
+        fail("Name the recording to draw: --recording or BATTLE_PLAN_RELEASE_SMOKE_RECORDING, or --layout-only.")
+    if args.out.exists():
+        fail(f"{args.out} exists; the smoke writes to a new folder.")
+    args.out.mkdir(parents=True)
+    installed = installed_layout(args.installer, args.out)
+    print(f"Layout: exactly {', '.join(shipped_binaries())}, with {' and '.join(shipped_notices())}.")
+    if args.layout_only:
+        return
+    frame, colours = drawn_map(installed, args.recording, args.out, args.hour, args.game_dir, args.user_dir)
     print(f"Drew the recording's map from the installed layout: {frame} ({colours}+ colours).")
+
+
+def main():
+    try:
+        smoke(arguments())
+    except SmokeFailed as error:
+        print(error, file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -427,7 +427,7 @@ fn capture(options: Options) -> Result<(), String> {
         process_start_time: process.start_time,
         executable: process.path.clone(),
         identity,
-        recorder_version: env!("CARGO_PKG_VERSION").into(),
+        recorder_version: crate::recording::RECORDER_VERSION.into(),
         recorder_executable,
         recorder_hash: recorder_build.sha256,
         recorder_size: recorder_build.size,
