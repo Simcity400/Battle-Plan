@@ -413,6 +413,9 @@ impl PowerLedger {
         if let Some(part) = pending.parts.get(&key) {
             return Ok(Some(part.clone()));
         }
+        if pending.withdrawn.contains(&key) {
+            return Ok(None);
+        }
         Ok(inputs::keyed::<Part>(&own.table(TableId::PowerDayParts), key)?.filter(|part| part.day == day))
     }
 
@@ -597,12 +600,20 @@ impl PowerLedger {
                     }
                 }
             }
+            let fresh = if sole { inputs::fresh_daily(hour, raws[0])? } else { None };
             for (sequence, held) in batches {
+                let applied = fresh.as_ref().filter(|daily| daily.day_hour == day && daily.pp_sequence == Some(sequence));
+                let emptied = applied.is_some_and(|daily| daily.pp_cost_raw == Some(0) && witnesses.and_then(|view| inputs::witness(view, raws[0])).is_some_and(|witness| witness.covers(daily.epoch, hour.hour, Streams::PP_DAILY_COSTS, hour.hour)));
+                let held_sum = held.iter().try_fold(0i128, |sum, part| match part.spent {
+                    Recorded::Value(spent) => Some(sum + i128::from(spent)),
+                    Recorded::NotRecorded => None,
+                });
+                let agrees = applied.is_none_or(|daily| held_sum.is_none() || daily.pp_cost_raw.map(i128::from) == held_sum);
                 match found.remove(&sequence) {
                     Some((raw, rows)) if !ambiguous.contains(&sequence) => {
                         self.reconcile_batch(hour, own, witnesses, pending, Batch { holder, day, sole, moved: moved.contains(&raw), raw, rows, held })?;
                     }
-                    None if sole && self.emptied(hour, witnesses, raws[0], day, sequence)? => {
+                    None if emptied => {
                         let gone: HashSet<u128> = held.iter().map(Part::key).collect();
                         for &key in &gone {
                             pending.parts.remove(&key);
@@ -611,8 +622,9 @@ impl PowerLedger {
                         if let Some((_, open)) = self.parts.get_mut(&holder) {
                             open.retain(|key| !gone.contains(key));
                         }
+                        self.steady.remove(&holder);
                     }
-                    None if day == today => {}
+                    None if day == today && agrees => {}
                     _ => {
                         for mut part in held {
                             part.covered = false;
@@ -624,16 +636,6 @@ impl PowerLedger {
             }
         }
         Ok(())
-    }
-
-    fn emptied(&self, hour: &Hour<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, raw: u32, day: i32, sequence: u64) -> io::Result<bool> {
-        let at = hour.hour;
-        Ok(inputs::fresh_daily(hour, raw)?.is_some_and(|daily| {
-            daily.day_hour == day
-                && daily.pp_sequence == Some(sequence)
-                && daily.pp_cost_raw == Some(0)
-                && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(daily.epoch, at, Streams::PP_DAILY_COSTS, at))
-        }))
     }
 
     fn reconcile_batch(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending, batch: Batch) -> io::Result<()> {
@@ -687,8 +689,12 @@ impl PowerLedger {
         }
         let covered = reconciles && !self.steady.contains(&holder) && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(epoch, day, Streams::PP | Streams::PP_DAILY_COSTS, at));
         let mut withdrawn = HashSet::new();
-        for mut part in held {
+        for part in held {
             let key = part.key();
+            if pending.parts.get(&key).is_some_and(|touched| touched.spent == Recorded::NotRecorded) {
+                continue;
+            }
+            let Some(mut part) = Self::held_part(own, pending, key, day)?.filter(|now| now.sequence == part.sequence) else { continue };
             match remaining.get(&part.ordinal) {
                 _ if exact(&part) => {
                     if part.covered && !reconciles {
@@ -1446,7 +1452,7 @@ impl Writer for PowerLedger {
             let cells = cells(part, out)?;
             out.set(TableId::PowerDayParts, *key, cells);
         }
-        for &key in &pending.withdrawn {
+        for &key in pending.withdrawn.iter().filter(|key| !pending.parts.contains_key(*key)) {
             out.delete(TableId::PowerDayParts, key);
         }
         partial(hour, out);

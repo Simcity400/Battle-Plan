@@ -121,6 +121,9 @@ const UNLINKED_AGAIN: i32 = 385;
 const RELINKED: i32 = 386;
 const DEFERRED_BLOCKED: i32 = 431;
 const DEFERRED: i32 = 432;
+const SWAPPED: i32 = 457;
+const CONTRADICTED_BLOCKED: i32 = 490;
+const CONTRADICTED: i32 = 491;
 const NO_CHANGES: i32 = 26;
 
 fn put_daily(store: &mut Store, hour: i32, row: &CountryPowerDailyRow) {
@@ -140,14 +143,14 @@ fn edit(store: &mut Store, hour: i32) {
             testing::put(store, TableId::CountryCommandPower, &CountryCommandPowerRow { canonical_slot: slot, ..Default::default() }, TEXTS).unwrap();
         }
     }
-    if matches!(hour, GROWN_BLOCKED | SHRUNK_BLOCKED | OVERNIGHT_BLOCKED | REPLACED_BLOCKED | REVISED_BLOCKED | DEFERRED_BLOCKED) {
+    if matches!(hour, GROWN_BLOCKED | SHRUNK_BLOCKED | OVERNIGHT_BLOCKED | REPLACED_BLOCKED | REVISED_BLOCKED | DEFERRED_BLOCKED | CONTRADICTED_BLOCKED) {
         store.status(TableId::CountryLinks.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
-    } else if matches!(hour, GROWN | SHRUNK | OVERNIGHT | REPLACED | REVISED | DEFERRED) {
+    } else if matches!(hour, GROWN | SHRUNK | OVERNIGHT | REPLACED | REVISED | DEFERRED | CONTRADICTED) {
         complete(store, TableId::CountryLinks);
     }
     if hour == DEFERRED {
         store.status(TableId::CountryPowerDaily.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
-    } else if matches!(hour, GROWN | SHRUNK | OVERNIGHT | 433) {
+    } else if matches!(hour, GROWN | SHRUNK | OVERNIGHT | 433 | CONTRADICTED) {
         complete(store, TableId::CountryPowerDaily);
     }
     if hour == NO_CAPTURE {
@@ -327,7 +330,7 @@ fn edit(store: &mut Store, hour: i32) {
             put_daily(store, hour, &daily(168, 3 * Q, Q / 2 + Q / 10, 168));
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(168, 1, PowerDailyCostKind::MioResearch, Q / 10, 168), TEXTS).unwrap();
         }
-        192 | 216 | 240 | 288 | REPLACED | 336 | 384 | 408 => {
+        192 | 216 | 240 | 288 | REPLACED | 336 | 384 | 408 | 456 | 480 => {
             put_daily(store, hour, &daily(hour, 3 * Q, Q / 2 + Q / 10, hour as u64));
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(hour, 0, PowerDailyCostKind::Relation, Q / 2, hour as u64), TEXTS).unwrap();
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(hour, 1, PowerDailyCostKind::MioResearch, Q / 10, hour as u64), TEXTS).unwrap();
@@ -345,6 +348,17 @@ fn edit(store: &mut Store, hour: i32) {
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(336, 0, PowerDailyCostKind::Relation, Q / 4, 336), TEXTS).unwrap();
         }
         UNLINKED_AGAIN => testing::remove(store, TableId::CountryLinks, 1).unwrap(),
+        SWAPPED => {
+            for (id, slot) in [(1, 20), (2, 50)] {
+                testing::put(store, TableId::Countries, &CountryRow { id, canonical_slot: slot, ..Default::default() }, TEXTS).unwrap();
+                testing::put(store, TableId::CountryLinks, &CountryLinkRow { id, canonical_slot: slot }, TEXTS).unwrap();
+            }
+        }
+        CONTRADICTED_BLOCKED => {
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32).unwrap();
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+            put_daily(store, hour, &daily(480, 3 * Q, Q / 5, 480));
+        }
         RELINKED => {
             testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 1, canonical_slot: 50 }, TEXTS).unwrap();
             put_daily(store, hour, &daily(384, 3 * Q, Q / 4 + Q / 10, 384));
@@ -359,9 +373,17 @@ fn edit(store: &mut Store, hour: i32) {
     }
 }
 
+fn second_country(store: &mut Store, hour: i32) {
+    if hour == 456 {
+        put_daily(store, hour, &CountryPowerDailyRow { country: 2, ..daily(456, 3 * Q, Q / 2, 456) });
+        testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 2, ..cost(456, 0, PowerDailyCostKind::Relation, Q / 3, 456) }, TEXTS).unwrap();
+    }
+}
+
 fn run(store: &mut Store, writers: &mut Writers, hour: i32) {
     store.begin_hour(hour, if hour == 0 { TEXTS } else { &[] }).unwrap();
     edit(store, hour);
+    second_country(store, hour);
     store.settle();
     writers.hour(1, hour, hour == 0, store).unwrap();
     store.end_hour(&mut Discard).unwrap();
@@ -686,6 +708,15 @@ fn a_country_that_changes_holders_mid_day_takes_its_open_batch_with_it() {
         let unknown = |store: &Store| spend(store, 50, POLITICAL, ordinal, "day_unknown");
         assert_eq!(unknown(&deferred).zip(unknown(&waiting)).map(|(after, before)| after - before), Some(1), "a day that closes while its reconciliation waits for the daily rows settles as unknown");
     }
+    let (swapped, _) = through(0..=SWAPPED);
+    let part = |holder: u32, ordinal: u32| cell::<Part>(&swapped, TableId::PowerDayParts, part_key(holder, POLITICAL, ordinal), "spent");
+    assert_eq!((part(20, 0), part(20, 1), part(50, 0)), (Some(Q / 2), Some(Q / 10), Some(Q / 3)), "two countries swapping holders each take their batch to the other's");
+    assert!(held(&swapped, 50).iter().all(|&key| key != part_key(50, POLITICAL, 1)));
+    let view = swapped.view(TableId::PowerDayParts.index());
+    assert_eq!(view.bool(column::<Part>("covered"), view.slot(part_key(20, POLITICAL, 0)).expect("a row")), Some(true), "and a part arriving on an ordinal the other withdrew keeps none of its coverage or read hour");
+    let (contradicted, _) = through(0..=CONTRADICTED);
+    let after = |ordinal: u32| cell::<Part>(&contradicted, TableId::PowerDayParts, part_key(20, POLITICAL, ordinal), "spent");
+    assert_eq!((after(0), after(1)), (None, None), "rows gone while the application read that hour no longer adds up to the held parts leave them unknown");
 }
 
 #[test]
