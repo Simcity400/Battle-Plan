@@ -18,7 +18,7 @@ on main's first-parent line, so candidates built in main's order sort in it. Sta
 patch, or `--version` for a larger step. The build passes the version as BATTLE_PLAN_VERSION, which
 only app-update, the recorder and Tauri's bundle read, so a new version recompiles only them. It is
 compiled in, so a candidate belongs to one channel. After a stable release, `finalize` pushes it to main
-as the workspace version, with the release App's token (APP_SLUG names the App).
+as the workspace version, over SSH with the release deploy key the checkout carries.
 
 `resolve` decides whether a release is due and from what. A nightly is due when main has changed
 since the nightly feed's commit and main's CI is green on it, unless PAUSE_NIGHTLY is true. A stable
@@ -72,6 +72,8 @@ INSTALLER = "battle-plan-{version}-x64-setup.exe"
 CANDIDATE_WORKFLOW = "release-candidate.yml"
 RELEASE_WORKFLOW = "release.yml"
 PUSH_ATTEMPTS = 5
+BUMP_AUTHOR = "github-actions[bot]"
+BUMP_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 SIGNED = re.compile(r"Signed installer SHA-256: ([0-9a-f]{64})\.")
 SETTLED = ("success", "skipped", "neutral")
 RELEASE_VERSION = re.compile(r"\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?")
@@ -888,28 +890,21 @@ def feed_check(repo, channel, version):
 
 
 def finalize(args):
-    """After a stable release, main's workspace version becomes it: the release App's token pushes
-    the bump straight to main, which its ruleset lets the App bypass, refetching main and stamping
-    again whenever main moved first. A push made with the App's token starts main's CI, so the bump
-    gets its candidate as any commit does. An older release never sets the version back."""
-    author = email = None
+    """After a stable release, main's workspace version becomes it: the release deploy key, which
+    main's ruleset lets bypass its pull-request rule, pushes the bump straight to main over SSH,
+    refetching main and stamping again whenever main moved first. A push with a deploy key starts
+    main's CI, so the bump gets its candidate as any commit does. An older release never sets the
+    version back."""
     for attempt in range(1, PUSH_ATTEMPTS + 1):
         git("fetch", "--quiet", "origin", "main")
         current = workspace_version(git("show", "origin/main:Cargo.toml"))
         if precedence(current) >= precedence(args.version):
             say(f"Main's workspace version is {current}, which {args.version} does not follow.")
             return 0
-        if author is None:
-            slug = os.environ.get("APP_SLUG", "")
-            if not slug:
-                raise Refused("APP_SLUG names no release App, whose token pushes the version.")
-            author = f"{slug}[bot]"
-            user = run(["gh", "api", f"users/{slug}%5Bbot%5D", "--jq", ".id"]).stdout.strip()
-            email = f"{user}+{author}@users.noreply.github.com"
         git("checkout", "--quiet", "--force", "--detach", "origin/main")
         base = git("rev-parse", "HEAD")
         stamp(ROOT, args.version)
-        git("-c", f"user.name={author}", "-c", f"user.email={email}", "commit", "--quiet", "--all",
+        git("-c", f"user.name={BUMP_AUTHOR}", "-c", f"user.email={BUMP_EMAIL}", "commit", "--quiet", "--all",
             "--message", f"Release: v{args.version} is the workspace version")
         pushed = run(["git", "push", "--quiet", "origin", "HEAD:main"], check=False)
         if pushed.returncode == 0:
@@ -917,7 +912,7 @@ def finalize(args):
             return 0
         git("fetch", "--quiet", "origin", "main")
         if git("rev-parse", "origin/main") == base:
-            raise Refused(f"Main refused the release App's push of {args.version}, and main had not moved: "
+            raise Refused(f"Main refused the deploy key's push of {args.version}, and main had not moved: "
                           f"{pushed.stderr.strip()}")
         say(f"Main moved while its version was set (attempt {attempt}); trying again on its new head.")
     raise Refused(f"Main moved during each of {PUSH_ATTEMPTS} attempts to set its version to {args.version}; "

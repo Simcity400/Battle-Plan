@@ -283,12 +283,9 @@ class Finalize(unittest.TestCase):
 
         def run(command, **_):
             calls.append(command)
-            if command[:2] == ["gh", "api"]:
-                return mock.Mock(stdout="41898282\n", returncode=0)
             return mock.Mock(returncode=pushes.pop(0), stderr="GH013: Repository rule violations found for refs/heads/main.")
 
-        with mock.patch.dict(os.environ, {"APP_SLUG": "battle-plan-release"}), \
-                mock.patch.multiple(release, git=mock.Mock(side_effect=git), run=run, stamp=mock.DEFAULT):
+        with mock.patch.multiple(release, git=mock.Mock(side_effect=git), run=run, stamp=mock.DEFAULT):
             result = release.finalize(argparse.Namespace(version="1.4.4"))
             return result, calls, release.stamp.call_count
 
