@@ -16,8 +16,7 @@ content-reader-core.workspace = true
 content-reader-country-names.workspace = true
 content-reader-division-names.workspace = true
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["layer-fixtures"] }
-engine-executable.workspace = true
+content-reader-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
 content-reader-division-names = { workspace = true, features = ["layer-fixtures"] }
 
 [features]
@@ -32,7 +31,6 @@ content-reader-division-names = { workspace = true, features = ["layer-fixtures"
 content-reader-localisation = { workspace = true, features = ["test-support"] }
 content-reader-raids = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
-engine-executable = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

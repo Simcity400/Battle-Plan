@@ -8,6 +8,4 @@ Construction compares physical queue positions across building and railway entri
 
 The resource-origin reader keeps both occurrences of `efficiency` in their emitted order, since the convoy client's value and the origin's stored product are separate fields. The convoy request precedes the naval route cost reduction. Land routes retain state IDs and naval routes retain strategic-region IDs. The resource-rights writer sorts by resource name, which cannot establish the live list order. Preserve resource owners, sparse origin states and the ordered building-override entries. The separately read state-history resource templates are initial content, while the saved resource pools and modifiers are runtime state.
 
-The ignored real-save combat-log test takes a text save through `BATTLE_PLAN_COMBAT_LOG_SAVE`. It parses a complete save and prints a summary for inspection.
-
 [Air save fields](../../crates/content-reader-save/src/air.rs) · [Combat logs](../../crates/content-reader-save/src/combat_log.rs) · [Combat window fields](../../crates/content-reader-save/src/combat_details.rs) · [Construction and occupation](../../crates/content-reader-save/src/construction.rs)

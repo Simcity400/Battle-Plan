@@ -342,7 +342,8 @@ mod tests {
 
     #[test]
     fn wargoal_terms_keep_native_defaults_repeated_assignments_and_mod_definition_ambiguity() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        use content_reader_core::{test_game, trigger_keys::Reader};
+        test_game::with(|game| game.trigger("tag", 0, Reader::Assign, 0));
         let database = parse(b"@cost=25 wargoal_types={custom={annex=yes annex=invalid take_states_limit=3 take_states_cost=@cost take_states_cost=-12.5 liberate_threat_factor=50 expire=90 generate_base_cost=12 generate_per_state_cost=4 take_states={always=yes} allowed={always=yes} allowed={always=no} available={tag=MOD}}}", &KeyNames::default()).unwrap();
         let term = database.terms(b"custom").unwrap();
         assert!(term.annex);
@@ -363,6 +364,8 @@ mod tests {
         assert!(term.allowed[0].keyword_is("always"));
         assert_eq!(term.allowed[0].value.scalar(), Some(b"yes".as_slice()));
         assert_eq!(term.allowed[1].value.scalar(), Some(b"no".as_slice()));
+        assert!(term.available[0].keyword_is("tag"));
+        assert_eq!(term.available[0].value.scalar(), Some(b"MOD".as_slice()));
         for field in ["allowed", "available"] {
             let source = format!(
                 "wargoal_types={{custom={{{field}={{always=yes}}}} CUSTOM={{{field}={{always=no}}}}}}"
@@ -393,8 +396,7 @@ mod tests {
 
     #[test]
     fn war_naming_keeps_main_reader_forms_and_token_identity() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let database = parse(
             b"wargoal_types={First={instant_reward={set_country_flag=synthetic} take_states_limit=2 war_name=EARLY war_name=LATE} FIRST={war_name=LATE}}",
             &KeyNames::default(),
@@ -422,8 +424,7 @@ mod tests {
 
     #[test]
     fn wargoal_names_and_field_consumption() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let database = parse(
             b"@cost=8 \"wargoal_types\"={hidden={}} WARGOAL_TYPES={First={allowed={always=no} instant_reward={set_country_flag=synthetic} generate_base_cost=@cost} FIRST={annex=yes} other={take_states={always=yes} unknown={@lost=7} expire=@lost}}",
             &KeyNames::default(),
