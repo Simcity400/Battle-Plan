@@ -77,7 +77,7 @@ export type FromWorker = { type: 'displayRate'; hz: number } | import('./notific
   | { type: 'audit'; records: import('./notifications').DrawSample[]; done: boolean }
   | { type: 'raceHover'; id: number; owner: number; seek: number; item?: import('../charts/race/race').RaceItem }
   | { type: 'raceInspection'; id: number; owner: number; request: number; seek: number; picture?: import('./arsenal').RaceInspection }
-  | { type: 'racePresent'; id: number; owner: number; seek: number; generation: number; head: number; hour: number | null; at: number; rows?: readonly { row: string; key: string; value: string }[] }
+  | { type: 'racePresent'; id: number; owner: number; seek: number; generation: number; head: number; hour: number | null; at: number; shown?: number; rows?: readonly { row: string; key: string; value: string }[] }
   | { type: 'inspection'; request: number; reading?: import('./followed').PageReading }
   | { type: 'tableRead'; id: number; owner: number; request: number; reading: import('./tables/surface').TableReading | null }
   | { type: 'tableRows'; id: number; owner: number; count: number; empty?: string }

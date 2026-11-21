@@ -3,7 +3,7 @@ export const FIXTURE = 'AllWidgets';
 export const LEGIBLE = 'AllWidgetsLegible';
 export const REBUILT = 'RebuiltWidgets';
 export const REBUILT_ALONE = 'RebuiltAlone';
-export const REBUILT_KINDS = ['occupied-states', 'scoreboard'];
+export const REBUILT_KINDS = ['occupied-states', 'scoreboard', 'research', 'active-research', 'special-projects', 'doctrine-mastery', 'nuclear-arsenal'];
 const UI = new URL('../../ui/src/', import.meta.url);
 
 export const VIEWS = {

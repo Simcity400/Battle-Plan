@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PresentationRate } from '../draw/frameRate.ts';
+import { DisplayRate, PresentationRate, shownAt } from '../draw/frameRate.ts';
 import { axisFraction, hitZone, plotFrame, pointerHour, wheelSteps } from './frame.ts';
 import { hideTooltip, showTooltip, tooltipStore } from './tooltip.ts';
 import { parseAppearance, DEFAULT_APPEARANCE } from '../shell/appearance/settings.ts';
@@ -77,6 +77,20 @@ test('the worker presents 60 frames on both a 95 Hz and a 240 Hz display and ski
     assert.equal(cadence.due(2501, 60), false);
     assert.equal(times.filter(at => cadence.due(at, 0)).length, hz);
   }
+});
+
+test('a frame is drawn for the first display it can reach, the next vsync after its work begins', () => {
+  const rate = new DisplayRate();
+  assert.equal(rate.interval, 0, 'a display not yet measured gives no lead');
+  assert.equal(shownAt(100, 103, rate.interval), 103, 'and the frame draws the clock as its work begins');
+  for (let i = 0; i <= 32; i++) rate.sample(i * 10);
+  assert.equal(rate.interval, 10);
+  rate.sample(325);
+  assert.equal(rate.interval, 5, 'a faster display shortens the lead at its first frame');
+  assert.equal(shownAt(100, 100, 10), 110, 'begun at its vsync');
+  assert.equal(shownAt(100, 109.9, 10), 110, 'begun late within the interval');
+  assert.equal(shownAt(100, 110, 10), 110, 'begun after the vsync it expected: the clock as its work begins');
+  assert.equal(shownAt(100, 95, 10), 110, 'a clock read before the frame time');
 });
 
 test('a 60 FPS cap presents each eligible native step when the 95 Hz display starts between steps', () => {

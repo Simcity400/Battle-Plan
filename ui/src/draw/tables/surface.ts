@@ -348,31 +348,70 @@ function cellGround(ctx: TableCanvasContext, theme: TableTheme, x: number, y: nu
   if (hovered) layers.push([theme.accent, 0.10]);
   const ground = blend(theme.surface, layers), line = divider ? blend(theme.surface, [...layers, [theme.line, 0.65]]) : null;
   if (ground !== null && (line !== null || !divider)) {
-    ctx.fillStyle = ground; ctx.fillRect(x, y, width, divider ? height - 1 : height);
-    if (divider) { ctx.fillStyle = line!; ctx.fillRect(x, y + height - 1, width, 1); }
+    fillWith(ctx, ground); ctx.fillRect(x, y, width, divider ? height - 1 : height);
+    if (divider) { fillWith(ctx, line!); ctx.fillRect(x, y + height - 1, width, 1); }
     return;
   }
-  ctx.fillStyle = theme.surface; ctx.fillRect(x, y, width, height);
-  for (const [colour, alpha] of layers) { ctx.fillStyle = colour; ctx.globalAlpha = alpha; ctx.fillRect(x, y, width, height); }
-  if (divider) { ctx.fillStyle = theme.line; ctx.globalAlpha = 0.65; ctx.fillRect(x, y + height - 1, width, 1); }
-  ctx.globalAlpha = 1;
+  fillWith(ctx, theme.surface); ctx.fillRect(x, y, width, height);
+  for (const [colour, alpha] of layers) { fillWith(ctx, colour); alphaTo(ctx, alpha); ctx.fillRect(x, y, width, height); }
+  if (divider) { fillWith(ctx, theme.line); alphaTo(ctx, 0.65); ctx.fillRect(x, y + height - 1, width, 1); }
+  alphaTo(ctx, 1);
 }
 const fixedCell = (cell: TableCellModel, column: TableColumnLayout) =>
   !cell.valueKey && !cell.looks && !cell.bar?.key && !cell.prefix && !cell.icon && column.display !== 'track';
 function hatch(ctx: TableCanvasContext, x: number, y: number, width: number, height: number, theme: TableTheme) {
-  ctx.save(); ctx.beginPath(); ctx.rect(x, y, width, height); ctx.clip(); ctx.strokeStyle = theme.hatch; ctx.globalAlpha = 0.35; ctx.lineWidth = 1;
+  ctx.save(); ctx.beginPath(); ctx.rect(x, y, width, height); ctx.clip(); ctx.strokeStyle = theme.hatch; alphaTo(ctx, 0.35); ctx.lineWidth = 1;
   for (let at = x - height; at < x + width; at += theme.hatchSpacing) { ctx.beginPath(); ctx.moveTo(at, y + height); ctx.lineTo(at + height, y); ctx.stroke(); }
-  ctx.restore();
+  ctx.restore(); freshPen(ctx);
+}
+interface Pen { font?: string; fill?: string | CanvasGradient | CanvasPattern; align?: CanvasTextAlign; baseline?: CanvasTextBaseline; alpha?: number }
+const pens = new WeakMap<object, Pen>();
+function pen(ctx: object): Pen {
+  let held = pens.get(ctx);
+  if (!held) pens.set(ctx, held = {});
+  return held;
+}
+function freshPen(ctx: object): void { pens.set(ctx, {}); }
+function useFont(ctx: Pick<TableCanvasContext, 'font'>, value: string): void {
+  const held = pen(ctx);
+  if (held.font !== value) { ctx.font = value; held.font = value; }
+}
+function fillWith(ctx: TableCanvasContext, value: string | CanvasGradient | CanvasPattern): void {
+  const held = pen(ctx);
+  if (held.fill !== value) { ctx.fillStyle = value; held.fill = value; }
+}
+function alignTo(ctx: TableCanvasContext, value: CanvasTextAlign): void {
+  const held = pen(ctx);
+  if (held.align !== value) { ctx.textAlign = value; held.align = value; }
+}
+function baselineTo(ctx: TableCanvasContext, value: CanvasTextBaseline): void {
+  const held = pen(ctx);
+  if (held.baseline !== value) { ctx.textBaseline = value; held.baseline = value; }
+}
+function alphaTo(ctx: TableCanvasContext, value: number): void {
+  const held = pen(ctx);
+  if (held.alpha !== value) { ctx.globalAlpha = value; held.alpha = value; }
+}
+const widths = new Map<string, number>();
+function widthOf(ctx: Pick<TableCanvasContext, 'measureText' | 'font'>, text: string): number {
+  const key = `${pen(ctx).font ?? ctx.font}\u0000${text}`;
+  let width = widths.get(key);
+  if (width === undefined) {
+    width = ctx.measureText(text).width;
+    if (widths.size > 8192) widths.clear();
+    widths.set(key, width);
+  }
+  return width;
 }
 const fittedTexts = new Map<string, string>();
 export function fitText(ctx: Pick<TableCanvasContext, 'measureText' | 'font'>, text: string, width: number): string {
   if (width <= 0) return '';
-  if (ctx.measureText(text).width <= width) return text;
+  if (widthOf(ctx, text) <= width) return text;
   const key = `${ctx.font}\u0000${Math.floor(width)}\u0000${text}`;
   let fitted = fittedTexts.get(key);
   if (fitted === undefined) {
     let low = 0, high = text.length;
-    while (low < high) { const mid = Math.ceil((low + high) / 2); if (ctx.measureText(`${text.slice(0, mid).trimEnd()}…`).width <= width) low = mid; else high = mid - 1; }
+    while (low < high) { const mid = Math.ceil((low + high) / 2); if (widthOf(ctx, `${text.slice(0, mid).trimEnd()}…`) <= width) low = mid; else high = mid - 1; }
     fitted = low ? `${text.slice(0, low).trimEnd()}…` : '…';
     if (fittedTexts.size > 4096) fittedTexts.clear();
     fittedTexts.set(key, fitted);
@@ -384,7 +423,7 @@ function drawCell(ctx: TableCanvasContext, cell: TableCellModel, column: TableCo
   look: CellLook, slot: number, icons?: ReadonlyMap<string, ImageBitmap | null>) {
   const { made, fraction, fill, icon: art } = look, display = column.display;
   const left = x + CELL_INSET, right = x + column.width - (column.numeric ? HEADER_CARET_LANE : CELL_INSET), middle = y + height / 2;
-  ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  baselineTo(ctx, 'middle'); alignTo(ctx, 'left');
   let textX = left;
   if (cell.iconSlot && showsIcon(display)) {
     const icon = art ? icons?.get(art) : undefined, iconHeight = Math.min(14, height - 8);
@@ -392,30 +431,30 @@ function drawCell(ctx: TableCanvasContext, cell: TableCellModel, column: TableCo
       const scale = Math.min(20 / icon.width, iconHeight / icon.height), drawnWidth = icon.width * scale, drawnHeight = icon.height * scale;
       ctx.drawImage(icon, left + (20 - drawnWidth) / 2, middle - drawnHeight / 2, drawnWidth, drawnHeight);
     } else if (icon === null || !art) {
-      ctx.save(); ctx.strokeStyle = theme.muted; ctx.setLineDash([3, 2]); ctx.strokeRect(left + 0.5, middle - iconHeight / 2 + 0.5, 19, iconHeight - 1); ctx.restore();
+      ctx.save(); ctx.strokeStyle = theme.muted; ctx.setLineDash([3, 2]); ctx.strokeRect(left + 0.5, middle - iconHeight / 2 + 0.5, 19, iconHeight - 1); ctx.restore(); freshPen(ctx);
     }
     if (display === 'flag') return;
     textX = left + ICON_LANE;
   }
   if (made.missing) {
-    ctx.font = `italic ${font(theme, theme.fontSize.small, LABEL_WEIGHT)}`;
+    useFont(ctx, `italic ${font(theme, theme.fontSize.small, LABEL_WEIGHT)}`);
     const barred = display === 'track' || display === 'meterAfter' || display === 'meterBefore' || display === 'underline';
-    const boxWidth = barred ? right - textX : Math.min(right - textX, ctx.measureText(made.text).width + 12), boxHeight = Math.min(16, height - 8);
+    const boxWidth = barred ? right - textX : Math.min(right - textX, widthOf(ctx, made.text) + 12), boxHeight = Math.min(16, height - 8);
     const boxX = endAligned(column) && !barred ? right - boxWidth : textX;
     hatch(ctx, boxX, middle - boxHeight / 2, boxWidth, boxHeight, theme);
-    ctx.fillStyle = theme.muted; ctx.textAlign = barred ? 'center' : 'left';
+    fillWith(ctx, theme.muted); alignTo(ctx, barred ? 'center' : 'left');
     ctx.fillText(fitText(ctx, made.text, boxWidth - 12), barred ? boxX + boxWidth / 2 : boxX + 6, middle);
     return;
   }
-  ctx.font = font(theme, theme.fontSize.body, VALUE_WEIGHT);
+  useFont(ctx, font(theme, theme.fontSize.body, VALUE_WEIGHT));
   const bar = (barX: number, barWidth: number, barHeight: number) => {
     if (barWidth <= 0 || fraction === null) return;
     const barY = middle - barHeight / 2;
-    ctx.fillStyle = theme.lineSoft; ctx.beginPath(); ctx.roundRect(barX, barY, barWidth, barHeight, barHeight / 2); ctx.fill();
-    if (fraction) { ctx.fillStyle = fill; ctx.beginPath(); ctx.roundRect(barX, barY, Math.max(barHeight, barWidth * fraction), barHeight, barHeight / 2); ctx.fill(); }
+    fillWith(ctx, theme.lineSoft); ctx.beginPath(); ctx.roundRect(barX, barY, barWidth, barHeight, barHeight / 2); ctx.fill();
+    if (fraction) { fillWith(ctx, fill); ctx.beginPath(); ctx.roundRect(barX, barY, Math.max(barHeight, barWidth * fraction), barHeight, barHeight / 2); ctx.fill(); }
   };
   const text = (at: number, align: CanvasTextAlign, maxWidth: number) => {
-    ctx.fillStyle = theme.text; ctx.textAlign = align;
+    fillWith(ctx, theme.text); alignTo(ctx, align);
     if (column.numeric) ctx.fillText(made.text, at, middle, Math.max(1, maxWidth));
     else ctx.fillText(fitText(ctx, made.text, maxWidth), at, middle);
   };
@@ -424,7 +463,7 @@ function drawCell(ctx: TableCanvasContext, cell: TableCellModel, column: TableCo
       case 'faint':
         if (fraction) {
           const barWidth = (right - left) * fraction, barHeight = Math.min(16, height - 8);
-          ctx.fillStyle = fill; ctx.globalAlpha = 0.24; ctx.beginPath(); ctx.roundRect(right - barWidth, middle - barHeight / 2, barWidth, barHeight, 3); ctx.fill(); ctx.globalAlpha = 1;
+          fillWith(ctx, fill); alphaTo(ctx, 0.24); ctx.beginPath(); ctx.roundRect(right - barWidth, middle - barHeight / 2, barWidth, barHeight, 3); ctx.fill(); alphaTo(ctx, 1);
         }
         text(right - 4, 'right', right - left - 4); return;
       case 'track': bar(left + slot + BAR_GAP, right - left - slot - BAR_GAP, TRACK_HEIGHT); text(left, 'left', slot); return;
@@ -432,9 +471,9 @@ function drawCell(ctx: TableCanvasContext, cell: TableCellModel, column: TableCo
       case 'meterAfter': bar(right - METER_WIDTH, METER_WIDTH, METER_HEIGHT); text(right - METER_WIDTH - BAR_GAP, 'right', right - left - METER_WIDTH - BAR_GAP); return;
       case 'underline': {
         text(right, 'right', right - left);
-        const lineWidth = Math.min(right - left, ctx.measureText(made.text).width), lineY = middle + 8;
-        ctx.fillStyle = theme.lineSoft; ctx.fillRect(right - lineWidth, lineY, lineWidth, 2);
-        if (fraction) { ctx.fillStyle = fill; ctx.fillRect(right - lineWidth, lineY, lineWidth * fraction, 2); }
+        const lineWidth = Math.min(right - left, widthOf(ctx, made.text)), lineY = middle + 8;
+        fillWith(ctx, theme.lineSoft); ctx.fillRect(right - lineWidth, lineY, lineWidth, 2);
+        if (fraction) { fillWith(ctx, fill); ctx.fillRect(right - lineWidth, lineY, lineWidth * fraction, 2); }
         return;
       }
       default: text(right, 'right', right - left); return;
@@ -442,12 +481,12 @@ function drawCell(ctx: TableCanvasContext, cell: TableCellModel, column: TableCo
   }
   const status = cell.status;
   if (status === 'dot') {
-    ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(textX + 3, middle, 3, 0, Math.PI * 2); ctx.fill(); textX += DOT_LANE;
+    fillWith(ctx, fill); ctx.beginPath(); ctx.arc(textX + 3, middle, 3, 0, Math.PI * 2); ctx.fill(); textX += DOT_LANE;
   } else if (status === 'outline' || status === 'fill') {
-    const pillWidth = Math.min(right - textX, ctx.measureText(made.text).width + 16), pillHeight = Math.min(20, height - 6);
+    const pillWidth = Math.min(right - textX, widthOf(ctx, made.text) + 16), pillHeight = Math.min(20, height - 6);
     ctx.beginPath(); ctx.roundRect(textX, middle - pillHeight / 2, pillWidth, pillHeight, pillHeight / 2);
-    if (status === 'fill') { ctx.fillStyle = fill; ctx.globalAlpha = 0.18; ctx.fill(); ctx.globalAlpha = 1; }
-    ctx.strokeStyle = fill; ctx.globalAlpha = 0.7; ctx.stroke(); ctx.globalAlpha = 1;
+    if (status === 'fill') { fillWith(ctx, fill); alphaTo(ctx, 0.18); ctx.fill(); alphaTo(ctx, 1); }
+    ctx.strokeStyle = fill; alphaTo(ctx, 0.7); ctx.stroke(); alphaTo(ctx, 1);
     text(textX + pillWidth / 2, 'center', pillWidth - 12); return;
   }
   text(textX, 'left', right - textX);
@@ -472,11 +511,11 @@ export function cellBar(cell: TableCellModel, number: number | null, top: number
 }
 
 function trackSlot(ctx: TableCanvasContext, rows: readonly TableRowModel[], key: string, first: number, last: number, values: TableValues | null, theme: TableTheme): number {
-  ctx.font = font(theme, theme.fontSize.body, VALUE_WEIGHT);
+  useFont(ctx, font(theme, theme.fontSize.body, VALUE_WEIGHT));
   let widest = 0;
   for (let index = first; index < last; index++) {
     const cell = rows[index]?.cells[key];
-    if (cell) { const made = valueText(cell, values); if (!made.missing) widest = Math.max(widest, ctx.measureText(made.text).width); }
+    if (cell) { const made = valueText(cell, values); if (!made.missing) widest = Math.max(widest, widthOf(ctx, made.text)); }
   }
   return Math.ceil(widest);
 }
@@ -502,11 +541,11 @@ function barSpan(column: TableColumnLayout, slot: number): number {
 }
 
 function drawEmpty(ctx: TableCanvasContext, text: string, width: number, height: number, theme: TableTheme): void {
-  ctx.font = font(theme, theme.fontSize.body, LABEL_WEIGHT); ctx.fillStyle = theme.muted; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  useFont(ctx, font(theme, theme.fontSize.body, LABEL_WEIGHT)); fillWith(ctx, theme.muted); alignTo(ctx, 'center'); baselineTo(ctx, 'middle');
   const room = Math.max(1, width - 2 * CELL_INSET * 2), lines: string[] = [];
   for (const word of text.split(' ')) {
     const last = lines.at(-1);
-    if (last !== undefined && ctx.measureText(`${last} ${word}`).width <= room) lines[lines.length - 1] = `${last} ${word}`; else lines.push(word);
+    if (last !== undefined && widthOf(ctx, `${last} ${word}`) <= room) lines[lines.length - 1] = `${last} ${word}`; else lines.push(word);
   }
   const lineHeight = theme.fontSize.body * 1.4, top = height / 2 - (lines.length - 1) * lineHeight / 2;
   lines.forEach((line, index) => ctx.fillText(line, width / 2, top + index * lineHeight, room));
@@ -516,6 +555,7 @@ export function drawTable(ctx: TableCanvasContext, state: TableSurfaceState, now
   icons?: ReadonlyMap<string, ImageBitmap | null>, picture?: TablePicture, dpr = 1): void {
   const { model, layout, rows, values } = state, theme = model.theme;
   if (!theme) return;
+  freshPen(ctx);
   const rowHeight = ROW_HEIGHT[model.settings.density], bounds = scrollBounds(layout, model.width, scrollLeft), rank = model.rankShown ? model.rankWidth ?? 28 : 0;
   const scrollTop = model.scrollTop ?? 0;
   const first = Math.max(0, Math.floor(scrollTop / rowHeight));
@@ -527,15 +567,15 @@ export function drawTable(ctx: TableCanvasContext, state: TableSurfaceState, now
   const rankCell = (index: number, x: number, y: number) => {
     const row = rows[index]!, middle = y + rowHeight / 2;
     cellGround(ctx, theme, x, y, rank, rowHeight, index % 2 === 1, false, state.hoverKey === row.key, false);
-    ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.font = font(theme, theme.fontSize.small, LABEL_WEIGHT);
-    const label = String(index + 1), labelWidth = ctx.measureText(label).width;
-    ctx.fillStyle = theme.muted; ctx.fillText(label, x + CELL_INSET, middle);
+    baselineTo(ctx, 'middle'); alignTo(ctx, 'left'); useFont(ctx, font(theme, theme.fontSize.small, LABEL_WEIGHT));
+    const label = String(index + 1), labelWidth = widthOf(ctx, label);
+    fillWith(ctx, theme.muted); ctx.fillText(label, x + CELL_INSET, middle);
     const marker = state.markers?.get(row.key);
     if (marker && marker.until > now) {
-      ctx.fillStyle = marker.delta > 0 ? theme.green : theme.red;
+      fillWith(ctx, marker.delta > 0 ? theme.green : theme.red);
       ctx.fillText(`${marker.delta > 0 ? '\u25b2' : '\u25bc'}${Math.abs(marker.delta)}`, x + CELL_INSET + labelWidth + 3, middle, Math.max(1, rank - CELL_INSET - labelWidth - 3));
     }
-    ctx.fillStyle = theme.line; ctx.globalAlpha = 0.65; ctx.fillRect(x, y + rowHeight - 1, rank, 1); ctx.globalAlpha = 1;
+    fillWith(ctx, theme.line); alphaTo(ctx, 0.65); ctx.fillRect(x, y + rowHeight - 1, rank, 1); alphaTo(ctx, 1);
   };
   const moving = state.glide.size > 0 || [...state.highlight.values()].some(until => until > now);
   const frame = picture && !moving && !layout.scrollable
@@ -570,7 +610,7 @@ export function drawTable(ctx: TableCanvasContext, state: TableSurfaceState, now
     return;
   }
   if (picture) { picture.frame = frame; picture.rows = []; picture.refs = []; picture.cells = new Map(); picture.ranks = []; picture.state = state; picture.hour = state.hour; }
-  ctx.clearRect(0, 0, model.width, model.height); ctx.fillStyle = theme.surface; ctx.fillRect(0, 0, model.width, model.height);
+  ctx.clearRect(0, 0, model.width, model.height); fillWith(ctx, theme.surface); ctx.fillRect(0, 0, model.width, model.height);
   if (!rows.length && model.empty) { drawEmpty(ctx, model.empty, model.width, model.height, theme); return; }
   ctx.save(); ctx.beginPath(); ctx.rect(0, 0, model.width, model.height); ctx.clip();
   const ranks = (x: number) => {
@@ -604,12 +644,12 @@ export function drawTable(ctx: TableCanvasContext, state: TableSurfaceState, now
   body();
   if (layout.scrollable) {
     const pinnedWidth = rank + (layout.columns[0]?.width ?? 0);
-    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pinnedWidth, model.height); ctx.clip(); ctx.fillStyle = theme.surface; ctx.fillRect(0, 0, pinnedWidth, model.height); body(true); ranks(0); ctx.restore();
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pinnedWidth, model.height); ctx.clip(); fillWith(ctx, theme.surface); ctx.fillRect(0, 0, pinnedWidth, model.height); body(true); ranks(0); ctx.restore(); freshPen(ctx);
     const edge = ctx.createLinearGradient(pinnedWidth - 1, 0, pinnedWidth + 12, 0);
     edge.addColorStop(0, theme.surface); edge.addColorStop(1, 'transparent');
-    ctx.fillStyle = edge; ctx.fillRect(pinnedWidth - 1, 0, 13, model.height);
+    fillWith(ctx, edge); ctx.fillRect(pinnedWidth - 1, 0, 13, model.height);
   } else ranks(-bounds.left);
-  ctx.restore();
+  ctx.restore(); freshPen(ctx);
   void bounds;
 }
 

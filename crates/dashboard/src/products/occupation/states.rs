@@ -1,26 +1,27 @@
 
 use super::{
-    Content, Eligibility, WorldReads, law::{self, GroupLaw, LawInputs, OccupationLawInfo}, occupied, slot,
+    Content, Judged, Judgements, WorldReads, law::{self, GroupLaw, LawInputs, OccupationLawInfo}, occupied, slot,
 };
 use crate::{
     Source,
     catalogue::Refusals,
     products::{
         LoadContext,
-        at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt},
+        at_hour::{At, AtHour, Edits, Keys, Owner, Read, ReadsAt, field_mask},
         intelligence::{Tags, branch, missing},
     },
 };
 use dashboard_follow::live::{Cells, Source as Cell};
-use dashboard_text::metadata::recorded_rows;
+use dashboard_text::{metadata::recorded_rows, triggers::inputs::{Since, TableChange, TableChanges}};
 use replay_data::rows::{
-    CountryLinkRow, GarrisonEquipment, GarrisonStrengthRow, OccupationSettingsRow, Recorded, StateGarrisonRow, StateResistanceRow, StateRow, TableId, tables,
+    CountryLinkRow, DeltaRow, GarrisonEquipment, GarrisonEquipmentInputs, GarrisonStrengthRow, OccupationSettingsRow, Recorded, StateAssignedManpowerRow, StateGarrisonRow, StateResistanceRow, StateRow,
+    TableId, full_mask, tables,
 };
 use replay_frame::frame::{DecodedFrame, HourFrame};
 use serde::{Deserialize, Serialize};
 use std::{
     cell::OnceCell,
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry},
     io,
 };
 #[cfg(any(test, feature = "export-types"))]
@@ -280,12 +281,14 @@ struct Admission<'f> {
     content: &'f Content,
     links: &'f [CountryLinkRow],
     world: OnceCell<Result<dashboard_text::triggers::World<'f>, String>>,
-    decided: Eligibility,
+    decided: Judgements,
     read: WorldReads,
 }
 
 impl<'f> Admission<'f> {
-    fn new(frame: &'f DecodedFrame, content: &'f Content, links: &'f [CountryLinkRow], decided: Eligibility) -> Self {
+    fn new(frame: &'f DecodedFrame, content: &'f Content, links: &'f [CountryLinkRow]) -> Self {
+        let judged = content.judged.lock().unwrap_or_else(|error| error.into_inner());
+        let decided = if judged.at == Some((frame.branch, frame.hour)) { judged.decisions.clone() } else { Judgements::default() };
         Self { frame, content, links, world: OnceCell::new(), decided, read: WorldReads::default() }
     }
 
@@ -302,31 +305,75 @@ impl<'f> Admission<'f> {
         }
         let Self { frame, content, world, decided, read, .. } = self;
         let (frame, content) = (*frame, *content);
-        decided
-            .entry((token.to_owned(), controller, occupied))
-            .or_insert_with(|| {
-                let world = world
-                    .get_or_init(|| {
-                        dashboard_text::triggers::inputs::unrecorded(|| {
-                            let cat = content.catalogue().map_err(|_| "Occupation law eligibility needs recorded content".to_owned())?;
-                            cat.scripted_content()?.recorded_world_in(HourFrame::from(frame))
-                        })
-                    })
-                    .as_ref()
-                    .map_err(Clone::clone)?;
-                let (made, inputs) = dashboard_text::triggers::inputs::capture_in(HourFrame::from(frame), || law::admitted(world, definition, controller, occupied));
-                read.note(inputs.footprint());
-                made
+        let slot = match decided.entry((token.to_owned(), controller, occupied)) {
+            Entry::Occupied(held) => return held.get().0.clone(),
+            Entry::Vacant(slot) => slot,
+        };
+        let world = world
+            .get_or_init(|| {
+                dashboard_text::triggers::inputs::unrecorded(|| {
+                    let cat = content.catalogue().map_err(|_| "Occupation law eligibility needs recorded content".to_owned())?;
+                    cat.scripted_content()?.recorded_world_in(HourFrame::from(frame))
+                })
             })
-            .clone()
+            .as_ref()
+            .map_err(Clone::clone)?;
+        let (made, inputs) = dashboard_text::triggers::inputs::capture_in(HourFrame::from(frame), || law::admitted(world, definition, controller, occupied));
+        read.note(inputs.footprint());
+        slot.insert((made.clone(), inputs));
+        made
     }
 }
 
-fn eligibility(frame: &DecodedFrame, content: &Content) -> (Eligibility, WorldReads) {
-    (|| -> io::Result<(Eligibility, WorldReads)> {
+struct EditChanges {
+    rows: BTreeMap<TableId, Vec<DeltaRow>>,
+    replaced: BTreeSet<TableId>,
+}
+
+impl EditChanges {
+    fn new(edits: &Edits) -> Self {
+        let rows = edits.tables.iter().map(|(&table, keys)| {
+            let fields = table.schema().len();
+            (table, keys.iter().map(|(&key, &mask)| DeltaRow { format: 0, key, mask: if mask == u64::MAX { full_mask(fields) } else { mask }, recorded_fields: fields, values: Vec::new() }).collect())
+        }).collect();
+        Self { rows, replaced: edits.replaced.clone() }
+    }
+}
+
+impl TableChanges for EditChanges {
+    fn table(&self, table: TableId) -> TableChange<'_> {
+        if self.replaced.contains(&table) { return TableChange::Any; }
+        self.rows.get(&table).map_or(TableChange::Same, |rows| TableChange::Rows(rows, &[]))
+    }
+}
+
+pub(super) fn judged_through(content: &Content, held: &DecodedFrame, since: Option<i32>, edits: &Edits) -> bool {
+    let mut judged = content.judged.lock().unwrap_or_else(|error| error.into_inner());
+    if judged.at == Some((held.branch, held.hour)) { return true; }
+    let Some(from) = since.filter(|&from| judged.at == Some((held.branch, from))) else { return false };
+    let changes = EditChanges::new(edits);
+    let since = Since::span_in(held.branch, from, held.hour, Some(HourFrame::from(held)), &changes);
+    if !judged.decisions.values_mut().all(|(_, inputs)| inputs.advance(&since)) {
+        judged.at = None;
+        return false;
+    }
+    judged.at = Some((held.branch, held.hour));
+    judged.carried = true;
+    true
+}
+
+pub(super) fn law_stands(content: &Content, held: &DecodedFrame, edits: &Edits) -> bool {
+    let clocked = { let world = content.world.lock().unwrap_or_else(|error| error.into_inner()); world.ends || world.undeclared };
+    if !clocked && !world_moved(edits) { return true; }
+    let judged = content.judged.lock().unwrap_or_else(|error| error.into_inner());
+    judged.carried && judged.at == Some((held.branch, held.hour))
+}
+
+fn eligibility(frame: &DecodedFrame, content: &Content) -> (Judgements, WorldReads) {
+    (|| -> io::Result<(Judgements, WorldReads)> {
         let links = frame.complete::<tables::CountryLinks>()?;
         let joins = Joins::read(frame, links, &mut Refusals::default())?;
-        let mut admission = Admission::new(frame, content, links, Eligibility::default());
+        let mut admission = Admission::new(frame, content, links);
         for (_, state, key) in occupied_states(recorded_rows::<tables::StateResistance>(frame)?, recorded_rows::<tables::States>(frame)?, links) {
             let Some(state) = state else { continue };
             let (inputs, scope) = joins.law_inputs(slot(links, state.controller), key);
@@ -351,9 +398,13 @@ fn world_missing(params: &OccupiedStatesParams, held: &DecodedFrame, content: &C
     let before = world.clone();
     world.add(&read);
     if missing.is_empty() && *world == before {
-        *content.eligible.lock().unwrap_or_else(|error| error.into_inner()) = Some(((held.branch, held.hour), decided));
+        *content.judged.lock().unwrap_or_else(|error| error.into_inner()) = Judged { at: Some((held.branch, held.hour)), decisions: decided, carried: false };
     }
     missing
+}
+
+fn judge_none(held: &DecodedFrame, content: &Content) {
+    *content.judged.lock().unwrap_or_else(|error| error.into_inner()) = Judged { at: Some((held.branch, held.hour)), decisions: Judgements::default(), carried: false };
 }
 
 fn world_planned(plan: &[(Vec<Read>, i32)]) -> bool {
@@ -500,8 +551,7 @@ pub(super) fn reply(frame: &DecodedFrame, content: &Content, live: &Cells) -> io
     let garrison_fields: Vec<usize> = GARRISON.iter().map(|(_, field)| dashboard_declare::field(TableId::StateGarrisons, field)).collect::<io::Result<_>>()?;
     let amount = dashboard_declare::field(TableId::StateAssignedManpower, "amount")?;
     let strength_field = dashboard_declare::field(TableId::GarrisonStrengths, "strength")?;
-    let decided = content.eligible.lock().unwrap_or_else(|error| error.into_inner()).as_ref().filter(|(at, _)| *at == (frame.branch, frame.hour)).map(|(_, decided)| decided.clone());
-    let mut admission = Admission::new(frame, content, links, decided.unwrap_or_default());
+    let mut admission = Admission::new(frame, content, links);
     let mut complete = frame.complete::<tables::StateResistance>().is_ok();
     let mut tokens = BTreeSet::new();
     let mut rows = BTreeMap::new();
@@ -569,6 +619,83 @@ pub(super) fn reply(frame: &DecodedFrame, content: &Content, live: &Cells) -> io
     Ok(reply)
 }
 
+const MOVING: [(TableId, &[&str]); 3] = [
+    (TableId::StateGarrisons, &["garrison_required", "equipment"]),
+    (TableId::StateAssignedManpower, &["amount"]),
+    (TableId::GarrisonStrengths, &["strength"]),
+];
+
+fn own(table: &TableId) -> bool {
+    TABLES.contains(table)
+}
+
+fn moving_only(edits: &Edits) -> bool {
+    !edits.replaced.iter().any(own) && edits.tables.iter().filter(|(table, _)| own(table)).all(|(table, rows)| {
+        MOVING.iter().find(|(moving, _)| moving == table).is_some_and(|&(table, fields)| {
+            let mask = field_mask(table, fields);
+            rows.values().all(|changed| changed & !mask == 0)
+        })
+    })
+}
+
+fn world_moved(edits: &Edits) -> bool {
+    edits.replaced.iter().chain(edits.tables.keys()).any(|table| !own(table))
+}
+
+fn find<R>(rows: &[R], key: u128, key_of: impl Fn(&R) -> u128) -> Option<&R> {
+    rows.binary_search_by_key(&key, &key_of).ok().map(|at| &rows[at]).or_else(|| rows.iter().find(|row| key_of(row) == key))
+}
+
+fn same_tokens(before: &Recorded<GarrisonEquipmentInputs>, after: &Recorded<GarrisonEquipmentInputs>) -> bool {
+    match (before, after) {
+        (Recorded::NotRecorded, Recorded::NotRecorded) => true,
+        (Recorded::Value(before), Recorded::Value(after)) => before.failure == after.failure && before.rows.len() == after.rows.len()
+            && before.rows.iter().zip(&after.rows).all(|(a, b)| (a.equipment_token, a.archetype_token) == (b.equipment_token, b.archetype_token)),
+        _ => false,
+    }
+}
+
+pub(super) fn structure_holds(frame: &DecodedFrame, edits: &Edits) -> bool {
+    if !moving_only(edits) { return false; }
+    let before = |table: TableId| match edits.previous.get(&table).map(|view| view.held()) {
+        Some(replay_frame::frame::TableView::Complete(rows)) => Some(rows),
+        _ => None,
+    };
+    if let Some(changed) = edits.tables.get(&TableId::StateGarrisons) {
+        let (Some(old), Ok(new)) = (before(TableId::StateGarrisons).and_then(|rows| rows.rows::<tables::StateGarrisons>()), frame.complete::<tables::StateGarrisons>()) else { return false };
+        let key_of = |row: &StateGarrisonRow| u128::from(row.controller) << 32 | u128::from(row.state);
+        for &key in changed.keys() {
+            let (Some(a), Some(b)) = (find(old, key, key_of), find(new, key, key_of)) else { return false };
+            if a.garrison_required.signum() != b.garrison_required.signum() || !same_tokens(&a.equipment, &b.equipment) { return false; }
+        }
+    }
+    if let Some(changed) = edits.tables.get(&TableId::GarrisonStrengths) {
+        let (Some(old), Ok(new)) = (before(TableId::GarrisonStrengths).and_then(|rows| rows.rows::<tables::GarrisonStrengths>()), frame.complete::<tables::GarrisonStrengths>()) else { return false };
+        let key_of = |row: &GarrisonStrengthRow| GarrisonStrengthRow::key_of(row.controller, row.state);
+        for &key in changed.keys() {
+            let (Some(a), Some(b)) = (find(old, key, key_of), find(new, key, key_of)) else { return false };
+            if (a.strength == Recorded::NotRecorded) != (b.strength == Recorded::NotRecorded) { return false; }
+        }
+    }
+    if let Some(changed) = edits.tables.get(&TableId::StateAssignedManpower) {
+        let (Some(old), Ok(new), Ok(links)) = (before(TableId::StateAssignedManpower).and_then(|rows| rows.rows::<tables::StateAssignedManpower>()),
+            frame.complete::<tables::StateAssignedManpower>(), frame.complete::<tables::CountryLinks>()) else { return false };
+        let touched: BTreeSet<u32> = changed.keys().map(|&key| (key >> 32) as u32).collect();
+        let shown = |rows: &[StateAssignedManpowerRow]| {
+            let mut totals = BTreeMap::<Key, i32>::new();
+            for row in rows.iter().filter(|row| touched.contains(&row.state)) {
+                if let (Some(controller), Some(occupied)) = (slot(links, row.controller), slot(links, row.occupied)) {
+                    let total = totals.entry((controller, occupied, row.state)).or_default();
+                    *total = total.wrapping_add(row.amount);
+                }
+            }
+            totals.into_iter().map(|(key, total)| (key, total != 0)).collect::<Vec<_>>()
+        };
+        if shown(old) != shown(new) { return false; }
+    }
+    true
+}
+
 impl AtHour for OccupiedStates {
     const KEY: &'static str = "occupied-states";
     const TITLE: &'static str = "Occupied states";
@@ -596,7 +723,11 @@ impl AtHour for OccupiedStates {
 
     fn reads_in(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
         if step == 0 { return TABLES.into_iter().filter(|&table| table != TableId::LexicalTokens).map(Read::all).collect(); }
-        if step > 1 { return if needs_world(held) { world_missing(params, held, at.context).into_iter().map(Read::all).collect() } else { Vec::new() }; }
+        if step > 1 {
+            if needs_world(held) { return world_missing(params, held, at.context).into_iter().map(Read::all).collect(); }
+            judge_none(held, at.context);
+            return Vec::new();
+        }
         let learned = at.context.world.lock().unwrap_or_else(|error| error.into_inner()).clone();
         let lexicon = if learned.undeclared || learned.fields.contains_key(&TableId::LexicalTokens) { Read::all(TableId::LexicalTokens) }
             else { Read { table: TableId::LexicalTokens, keys: Keys::These(equipment_tokens(held)) } };
@@ -626,6 +757,22 @@ impl AtHour for OccupiedStates {
             fields |= world.fields.get(&table).copied().unwrap_or(0);
         }
         Some((0..table.field_count()).filter(|&field| fields >> field & 1 != 0).collect())
+    }
+
+    fn compares_previous(table: TableId) -> bool {
+        MOVING.iter().any(|(moving, _)| *moving == table)
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> bool {
+        match stage {
+            0 => false,
+            1 => !edits.tables.is_empty() || !edits.replaced.is_empty(),
+            _ => !(moving_only(edits) && judged_through(at.context, held, at.since, edits)),
+        }
+    }
+
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+        Ok(data["missing"].is_null() && structure_holds(frame, edits) && law_stands(at.context, frame, edits))
     }
 
     fn clock_dependent(plan: &[(Vec<Read>, i32)], content: &Self::Context) -> bool {

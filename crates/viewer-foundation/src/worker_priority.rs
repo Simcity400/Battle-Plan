@@ -8,6 +8,7 @@ use std::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Class {
+    Playback,
     Frame,
     Worker,
     Refining,
@@ -18,6 +19,7 @@ pub enum Class {
 impl Class {
     pub fn name(self) -> &'static str {
         match self {
+            Self::Playback => "playback",
             Self::Frame => "frame",
             Self::Worker => "worker",
             Self::Refining => "refining",
@@ -31,7 +33,9 @@ impl Class {
         const BELOW_NORMAL: i32 = -1;
         const NORMAL: i32 = 0;
         const ABOVE_NORMAL: i32 = 1;
+        const TIME_CRITICAL: i32 = 15;
         match self {
+            Self::Playback => TIME_CRITICAL,
             Self::Frame => ABOVE_NORMAL,
             Self::Kept | Self::Normal => NORMAL,
             Self::Worker => BELOW_NORMAL,

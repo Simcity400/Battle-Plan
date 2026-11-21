@@ -495,7 +495,7 @@ impl AtHour for SpecialProjectDetailsAt {
         (table == TableId::Projects).then(|| dashboard_base::products::at_hour::field_columns(table, &["definition_id", "runtime"]))
     }
 
-    fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits) -> bool {
+    fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits, _held: &DecodedFrame, _at: &dashboard_base::products::at_hour::ReadsAt<'_, Self::Context>) -> bool {
         match stage {
             1 => [TableId::CountryLinks, TableId::Scientists, TableId::ProjectPrograms].iter().any(|&t| edits.fields(t, u64::MAX)),
             2 => DETAIL_TABLES.iter().any(|&t| t != TableId::SliceReads && t != TableId::LexicalTokens && edits.fields(t, u64::MAX)),
@@ -503,7 +503,7 @@ impl AtHour for SpecialProjectDetailsAt {
         }
     }
 
-    fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
+    fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
         if !edits.only_columns(TableId::SliceReads, dashboard_base::products::at_hour::field_mask(TableId::SliceReads, &["sample_hour"])) || at.context.scoped_details.load(std::sync::atomic::Ordering::Relaxed) { return Ok(false); }
         let Some(holder) = at.owner else { return Ok(false) };
         let q = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;

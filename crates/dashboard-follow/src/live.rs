@@ -136,26 +136,6 @@ impl Live {
         json!({ "groups": groups, "rows": self.rows, "kinds": kinds, "cells": self.cells })
     }
 
-    pub fn patch(&self, frame: &DecodedFrame, changed: &BTreeMap<TableId, BTreeMap<u128, u64>>, data: &mut Value) {
-        for (i, group) in self.groups.iter().enumerate() {
-            let Some(keys) = changed.get(&group.table) else { continue };
-            let Ok(rows) = rows_of(group.table, frame.tables[group.table.index()].held()) else { continue };
-            let values = &mut data["live"]["groups"][i]["values"];
-            for (&key, &mask) in keys {
-                let Ok(place) = group.keys.binary_search(&key) else { continue };
-                let Some(row) = find(rows, key) else { continue };
-                let _ = row.visit_wire(&mut |col, raw| {
-                    if mask & (1u64 << col) != 0 && let Ok(c) = group.columns.binary_search(&col) {
-                        values[place * group.columns.len() + c] = match cell(group.table, col, raw) {
-                            CellValue::Number(n) => json!(n),
-                            CellValue::Missing(m) => json!(m),
-                        };
-                    }
-                    Ok(())
-                });
-            }
-        }
-    }
 
     pub fn values(&self, frame: &DecodedFrame) -> Vec<Vec<CellValue>> {
         self.groups.iter().map(|group| group_values(group, &frame.tables[group.table.index()])).collect()

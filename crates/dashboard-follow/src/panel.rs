@@ -12,16 +12,27 @@ pub type ExactReader = Arc<dyn Fn(Hour, &std::sync::atomic::AtomicBool) -> Panel
 pub mod product;
 pub use playhead::Declared;
 
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
+
 #[derive(Clone, Copy)]
 pub struct ProductStep<'a> {
     pub step: &'a playhead::Step,
     pub lanes: &'a playhead::Lanes<'a>,
+    pub held: Option<&'a [bool]>,
+    pub wake: Option<&'a Wake>,
+}
+
+impl ProductStep<'_> {
+    pub fn lanes_table(&self, table: usize) -> bool {
+        self.held.is_none_or(|held| held.get(table).copied().unwrap_or(false))
+    }
 }
 
 pub struct ProductRead {
     pub value: Arc<PanelData>,
     pub rows: u64,
-    pub encoded: Option<Arc<[u8]>>,
+    pub fresh: bool,
+    pub pending: bool,
     pub live: Option<Arc<Live>>,
     pub lanes: Vec<Declared>,
 }

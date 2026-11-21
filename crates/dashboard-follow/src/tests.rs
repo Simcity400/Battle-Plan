@@ -1367,6 +1367,19 @@ fn dated_panel_merge_keeps_the_reading_and_its_confirmation_separate() {
 }
 
 #[test]
+fn a_message_with_a_product_waiting_for_its_table_is_never_merged() {
+    use crate::panel::dated;
+    let step = |hour, records: &[(u32, u8)]| {
+        let mut batch = dated::ProductBatch::new((0, 3, 9));
+        for &(id, kind) in records { batch.changed(id, hour, kind, if kind == dated::DATA { b"x" } else { b"" }); }
+        batch.finish(Some(hour))
+    };
+    assert!(dated::merge(&step(10, &[(7, dated::DATA)]), &step(34, &[(7, dated::WAITING)])).is_err());
+    assert!(dated::merge(&step(34, &[(7, dated::WAITING)]), &step(58, &[(8, dated::DATA)])).is_err());
+    assert!(dated::merge(&step(10, &[(7, dated::DATA)]), &step(34, &[(8, dated::STANDS)])).is_ok());
+}
+
+#[test]
 fn completed_product_step_has_constant_size_when_every_product_stands() {
     use crate::panel::dated;
     let mut batch = dated::ProductBatch::new((0, 3, 9));

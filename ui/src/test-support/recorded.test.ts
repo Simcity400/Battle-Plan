@@ -20,7 +20,7 @@ test('replies recorded with another recording format are refused, naming the tab
   assert.match(refused, /added 515 SupplyHealth; removed 514 GarrisonStrengths; changed 2 Countries/);
   assert.match(refused, /record the replies again/);
   const previous = { ...header(TABLES, 'a'), version: 2 };
-  assert.match(recordedRefusal('old.json', previous, tree(TABLES, 'a')) ?? '', /not recorded replies of version 3/);
+  assert.match(recordedRefusal('old.json', previous, tree(TABLES, 'a')) ?? '', /not recorded replies of version 4/);
 });
 
 test('a recorded message is played under the ids this page follows the same queries by: others left out, live cells kept', () => {

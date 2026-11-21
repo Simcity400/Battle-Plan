@@ -12,7 +12,7 @@ mod reply {
         fn none<T>() -> Result<T, String> {
             Err("no content in this test".to_owned())
         }
-        Content { catalogue: none(), laws: none(), equipment: none::<std::sync::Arc<content_reader_core::equipment::Database>>().into(), red: None, warnings: Vec::new(), names: Mutex::default(), world: Mutex::default(), eligible: Mutex::default() }
+        Content { catalogue: none(), laws: none(), equipment: none::<std::sync::Arc<content_reader_core::equipment::Database>>().into(), red: None, warnings: Vec::new(), names: Mutex::default(), world: Mutex::default(), judged: Mutex::default() }
     }
 
     fn resistance(state: u32, country: u32, active: u8, level: i64) -> StateResistanceRow {
@@ -154,6 +154,117 @@ mod reply {
         for row in rows { (row.political_power_raw, row.stability_raw) = (Some(9), 10); }
         let reply = |frame: &DecodedFrame| serde_json::to_value(states::reply(frame, &content(), &Cells::default()).unwrap()).unwrap();
         assert_eq!(reply(&moved), reply(&frame()));
+    }
+
+    #[test]
+    fn moving_garrison_numbers_keep_the_structure_only_while_what_it_shows_of_them_holds() {
+        use crate::products::at_hour::Edits;
+        use replay_data::rows::GarrisonEquipment;
+        fn held(frame: &mut DecodedFrame, table: TableId) -> &mut TableRows {
+            match &mut *frame.tables[table.index()] { TableView::Complete(rows) => rows, _ => unreachable!() }
+        }
+        let garrison = 1u128 << 32 | 10;
+        let assigned = [1u128 << 64 | 10 << 32, 1u128 << 64 | 10 << 32 | 1];
+        let edits = |before: &DecodedFrame, tables: &[(TableId, &[u128], &[&str])]| {
+            let mut edits = Edits::default();
+            for &(table, keys, fields) in tables {
+                edits.previous.insert(table, before.tables[table.index()].clone());
+                let mask = crate::products::at_hour::field_mask(table, fields);
+                edits.tables.insert(table, keys.iter().map(|&key| (key, mask)).collect());
+            }
+            edits
+        };
+        let moved = |change: &dyn Fn(&mut DecodedFrame)| {
+            let mut frame = frame();
+            change(&mut frame);
+            frame
+        };
+        let all: [(TableId, &[u128], &[&str]); 3] = [
+            (TableId::StateGarrisons, &[garrison], &["garrison_required", "equipment"]),
+            (TableId::StateAssignedManpower, &assigned, &["amount"]),
+            (TableId::GarrisonStrengths, &[garrison], &["strength"]),
+        ];
+        let reply = |frame: &DecodedFrame| serde_json::to_value(states::reply(frame, &content(), &Cells::default()).unwrap()).unwrap();
+        let token = |equipment_token| GarrisonEquipment { equipment_token, archetype_token: 2, allocated_raw: 5, ..Default::default() };
+
+        let numbers = moved(&|frame| {
+            let TableRows::StateGarrisons(rows) = held(frame, TableId::StateGarrisons) else { unreachable!() };
+            rows[0].garrison_required = 1;
+            let TableRows::StateAssignedManpower(rows) = held(frame, TableId::StateAssignedManpower) else { unreachable!() };
+            (rows[0].amount, rows[1].amount) = (7, -5);
+            let TableRows::GarrisonStrengths(rows) = held(frame, TableId::GarrisonStrengths) else { unreachable!() };
+            rows[0].strength = Recorded::Value(1);
+        });
+        assert!(states::structure_holds(&numbers, &edits(&frame(), &all)), "every number moved, none crossed what the row shows");
+        assert_eq!(reply(&numbers), reply(&frame()), "and a full read agrees");
+        assert!(!states::structure_holds(&numbers, &edits(&frame(), &[(TableId::StateGarrisons, &[garrison], &["garrison_required", "serialized_flag"])])), "a column the structure reads");
+
+        let with_equipment = |tokens: &[u32]| moved(&|frame| {
+            let TableRows::StateGarrisons(rows) = held(frame, TableId::StateGarrisons) else { unreachable!() };
+            rows[0].equipment = Recorded::Value(GarrisonEquipmentInputs { rows: tokens.iter().map(|&t| token(t)).collect(), failure: None });
+        });
+        let equipment = &all[..1];
+        let mut counted = with_equipment(&[3, 4]);
+        let TableRows::StateGarrisons(rows) = held(&mut counted, TableId::StateGarrisons) else { unreachable!() };
+        rows[0].equipment = Recorded::Value(GarrisonEquipmentInputs { rows: vec![GarrisonEquipment { allocated_raw: 9, ..token(3) }, token(4)], failure: None });
+        assert!(states::structure_holds(&counted, &edits(&with_equipment(&[3, 4]), equipment)), "equipment counts moved, its tokens held");
+        assert!(!states::structure_holds(&with_equipment(&[3, 5]), &edits(&with_equipment(&[3, 4]), equipment)), "a new equipment token needs its definition");
+
+        for (why, after, tables) in [
+            ("the garrison requirement crossed zero", moved(&|frame| {
+                let TableRows::StateGarrisons(rows) = held(frame, TableId::StateGarrisons) else { unreachable!() };
+                rows[0].garrison_required = -1;
+            }), &all[..1]),
+            ("the assigned total reached zero", moved(&|frame| {
+                let TableRows::StateAssignedManpower(rows) = held(frame, TableId::StateAssignedManpower) else { unreachable!() };
+                (rows[0].amount, rows[1].amount) = (5, -5);
+            }), &all[1..2]),
+            ("the strength stopped being recorded", moved(&|frame| {
+                let TableRows::GarrisonStrengths(rows) = held(frame, TableId::GarrisonStrengths) else { unreachable!() };
+                rows[0].strength = Recorded::NotRecorded;
+            }), &all[2..]),
+        ] {
+            assert!(!states::structure_holds(&after, &edits(&frame(), tables)), "{why}");
+        }
+        let mut inserted = edits(&frame(), &all[..1]);
+        inserted.tables.get_mut(&TableId::StateGarrisons).unwrap().insert(garrison, u64::MAX);
+        assert!(!states::structure_holds(&frame(), &inserted), "a row came or went");
+        let mut replaced = edits(&frame(), &all[..1]);
+        replaced.replaced.insert(TableId::StateGarrisons);
+        assert!(!states::structure_holds(&frame(), &replaced), "a table read again whole");
+    }
+
+    #[test]
+    fn judged_laws_hold_through_world_edits_only_where_their_triggers_read_nothing_that_moved() {
+        use crate::products::at_hour::{Edits, field_mask};
+        use dashboard_text::triggers::inputs;
+        let at = |hour| { let mut frame = frame(); frame.hour = hour; frame };
+        let start = at(500);
+        let (_, read) = inputs::capture(&start, || inputs::fields(&start, TableId::ScriptFlags, &["value"]));
+        let content = content();
+        *content.judged.lock().unwrap() = super::super::Judged { at: Some((start.branch, 500)), decisions: [(("law".to_owned(), 1, 2), (Ok(true), read))].into(), carried: false };
+        let edit = |table, fields: &[&str]| {
+            let mut edits = Edits::default();
+            edits.tables.insert(table, [(7u128, if fields.is_empty() { u64::MAX } else { field_mask(table, fields) })].into());
+            edits
+        };
+        let judged = || content.judged.lock().unwrap().at.map(|(_, hour)| hour);
+
+        assert!(!states::law_stands(&content, &at(500), &edit(TableId::ScriptVariables, &["seed"])), "laws judged afresh at the hour may differ from those the reply shows");
+        assert!(states::law_stands(&content, &at(500), &edit(TableId::StateGarrisons, &["garrison_required"])), "an edit to the states alone leaves the laws as they were");
+        assert!(states::judged_through(&content, &at(524), Some(500), &edit(TableId::ScriptVariables, &["seed"])), "a table no trigger read");
+        assert_eq!(judged(), Some(524), "and the laws now stand at the new hour");
+        assert!(states::law_stands(&content, &at(524), &edit(TableId::ScriptVariables, &["seed"])), "carried through the edit, the shown laws stand");
+        content.world.lock().unwrap().ends = true;
+        assert!(states::law_stands(&content, &at(524), &Edits::default()), "a relation that ends, the laws carried through the hours");
+        assert!(!states::law_stands(&content, &at(548), &Edits::default()), "a relation that ends, the laws not carried to this hour");
+        content.world.lock().unwrap().ends = false;
+        assert!(states::judged_through(&content, &at(524), Some(500), &Edits::default()), "asked again within the hour");
+        assert!(!states::judged_through(&content, &at(572), Some(548), &Edits::default()), "an hour the laws were not judged through");
+        assert_eq!(judged(), Some(524));
+        assert!(!states::judged_through(&content, &at(548), Some(524), &edit(TableId::ScriptFlags, &[])), "a flag came or went");
+        assert_eq!(judged(), None, "and nothing stands until they are judged again");
+        assert!(!states::judged_through(&content, &at(548), None, &Edits::default()), "a read that starts the stream");
     }
 
     #[test]

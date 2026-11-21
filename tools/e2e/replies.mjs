@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createGzip } from 'node:zlib';
 
 export const KIND = 'battle-plan recorded replies';
-export const VERSION = 3;
+export const VERSION = 4;
 export const FORMAT_FILE = 'crates/replay-data/src/rows/registry.golden';
 const TAKE_BUDGET = 1 << 20;
 

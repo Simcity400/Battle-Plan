@@ -55,6 +55,7 @@ pub enum Thread {
     Stepper,
     Step,
     Fetch,
+    Seeking,
 }
 
 impl Default for Settings {
@@ -1676,15 +1677,23 @@ impl Stepper {
 
     fn help_seek(&mut self) -> io::Result<bool> {
         let mut moved = false;
+        let entering = self.shared.settings.entering;
         while self.seek.as_ref().is_some_and(|seek| !seek.pending.is_empty()) {
             if lock(&self.shared.control).seek.is_some() {
                 break;
             }
             let Some(job) = self.shared.pop_urgent() else { break };
-            if let Some(done) = self.shared.run(job) {
-                self.receive(done)?;
+            if !moved && let Some(entering) = entering {
+                entering(Thread::Seeking);
             }
             moved = true;
+            let done = self.shared.run(job);
+            if let Some(done) = done {
+                self.receive(done)?;
+            }
+        }
+        if moved && let Some(entering) = entering {
+            entering(Thread::Stepper);
         }
         Ok(moved)
     }
@@ -1974,7 +1983,7 @@ impl Stepper {
             Region::Piece(piece) => Some(piece),
             Region::Gap { .. } => None,
         };
-        let step = Step { epoch: self.epoch, first: newest + 1, last: newest, piece, ..Step::default() };
+        let step = Step { epoch: self.epoch, first: newest + 1, last: newest, piece, restep: self.restep, ..Step::default() };
         hook(&step, &Lanes { slots: &self.slots });
     }
 

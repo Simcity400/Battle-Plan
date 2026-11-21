@@ -1,5 +1,6 @@
 import { MAX_PLAYBACK_AGE_HOURS, playbackPace } from './verdicts.mjs';
 
+const shownFrom = r => Math.max(r.at, r.shownAt ?? r.at);
 const p95 = values => values.length ? values.toSorted((a, b) => a - b)[Math.ceil(values.length * .95) - 1] : null;
 const drawCost = (reports, id) => {
   const ms = reports.filter(r => r.placement === id && !r.detached && Number.isFinite(r.drawMs)).map(r => r.drawMs);
@@ -205,7 +206,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     for (const widget of w.widgets ?? []) {
       if (!widget.visible) continue;
       if (widget.notMigrated) { placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, status: 'not migrated', pass: null }); continue; }
-      const reports = picturesByWidget.get(widget.id) ?? [];
+      const reports = (picturesByWidget.get(widget.id) ?? []).toSorted((a, b) => shownFrom(a) - shownFrom(b));
       const declared = [...new Set((widget.surfaces ?? []).filter(surface => surface != null))];
       const visible = new Set(declared), required = new Set(visible);
       const visibility = visibilityByWidget.get(widget.id) ?? [];
@@ -235,7 +236,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
       let change = 0, placementChange = 0, report = 0, tick = 0, future = 0, missing = 0, late = 0, lateWithoutCrossing = 0, structureCrossings = 0;
       for (const r of reports) if (Number.isFinite(r.hour) && r.hour > Math.floor(r.fixedHour ?? r.head)) future++;
       for (const at of frames) {
-        while (report < reports.length && reports[report].at <= at) { const r = reports[report++]; if (r.detached) held.delete(r.placement); else held.set(r.placement, r); }
+        while (report < reports.length && shownFrom(reports[report]) <= at) { const r = reports[report++]; if (r.detached) held.delete(r.placement); else held.set(r.placement, r); }
         while (change < changes.length && changes[change].at <= at) { const e = changes[change++]; if (e.visible) { visible.add(e.surface); required.add(e.surface); } else visible.delete(e.surface); }
         while (placementChange < placementChanges.length && placementChanges[placementChange].at <= at) {
           const e = placementChanges[placementChange++]; if (e.visible) visiblePlacements.add(e.placement); else visiblePlacements.delete(e.placement);
