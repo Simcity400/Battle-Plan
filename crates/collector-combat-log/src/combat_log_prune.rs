@@ -24,8 +24,10 @@ struct Log {
 // - A writer reserves `first..first + len` with one `CURSOR.fetch_add`, so
 //   two writers' ranges never overlap. It writes only the part of its range
 //   within the log, and marks every element of that part.
-// - Each writer runs inside a [`Call`], which increments `ACTIVE` before the
-//   reservation and decrements it (`SeqCst`) after its last write.
+// - Each native writer runs inside a [`Call`], which increments `ACTIVE` before
+//   the reservation and decrements it (`SeqCst`) after its last write. Test
+//   helpers (`append_for_test`, `install_for_test`) skip `Call` and `HANDOFF`;
+//   they rely on `test_lock` serializing them, writing before any drain.
 // - The drain runs inside the capture boundary, which keeps new prune
 //   writers out for the whole drain: the game thread is held, or a prune,
 //   which runs in the game's command batch, waits at the capture gate. It

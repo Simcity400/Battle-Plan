@@ -92,8 +92,9 @@ impl DirtySet {
 
     #[inline]
     fn installed(&self) -> Option<&Bits> {
-        // SAFETY: a bitmap is freed only after a boundary replaced it and saw
-        // no writer running; consumers run only after the boundary.
+        // SAFETY: during capture a bitmap is freed only after a boundary replaced it and saw no
+        // writer running, and consumers run only after the boundary; teardown (`release`) frees
+        // the installed bitmap once callbacks and acquisition readers have quiesced.
         unsafe { self.bits.load(SeqCst).as_ref() }
     }
 

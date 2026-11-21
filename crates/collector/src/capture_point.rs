@@ -260,7 +260,9 @@ fn held(full: bool) -> Held {
     }
     let _images = crate::portrait_changes::PreImagesCapture::begin();
     let world = world();
-    // SAFETY: the game thread, between its writes, with no other capture or batch running.
+    // SAFETY: the game thread, held at the hourly update's return, with no other capture and no
+    // other observed command batch running. On the unverified fallback a batch that entered before
+    // the hook was published is not counted; that mode accepts the gap.
     if !unsafe { read(Placement::Held, full) } {
         return Held::Refused;
     }

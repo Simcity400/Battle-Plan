@@ -217,9 +217,11 @@ impl WatchRegistry {
 
     #[inline]
     fn table(&self) -> Option<&Table> {
-        // SAFETY: only a retired table is freed (`collect`). A boundary swap parks the old table in
-        // `draining`, since a notification that entered after the quiet check may still hold its
-        // mark; `retire_drained` retires it only once a later quiet check sees none running.
+        // SAFETY: during capture only a retired table is freed (`collect`); teardown (`release`)
+        // frees the installed table once callbacks and acquisition readers have quiesced. A
+        // boundary swap parks the old table in `draining`, since a notification that entered
+        // after the quiet check may still hold its mark; `retire_drained` retires it only once a
+        // later quiet check sees none running.
         // Worker growth retires the old table at once, which its exclusive lease allows because
         // no notifier runs during the call. A `Notification` keeps its mark until it drops and
         // counts as running until then, so neither path reclaims a table under a live guard.
