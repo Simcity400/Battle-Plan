@@ -386,6 +386,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 due.clear();
                 due.extend(products.keys().map(|&id| (step.last(), id)));
                 *resend = Some(step.last());
+                batch.after_reset();
             } else if panels.resend.is_some_and(|reset| step.last() > reset) {
                 panels.resend = None;
                 let Panels { due, products, .. } = &mut *panels;

@@ -11,6 +11,7 @@ pub const DATA: u8 = 1;
 pub const STANDS: u8 = 3;
 pub const COMPLETED: u8 = 4;
 pub const WAITING: u8 = 5;
+const AFTER_RESET: u8 = 1;
 
 pub struct ProductBatch {
     bytes: Vec<u8>,
@@ -20,6 +21,10 @@ pub struct ProductBatch {
 impl ProductBatch {
     pub fn new((clock, route, seek): (i32, u32, u32)) -> Self {
         Self { bytes: head(0, clock, (route, seek)), count: 0 }
+    }
+
+    pub fn after_reset(&mut self) {
+        self.bytes[6] |= AFTER_RESET;
     }
 
     pub fn changed(&mut self, id: u32, hour: Hour, kind: u8, body: &[u8]) {
@@ -165,11 +170,13 @@ pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
     let newer_bytes = newer;
     let stamp = stamp(older).filter(|s| Some(*s) == self::stamp(newer) && clock(older) == clock(newer))
         .ok_or_else(|| crate::invalid("Panel messages belong to different routes or seeks"))?;
-    let (older, newer) = (records(older)?, records(newer)?);
-    let latest = |records: &[Record<'_>]| records.iter().map(|r| r.hour).max();
-    if let (Some(before), Some(after)) = (latest(&older), latest(&newer)) && after < before {
-        return Err(crate::invalid("A panel message after a reset is not merged into one before it"));
+    let flags = older[6] | newer[6];
+    if newer[6] & AFTER_RESET != 0 {
+        let superseded = records(older)?.len() as u32;
+        records(newer)?;
+        return Ok((newer.to_vec(), superseded));
     }
+    let (older, newer) = (records(older)?, records(newer)?);
     let mut products: BTreeMap<u32, Kept<'_>> = BTreeMap::new();
     let mut completed = None;
     let mut count = 0;
@@ -179,7 +186,7 @@ pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
         let kept = products.entry(r.id).or_default();
         match r.kind {
             DATA | REFUSED => {
-                if kept.reading.is_some() { kept.before = kept.before.take().or(kept.after.take()); }
+                kept.before = kept.before.take().or(kept.after.take());
                 kept.reading = Some(r);
                 kept.stands = None;
                 kept.after = None;
@@ -194,7 +201,8 @@ pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
         }
     }
     let records: Vec<Record<'_>> = products.into_values().flat_map(Kept::into_records).chain(completed).collect();
-    let mut out = head(records.len(), clock(&newer_bytes), stamp);
+    let mut out = head(records.len(), clock(newer_bytes), stamp);
+    out[6] = flags;
     for r in &records { out.extend_from_slice(r.bytes); }
     let kept = records.len();
     Ok((out, (count - kept) as u32))

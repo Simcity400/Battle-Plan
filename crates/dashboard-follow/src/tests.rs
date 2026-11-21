@@ -1382,7 +1382,16 @@ fn a_product_waiting_at_a_step_stays_unconfirmed_from_that_hour_through_merges()
     let rows = dated::records(&merged).unwrap();
     assert_eq!(rows.iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>(), [(7, dated::WAITING, 34), (7, dated::DATA, 82), (7, dated::WAITING, 106), (0, dated::COMPLETED, 106)],
         "a wait after the kept reading is kept after it");
-    assert!(dated::merge(&merged, &step(10, &[(7, dated::DATA)])).is_err(), "a message after a reset is not merged into one before it");
+    let mut reset = dated::ProductBatch::new((0, 3, 9));
+    reset.after_reset();
+    reset.changed(7, 106, dated::DATA, b"y");
+    let reset = reset.finish(Some(106));
+    let (merged, _) = dated::merge(&merged, &reset).unwrap();
+    assert_eq!(merged, reset, "a message after a native reset supersedes everything queued before it");
+    let (merged, _) = dated::merge(&step(10, &[(7, dated::STANDS)]), &step(20, &[(7, dated::WAITING)])).unwrap();
+    let (merged, _) = dated::merge(&merged, &step(30, &[(7, dated::DATA)])).unwrap();
+    let rows = dated::records(&merged).unwrap();
+    assert_eq!(rows.iter().map(|r| (r.kind, r.hour)).collect::<Vec<_>>(), [(dated::WAITING, 20), (dated::DATA, 30), (dated::COMPLETED, 30)], "a stands before the wait leaves the wait in place");
 }
 
 #[test]
