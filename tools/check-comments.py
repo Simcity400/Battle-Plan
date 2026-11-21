@@ -343,7 +343,20 @@ def tokens_operate(unit):
     if unit.type == "token_tree":
         if unit.text.startswith(b"(") and previous is not None and previous.type in ("identifier", "metavariable", ">"):
             return True
-        return any(tokens_operate(child) for child in unit.children)
+        children = unit.children[1:-1]
+        if not (braces(unit) and any(child.text == b"=>" for child in children)):
+            return any(tokens_operate(child) for child in children)
+        pattern = True
+        for child in children:
+            if pattern:
+                pattern = child.text not in (b"=>", b"if")
+            elif child.text == b",":
+                pattern = True
+            elif tokens_operate(child):
+                return True
+            elif braces(child):
+                pattern = True
+        return False
     return False
 
 

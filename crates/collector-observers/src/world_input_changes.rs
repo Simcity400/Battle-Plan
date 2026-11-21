@@ -100,8 +100,8 @@ unsafe fn invoke<const SITE: usize>(args: [usize; 4]) -> usize {
 }
 
 /// # Safety
-/// Only [`invoke`] calls this, with the registered design forwarder or zero and the hooked call's
-/// original.
+/// `receiver` is zero or a live function with the forwarder's signature and ABI, which accepts
+/// `site`, `call` and `original`; `original` is live and accepts the call's four arguments.
 unsafe fn invoke_forwarder(
     receiver: usize,
     site: Option<Forward>,
@@ -595,8 +595,9 @@ unsafe extern "system" fn reset_navy(
     })
 }
 /// # Safety
-/// Only the navy reset detour calls this, on the native thread running the hooked call, with that
-/// call's arguments, its original and the registered forwarder or zero.
+/// `forward` is zero or a live function with the navy-reset forwarder's signature and ABI, and
+/// `original` is a live function with the hooked call's signature; each accepts the arguments
+/// given here.
 unsafe fn dispatch_navy_reset(
     first: usize,
     second: usize,

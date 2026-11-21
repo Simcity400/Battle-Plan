@@ -311,6 +311,10 @@ macro_rules! writer {
             let Some(value) = $site else { return };
             // SAFETY: refused, a conditional pattern is not a call.
             if let Some(value) = $site { return value; }
+            // SAFETY: refused, match patterns are not calls.
+            let cached = match $site { Some(value) => value, None => 0 };
+            // SAFETY: kept, an arm body calls `read`.
+            let fresh = match $site { Some(value) => read(value), None => 0 };
             // SAFETY: refused, a double-pointer cast is not a dereference.
             let pp = $site as *mut *mut u8;
             // SAFETY: kept, the site's detour runs on the native thread with that call's arguments.
@@ -366,6 +370,7 @@ fn total(cells: &[*const u32]) -> std::io::Result<u32> {
             b"// SAFETY: refused, the guard neither dereferences nor calls.",
             b"// SAFETY: refused, a pattern is not a call.",
             b"// SAFETY: refused, a conditional pattern is not a call.",
+            b"// SAFETY: refused, match patterns are not calls.",
             b"// SAFETY: refused, a double-pointer cast is not a dereference.",
             b"// SAFETY: refused, a comparison is safe; the unsafe read is the next field.",
         ])

@@ -122,7 +122,8 @@ impl Touched {
             return Ok(false);
         }
         let result = (|| {
-            // SAFETY: the gate is closed and no lease remains.
+            // SAFETY: the gate is closed: every lease taken before it closed has drained, and a
+            // callback that takes one now sees `closed` and never loads the set.
             if let Some(set) = unsafe { self.set.load(Ordering::SeqCst).as_ref() } {
                 let claimed = set.claimed.swap(0, Ordering::Relaxed).min(set.claims.len());
                 engine_allocation::reserve(out, claimed)
@@ -137,7 +138,8 @@ impl Touched {
                 }
             }
             if let Some(next) = offered.take() {
-                // SAFETY: the gate is closed and no lease remains.
+                // SAFETY: the gate is closed: every lease taken before it closed has drained, and a
+            // callback that takes one now sees `closed` and never loads the set.
                 unsafe { self.replace(Some(next)) };
             }
             Ok(())
@@ -156,7 +158,8 @@ impl Touched {
     /// Publishes `next`, or no set, and frees the set it replaces.
     ///
     /// # Safety
-    /// Nothing may hold the replaced set: no lease spans the call and no hook can start one.
+    /// Nothing may use the replaced set: every lease taken before the gate closed has drained, and
+    /// a callback that takes a lease afterwards sees `closed` and never loads the set.
     unsafe fn replace(&self, next: Option<Box<Set>>) {
         self.slots.store(
             next.as_ref().map_or(0, |set| set.slots.len()),
