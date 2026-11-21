@@ -6,7 +6,7 @@ on:
     branches: [main]
 
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -44,6 +44,7 @@ jobs:
           if [ "$EVENT" = pull_request ]; then
             { echo "tier=check"; echo "base=$PR_BASE"; echo "exact="; } >> "$GITHUB_OUTPUT"
           elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            git cat-file -e "$BEFORE^{commit}" 2>/dev/null || git fetch --no-tags origin "$BEFORE"
             { echo "tier=main"; echo "base=$BEFORE"; echo "exact=--exact-base"; } >> "$GITHUB_OUTPUT"
           else
             { echo "tier=main"; echo "base=$(git hash-object -t tree /dev/null)"; echo "exact=--exact-base"; } >> "$GITHUB_OUTPUT"
@@ -60,7 +61,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.any == 'true'
     name: ${{ matrix.group }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ fromJSON('{"repo":"ubuntu-24.04","ui":"ubuntu-24.04","tools":"windows-latest","browser":"windows-latest","rust":"windows-latest"}')[matrix.group] }}
     strategy:
       fail-fast: false
       matrix:
@@ -72,6 +73,11 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - if: needs.changes.outputs.exact != ''
+        shell: bash
+        env:
+          BASE: ${{ needs.changes.outputs.base }}
+        run: git cat-file -e "$BASE" 2>/dev/null || git fetch --no-tags origin "$BASE"
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
@@ -85,12 +91,12 @@ jobs:
       - if: matrix.needs_node
         run: npm ci --no-audit --no-fund
       - if: matrix.needs_rust
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           workspaces: '. -> .cargo-target'
-          cache-on-failure: true
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - if: matrix.needs_rust
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f
         with:
           tool: cargo-nextest
       - shell: bash
@@ -99,7 +105,8 @@ jobs:
           BASE: ${{ needs.changes.outputs.base }}
           EXACT: ${{ needs.changes.outputs.exact }}
           GROUP: ${{ matrix.group }}
-        run: python tools/ci.py job --tier "$TIER" --group "$GROUP" --base "$BASE" $EXACT
+          JOBS: ${{ matrix.jobs }}
+        run: python tools/ci.py job --tier "$TIER" --group "$GROUP" --jobs "$JOBS" --base "$BASE" $EXACT
 
   check:
     needs: [changes, run]

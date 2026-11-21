@@ -4,6 +4,7 @@ import importlib.util
 import os
 from pathlib import Path
 import re
+import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,8 +13,10 @@ ci = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ci)
 
 PIPELINE = """
+[pipeline]
+implementation = ["tools/ci.py"]
 [group.all]
-os = "ubuntu-latest"
+setup = ["python"]
 [tier.check]
 budget = 60
 [tier.main]
@@ -61,7 +64,8 @@ tier = "check"
 kind = "crates"
 toolchain = "rust"
 workspace = true
-shared = ["tools/boat.py"]
+shared = ["tools/clippy-wrapper.py"]
+keyed = ["tools/boat.py"]
 command = ["boat", "clippy", "{packages}"]
 [[job]]
 name = "test"
@@ -240,7 +244,7 @@ class Crates(unittest.TestCase):
         self.assertEqual(ci.decide(job, ctx, "check").state, "run")
 
     def test_a_changed_group_redefines_its_jobs(self):
-        changed = ci.load_pipeline(PIPELINE.replace('[group.all]\nos = "ubuntu-latest"', '[group.all]\nos = "windows-latest"'))
+        changed = ci.load_pipeline(PIPELINE.replace('[group.all]\nsetup = ["python"]', '[group.all]\nsetup = ["python", "node"]'))
         ctx = context(["docs/x.md"])
         job = next(job for job in changed.jobs if job.name == "scan")
         self.assertEqual(ci.decide(job, ctx, "check").state, "run")
@@ -449,6 +453,66 @@ class Verdict(unittest.TestCase):
         self.assertEqual(text, "failed: rust-clippy; not run: ui-tests; held for the game: rust-test; later tier: browser; 2 ran, 1 reused, 1 unchanged; 41s")
         long = [ci.Outcome("x" * 40 + str(index), "fail") for index in range(10)]
         self.assertLessEqual(len(ci.describe(long, 1)), ci.STATUS_LIMIT)
+
+
+class ReviewOfFourteen(unittest.TestCase):
+    def test_a_planned_job_the_runner_would_skip_fails_the_leg(self):
+        ctx = context(["src/a.rs"])
+        decisions = [decide(name, ctx) for name in ("scan", "ratchet")]
+        skipped = [decide("scan", context(["docs/x.md"])), decisions[1]]
+        self.assertEqual(ci.unplanned_outcomes(["scan", "ratchet"], decisions), [])
+        failures = ci.unplanned_outcomes(["scan", "ratchet", "gone"], skipped)
+        self.assertEqual([(o.name, o.state) for o in failures], [("scan", "fail"), ("gone", "fail")])
+        self.assertEqual(ci.verdict(failures), "failure")
+
+    def test_a_change_to_the_pipeline_implementation_runs_every_job(self):
+        ctx = context(["tools/ci.py"])
+        for name in ("scan", "ratchet", "per-file", "clippy"):
+            self.assertEqual(decide(name, ctx).state, "run", name)
+        self.assertEqual(decide("clippy", ctx).arguments, ["--workspace"])
+
+    def test_a_change_to_a_jobs_implementation_script_runs_it(self):
+        self.assertEqual(decide("clippy", context(["tools/clippy-wrapper.py"])).arguments, ["--workspace"])
+        self.assertEqual(decide("clippy", context(["tools/boat.py"])).state, "skipped")
+
+    def test_an_unreadable_crate_graph_never_skips_a_widened_job(self):
+        pipeline = PIPELINE.replace('limit = 3\nheavy = true\n', 'limit = 3\nheavy = true\nwiden = [".config/nextest.toml"]\n')
+        ctx = context([".config/nextest.toml"])
+        ctx.pipeline = ci.load_pipeline(pipeline)
+        ctx.definitions = {job.name: job.definition for job in ctx.pipeline.jobs}
+        ctx.crates = None
+        ctx.hosted = True
+        job = next(job for job in ctx.pipeline.jobs if job.name == "test")
+        self.assertEqual(ci.decide(job, ctx, "check").state, "not run")
+
+    def test_a_tree_base_ratchets_against_heads_first_parent(self):
+        empty_tree = ci.git("hash-object", "-t", "tree", "--stdin", data=b"").strip()
+        parent = ci.git("rev-parse", "HEAD^1").strip()
+        self.assertEqual(ci.ratchet_base(empty_tree), parent)
+        self.assertEqual(ci.ratchet_base(parent), parent)
+
+    def test_the_tool_tests_key_names_their_python_dependencies(self):
+        pipeline = ci.load_pipeline((ROOT / "tools" / "ci.toml").read_text(encoding="utf-8"))
+        job = next(job for job in pipeline.jobs if job.name == "tool-tests")
+        command = ci.expand(pipeline.toolchains[job.toolchain].version, {"python": sys.executable})
+        said = ci.subprocess.run(command, capture_output=True, text=True).stdout
+        for package in ("pyyaml", "tree-sitter", "tree-sitter-language-pack"):
+            self.assertIn(package, said)
+
+    def test_an_upstream_ref_names_its_remote(self):
+        self.assertEqual(ci.upstream_remote("refs/remotes/bp/main"), "bp")
+        self.assertEqual(ci.upstream_remote("bp/main"), "bp")
+
+    def test_every_group_runs_on_a_fixed_github_hosted_label(self):
+        pipeline = ci.load_pipeline((ROOT / "tools" / "ci.toml").read_text(encoding="utf-8"))
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        found = re.search(r"runs-on: \$\{\{ fromJSON\('(\{.*?\})'\)\[matrix\.group\] \}\}", workflow)
+        self.assertIsNotNone(found)
+        labels = ci.json.loads(found.group(1))
+        self.assertEqual(sorted(labels), sorted(pipeline.groups))
+        for label in labels.values():
+            self.assertRegex(label, r"^(ubuntu|windows)-(latest|\d{2,4}(\.\d+)?)$")
+        self.assertNotIn("matrix.os", workflow)
 
 
 class Pipeline(unittest.TestCase):

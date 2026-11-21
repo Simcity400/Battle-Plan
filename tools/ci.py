@@ -3,7 +3,7 @@
 usage: python tools/ci.py check [--base REF] [--dry-run] [--no-status]
        python tools/ci.py main [--base REF] [--dry-run] [--no-status]
        python tools/ci.py changes --tier TIER --base REF [--github-output FILE]
-       python tools/ci.py job --tier TIER --group GROUP --base REF
+       python tools/ci.py job --tier TIER --group GROUP --jobs NAMES --base REF
 
 `changes` and `job` are the GitHub workflow's (.github/workflows/ci.yml) steps. `changes` gives
 each job its gate from the files alone, with no toolchain, and writes the matrix of the groups
@@ -97,6 +97,7 @@ class Job:
     unset: tuple
     environment: tuple
     widen: tuple
+    keyed: tuple
     definition: str
 
 
@@ -118,6 +119,7 @@ class Pipeline:
     jobs: list
     heavy_local: bool = True
     groups: dict = field(default_factory=dict)
+    implementation: tuple = ()
 
 
 def load_pipeline(text):
@@ -136,7 +138,7 @@ def load_pipeline(text):
             hosted=tuple(table.get("hosted", ())), group=table.get("group", ""),
             base=table.get("base", False), workspace=table.get("workspace", False), limit=table.get("limit"),
             heavy=table.get("heavy", False), unset=tuple(table.get("unset", ())), environment=tuple(table.get("environment", ())),
-            widen=tuple(table.get("widen", ())),
+            widen=tuple(table.get("widen", ())), keyed=tuple(table.get("keyed", ())),
             definition=json.dumps([table, data["toolchain"].get(table["toolchain"]), data.get("group", {}).get(table.get("group"))], sort_keys=True))
         problems = [f"tier {job.tier!r}"] if job.tier not in tiers else []
         problems += [f"kind {job.kind!r}"] if job.kind not in KINDS else []
@@ -150,7 +152,8 @@ def load_pipeline(text):
     heavy = data.get("local", {}).get("heavy", "run")
     if heavy not in {"run", "paused"}:
         raise SystemExit(f"tools/ci.toml: [local] heavy is run or paused, not {heavy!r}")
-    return Pipeline(tiers, toolchains, jobs, heavy == "run", dict(data.get("group", {})))
+    return Pipeline(tiers, toolchains, jobs, heavy == "run", dict(data.get("group", {})),
+                    tuple(data.get("pipeline", {}).get("implementation", ())))
 
 
 def glob_pattern(pattern):
@@ -291,7 +294,9 @@ def file_entries(tree, paths):
 
 
 def toolchain_changed(ctx, job):
-    files = matcher(ctx.pipeline.toolchains[job.toolchain].files)
+    """Whether a file every run of the job depends on changed: its toolchain's, or the pipeline's
+    own implementation (the runner, the job list, the workflow)."""
+    files = matcher(ctx.pipeline.toolchains[job.toolchain].files + ctx.pipeline.implementation)
     return any(files(path) for path in ctx.changed)
 
 
@@ -365,15 +370,15 @@ def decide_inputs(job, ctx):
 
 def decide_crates(job, ctx, toolchain):
     redefined = ctx.definitions is None or ctx.definitions.get(job.name) != job.definition
+    widened = matcher(job.widen + job.shared)
+    wide = redefined or toolchain_changed(ctx, job) or any(widened(path) for path in ctx.changed)
     if ctx.crates is None:
-        rust = redefined or any(path.startswith("crates/") for path in ctx.changed) or toolchain_changed(ctx, job)
+        rust = wide or any(path.startswith("crates/") for path in ctx.changed)
         return Decision(job, "not run", "the Cargo manifests could not be read") if rust else Decision(job, "skipped", "no crate changed since the base")
     crates = ctx.crates
-    shared = matcher(job.shared)
-    shared_files = file_entries(ctx.tree, [path for path in ctx.tree if shared(path)])
+    keyed = matcher(job.shared + job.keyed)
+    shared_files = file_entries(ctx.tree, [path for path in ctx.tree if keyed(path)])
     owner = crate_owner(crates)
-    widened = matcher(job.widen)
-    wide = redefined or toolchain_changed(ctx, job) or any(widened(path) for path in ctx.changed)
     changed = {owner(path) for path in ctx.changed} - {None}
     selected = set(crates) if wide else changed | {crate.name for crate in crates.values() if crate.deps & changed}
     if not selected:
@@ -883,9 +888,14 @@ def definitions_at(base):
         return None
 
 
+def upstream_remote(upstream):
+    """The remote an upstream ref belongs to: `bp` for `bp/main` and `refs/remotes/bp/main`."""
+    return upstream.removeprefix("refs/remotes/").split("/", 1)[0]
+
+
 def upstream_repository(upstream):
     """`owner/name` of the GitHub repository the upstream's remote points at, or None."""
-    remote = upstream.split("/", 1)[0]
+    remote = upstream_remote(upstream)
     url = git("remote", "get-url", remote, check=False).strip()
     found = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", url)
     return found.group(1) if found else None
@@ -1112,6 +1122,8 @@ def run_tier(args, tier):
     elif active.superseded():
         say(f"{context}: superseded by a newer run on this branch; not posted")
         return SUPERSEDED
+    elif not upstream_repository(args.upstream):
+        say(f"{context}: not posted, {args.upstream} names no GitHub remote of this checkout")
     elif not post_status(head, state, description, say, context, upstream_repository(args.upstream)):
         code = EXIT["error"] if code in (EXIT["success"], EXIT["pending"]) else code
     store.prune()
@@ -1131,7 +1143,7 @@ def plan(tier, base_ref, gates, exact=False):
     if not base:
         sys.exit(f"No base at {base_ref}: fetch it, or pass --base.")
     values = {"python": sys.executable, "node": shutil.which("node") or "node",
-              "npm": shutil.which("npm.cmd") or shutil.which("npm") or "npm", "base": base}
+              "npm": shutil.which("npm.cmd") or shutil.which("npm") or "npm", "base": ratchet_base(base) or base}
     tree, changed, head = read_tree(), changed_since(base), git("rev-parse", "HEAD").strip()
     if gates:
         toolchains, missing, passed = {name: name for name in pipeline.toolchains}, {}, lambda key: None
@@ -1142,7 +1154,33 @@ def plan(tier, base_ref, gates, exact=False):
     crates = crates_from_manifests(ROOT) if any(job.kind == "crates" and order.index(job.tier) <= order.index(tier) for job in pipeline.jobs) else {}
     ctx = Context(tree, changed, base, head, toolchains, crates, passed, pipeline, missing, False, definitions_at(base),
                   hosted=gates or HOSTED)
-    return pipeline, values, [decide(job, ctx, tier) for job in pipeline.jobs]
+    decisions = [decide(job, ctx, tier) for job in pipeline.jobs]
+    if not ratchet_base(base):
+        decisions = [Decision(d.job, "not run", f"no commit to ratchet against: {base} is not one and HEAD has no parent")
+                     if d.job.base and d.state == "run" else d for d in decisions]
+    return pipeline, values, decisions
+
+
+def ratchet_base(base):
+    """The commit a ratchet compares with: the base itself when it is a commit, else (a new main
+    compared with the empty tree) HEAD's first parent; None when there is none."""
+    if git("cat-file", "-t", base, check=False).strip() == "commit":
+        return base
+    return git("rev-parse", "--verify", "--quiet", "HEAD^1", check=False).strip() or None
+
+
+def unplanned_outcomes(planned, decisions):
+    """An outcome failing each job `changes` planned that this run would not run, so a job the
+    gate selected can never pass by being skipped on the runner."""
+    named = {decision.job.name: decision for decision in decisions}
+    failures = []
+    for name in planned:
+        decision = named.get(name)
+        if decision is None:
+            failures.append(Outcome(name, "fail", "planned by changes, but tools/ci.toml has no such job"))
+        elif decision.state != "run":
+            failures.append(Outcome(name, "fail", f"planned by changes, but this runner would not run it ({decision.state}: {decision.detail})"))
+    return failures
 
 
 def changes(args):
@@ -1153,11 +1191,8 @@ def changes(args):
         print(f"  {decision.state:8} {decision.job.name:22} {decision.job.group:8} {decision.detail}")
         if decision.state == "run":
             groups.setdefault(decision.job.group, []).append(decision.job.name)
-    matrix = [dict(pipeline.groups[group], group=group, jobs=" ".join(names),
-                   **{f"needs_{need}": True for need in pipeline.groups[group].get("setup", [])})
+    matrix = [dict(group=group, jobs=" ".join(names), **{f"needs_{need}": True for need in pipeline.groups[group].get("setup", [])})
               for group, names in groups.items()]
-    for entry in matrix:
-        entry.pop("setup", None)
     print(f"groups with work: {', '.join(groups) or 'none'}")
     unplanned = [decision.job.name for decision in decisions if decision.state == "not run"]
     if unplanned:
@@ -1167,7 +1202,7 @@ def changes(args):
         with open(args.github_output, "a", encoding="utf-8") as out:
             out.write(f"matrix={json.dumps(matrix, separators=(',', ':'))}\n")
             out.write(f"any={'true' if matrix else 'false'}\n")
-            out.write(f"base={values['base']}\n")
+            out.write(f"base={git('merge-base', 'HEAD', args.base, check=False).strip() if not args.exact_base else args.base}\n")
     return 0
 
 
@@ -1175,13 +1210,17 @@ def job_group(args):
     """The workflow's matrix job: runs one group's jobs that `changes` gated in, Rust jobs one
     after another (they share a target folder) and the rest in parallel."""
     pipeline, values, decisions = plan(args.tier, args.base, gates=False, exact=args.exact_base)
-    mine = [decision for decision in decisions if decision.job.group == args.group]
-    if not mine:
+    if args.group not in pipeline.groups:
         sys.exit(f"tools/ci.toml has no group {args.group!r}")
+    planned = args.jobs.split()
+    wrong = [d.job.name for d in decisions if d.job.name in planned and d.job.group != args.group]
+    if wrong:
+        sys.exit(f"planned jobs outside group {args.group}: {', '.join(wrong)}")
+    mine = [decision for decision in decisions if decision.job.name in planned and decision.state == "run"]
     store = Store(store_root())
     folder = store.run_folder(git("rev-parse", "HEAD").strip())
     runner = Runner(folder, values)
-    outcomes = [Outcome(d.job.name, d.state, d.detail) for d in mine if d.state != "run"]
+    outcomes = unplanned_outcomes(planned, decisions)
     serial = [d for d in mine if d.state == "run" and d.job.kind == "crates"]
     parallel = [d for d in mine if d.state == "run" and d.job.kind != "crates"]
     pool = ThreadPoolExecutor(max_workers=max(1, len(parallel) + 1))
@@ -1226,6 +1265,7 @@ def main(argv=None):
     grouped = commands.add_parser("job", help="run one group's jobs, as the workflow does")
     grouped.add_argument("--tier", default="check")
     grouped.add_argument("--group", required=True)
+    grouped.add_argument("--jobs", required=True, help="the job names `changes` planned for this group, space-separated")
     grouped.add_argument("--base", required=True, metavar="REF")
     grouped.add_argument("--exact-base", action="store_true", help="compare with the base itself, not the merge base")
     args = parser.parse_args(argv)

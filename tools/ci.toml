@@ -29,28 +29,30 @@ files = ["tools/comment-lint-requirements.txt"]
 version = ["{python}", "-c", "import yaml; print(yaml.__version__)"]
 probes = ["actionlint"]
 
+[toolchain.tools]
+version = ["{python}", "-c", "import importlib.metadata as m, sys\nprint(sys.version)\nfor p in ('pyyaml', 'tree-sitter', 'tree-sitter-language-pack'):\n    try:\n        print(p, m.version(p))\n    except m.PackageNotFoundError:\n        print(p, 'absent')"]
+files = ["tools/comment-lint-requirements.txt"]
+
 [toolchain.rust]
 tools = ["cargo"]
 files = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", "clippy.toml", ".clippy.toml", "vendor/**", "crates/test-unify/**"]
 
+[pipeline]
+implementation = ["tools/ci.py", "tools/ci.toml", ".github/workflows/ci.yml"]
+
 [group.repo]
-os = "ubuntu-latest"
 setup = ["python"]
 
 [group.tools]
-os = "windows-latest"
 setup = ["python"]
 
 [group.ui]
-os = "ubuntu-latest"
 setup = ["node"]
 
 [group.browser]
-os = "windows-latest"
 setup = ["node"]
 
 [group.rust]
-os = "windows-latest"
 setup = ["python", "rust"]
 
 [local]
@@ -155,7 +157,7 @@ command = ["{python}", "tools/check-nextest-config.py"]
 name = "tool-tests"
 group = "tools"
 tier = "check"
-toolchain = "python"
+toolchain = "tools"
 inputs = ["tools/**"]
 unset = ["WARM_TARGET_END_TO_END"]
 command = ["{python}", "tools/test-python.py"]
@@ -193,7 +195,8 @@ kind = "crates"
 toolchain = "rust"
 workspace = true
 base = true
-shared = ["tools/boat.py", "tools/boat_remote.py", "tools/check-clippy.py"]
+shared = ["tools/check-clippy.py"]
+keyed = ["tools/boat.py", "tools/boat_remote.py"]
 command = ["{python}", "tools/check-clippy.py", "--against", "{base}", "--", "{python}", "tools/boat.py", "clippy", "--all-targets", "--keep-going", "--no-deps", "{packages}"]
 hosted = ["{python}", "tools/check-clippy.py", "--against", "{base}", "--", "cargo", "clippy", "--all-targets", "--keep-going", "--no-deps", "{packages}"]
 
@@ -205,7 +208,7 @@ kind = "crates"
 toolchain = "rust"
 limit = 40
 heavy = true
-shared = ["tools/boat.py", "tools/boat_remote.py"]
+keyed = ["tools/boat.py", "tools/boat_remote.py"]
 command = ["{python}", "tools/boat.py", "test", "--no-fail-fast", "{packages}"]
 hosted = ["cargo", "nextest", "run", "--no-fail-fast", "--no-tests=pass", "{packages}"]
 widen = [".config/nextest.toml"]
