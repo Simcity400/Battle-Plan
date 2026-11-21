@@ -14,6 +14,14 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import daily_tests as dt
 
+CI_DIR = os.path.abspath("runner")
+
+
+def setUpModule():
+    patch = mock.patch.dict(os.environ, {"BATTLE_PLAN_CI": CI_DIR})
+    patch.start()
+    unittest.addModuleCleanup(patch.stop)
+
 
 class FakeGitHub:
     """Records what would be published; never calls GitHub."""
@@ -40,6 +48,11 @@ class GameDir(unittest.TestCase):
                         self.assertEqual(dt.parse([command, "--game-dir", "game"]).game_dir, given)
                 with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game"}):
                     self.assertEqual(dt.parse(["run"]).game_dir, given)
+                with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game", "BATTLE_PLAN_CI": ""}):
+                    for command in ("install", "run"):
+                        self.assertEqual(dt.parse([command, "--ci-dir", "ci"]).ci_dir, os.path.join(os.getcwd(), "ci"))
+                with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game", "BATTLE_PLAN_CI": "ci"}):
+                    self.assertEqual(dt.parse(["run"]).ci_dir, os.path.join(os.getcwd(), "ci"))
             finally:
                 os.chdir(previous)
 
@@ -47,6 +60,12 @@ class GameDir(unittest.TestCase):
         with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": ""}), \
                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             dt.parse(["run"])
+
+    def test_an_empty_variable_names_no_runner_folder(self):
+        for command in ("install", "run"):
+            with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game", "BATTLE_PLAN_CI": ""}), \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                dt.parse([command])
 
 
 class Continuation(unittest.TestCase):
@@ -115,6 +134,7 @@ class Continuation(unittest.TestCase):
             "--game-dir", self.args.game_dir, "--continue-run",
         ])
         self.assertEqual(command[6], self.commit)
+        self.assertEqual(command[-2:], ["--ci-dir", CI_DIR])
         self.assertIsNone(environment)
         self.assertEqual(log.name, "runner.log")
         self.assertEqual(self.git.call_args_list, [

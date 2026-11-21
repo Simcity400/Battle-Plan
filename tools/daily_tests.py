@@ -1,11 +1,12 @@
 """Test `main` once a day on this machine (Python 3.11+, Windows).
 
-    python tools/daily_tests.py install --game-dir <the game folder> --fixture <recording folder> --recorded-replies <file> [--at 03:00]
-    python tools/daily_tests.py run --game-dir <the game folder> --fixture <recording folder> --recorded-replies <file>
+    python tools/daily_tests.py install --ci-dir <runner folder> --game-dir <the game folder> --fixture <recording folder> --recorded-replies <file> [--at 03:00]
+    python tools/daily_tests.py run --ci-dir <runner folder> --game-dir <the game folder> --fixture <recording folder> --recorded-replies <file>
 
-`install` makes the runner's own worktree of origin/main and registers the Windows task that runs
-it daily at `--at`, or as soon as it can after a missed start. `run` moves that worktree to the
-newest origin/main and holds TESTS_RUNNING while it runs, in GROUPS, the repository checks, the UI
+`--ci-dir` (or BATTLE_PLAN_CI) names the runner's own folder: its worktree is main there and the
+acceptance app is built into e2e-app beside it. `install` makes that worktree of origin/main and
+registers the Windows task that runs it daily at `--at`, or as soon as it can after a missed
+start. `run` moves that worktree to the newest origin/main and holds TESTS_RUNNING while it runs, in GROUPS, the repository checks, the UI
 typecheck and tests, every Rust test and the acceptance suite (tools/e2e/suite.py: the release
 app, built on Boat, on a copy of the `--fixture` recording). RUST_BUILD says where the Rust tests
 compile: "boat" builds them on Boat and runs them here (tools/boat.py test); "local" runs nextest
@@ -14,7 +15,7 @@ whatever that build neither produced nor used, so the target holds one build. Ei
 with DISK_FLOOR free, removing the runner's own Cargo target first when that brings it there.
 Rust tests are counted passed, failed, skipped or missing (tools/ci_results.py). `--recorded-replies` names the replies the acceptance sweep
 recorded (`--record-replies`) from the `--fixture` recording, which the browser tests replay
-(BATTLE_PLAN_RECORDED_REPLIES). Its report goes to captures\\ci: latest.md, rewritten
+(BATTLE_PLAN_RECORDED_REPLIES). Its report goes to CAPTURES\\ci: latest.md, rewritten
 as each group ends, a folder per run with each step's log, kept 30 days, and history.tsv, kept
 whole. The acceptance suite's report is e2e/e2e.md in the run's folder; its visual baseline and
 last work stay in E2E_STATE.
@@ -45,12 +46,12 @@ from xml.sax.saxutils import escape
 import ci_results
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKTREE = Path(r"ci\main")
+WORKTREE = None
 CAPTURES = Path(os.environ.get("BATTLE_PLAN_CAPTURES", os.environ.get("HOI4_CAPTURES", ROOT / "captures")))
 REPORTS = CAPTURES / "ci"
 MARKER = REPORTS / "TESTS_RUNNING"
 TASK = "Battle Plan daily tests"
-E2E_APP = Path(r"ci\e2e-app")
+E2E_APP = None
 E2E_STATE = REPORTS / "e2e"
 DEADLINE = datetime.timedelta(hours=18)
 GIT_TIMEOUT = 600
@@ -885,7 +886,7 @@ def run(args):
                 sys.executable, str(WORKTREE / "tools" / "daily_tests.py"), "run",
                 "--game-dir", args.game_dir, *fixtures(args),
                 "--continue-run", commit, started.isoformat(),
-                str(deadline - REPORT_MARGIN), str(folder),
+                str(deadline - REPORT_MARGIN), str(folder), "--ci-dir", args.ci_dir,
             ]
             remaining = deadline - time.monotonic()
             if remaining <= REPORT_MARGIN:
@@ -1008,7 +1009,9 @@ def install(args):
     start = datetime.datetime.combine(datetime.date.today(), at)
     if start <= datetime.datetime.now():
         start += datetime.timedelta(days=1)
-    arguments = subprocess.list2cmdline([str(script), "run", "--game-dir", args.game_dir, *fixtures(args)])
+    arguments = subprocess.list2cmdline([
+        str(script), "run", "--ci-dir", args.ci_dir, "--game-dir", args.game_dir, *fixtures(args),
+    ])
     xml = TASK_XML.format(
         start=start.isoformat(timespec="seconds"),
         user=escape(f"{os.environ['USERDOMAIN']}\\{os.environ['USERNAME']}"),
@@ -1038,8 +1041,10 @@ def parse(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
     game_dir = os.environ.get("BATTLE_PLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")) or None
+    ci_dir = os.environ.get("BATTLE_PLAN_CI") or None
     for name in ("install", "run"):
         command = commands.add_parser(name)
+        command.add_argument("--ci-dir", type=os.path.abspath, default=ci_dir, required=ci_dir is None)
         command.add_argument(
             "--game-dir", type=os.path.abspath, default=game_dir, required=game_dir is None
         )
@@ -1054,8 +1059,15 @@ def parse(argv):
     return parser.parse_args(argv)
 
 
+def configure(ci_dir):
+    """Points the runner at its own folder: the worktree in main, the acceptance app beside it."""
+    global WORKTREE, E2E_APP
+    WORKTREE, E2E_APP = Path(ci_dir) / "main", Path(ci_dir) / "e2e-app"
+
+
 def main():
     args = parse(sys.argv[1:])
+    configure(args.ci_dir)
     return install(args) if args.command == "install" else run(args)
 
 
