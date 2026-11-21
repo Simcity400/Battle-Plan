@@ -56,6 +56,14 @@ impl Output {
             })?;
         let mut text = String::new();
         manifest.read_to_string(&mut text)?;
+        if text.lines().next() == Some(NONE_COLLECTED)
+            && let Some(report) = unowned_reports(root)?.into_iter().next()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} is from an earlier run that this drive cannot confirm; remove it or choose another --out", report.display()),
+            ));
+        }
         let mut owned = Vec::new();
         for (relative, identity) in owned_files(&path, &text)? {
             if let Some(stack) = relative.parent().filter(|stack| !stack.as_os_str().is_empty())
@@ -836,6 +844,12 @@ mod tests {
         let legacy = Output::prepare(&root).err().expect("reports no manifest owns are refused before anything is written");
         assert!(legacy.to_string().contains("cannot confirm"), "{legacy}");
         assert!(!root.join(OWNED).exists());
+        Output::clear(&root)?;
+        assert_eq!(fs::read_to_string(root.join(OWNED))?, format!("{NONE_COLLECTED}\n"));
+        let marked = Output::prepare(&root).err().expect("a none-collected mark does not vouch for older reports");
+        assert!(marked.to_string().contains("cannot confirm"), "{marked}");
+        assert_eq!(fs::read_to_string(root.join(OWNED))?, format!("{NONE_COLLECTED}\n"), "a refused run leaves the mark as it was");
+        fs::remove_file(root.join(OWNED))?;
         fs::remove_file(root.join("stack/mine.txt"))?;
         let output = Output::prepare(&root)?;
         let busy =Output::prepare(&root).err().expect("a second run into the same folder is refused");
