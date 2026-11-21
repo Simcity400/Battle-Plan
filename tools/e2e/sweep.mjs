@@ -499,11 +499,11 @@ async function playbackInputs() {
     const view = document.querySelector('.dash-grid-scroll')?.getBoundingClientRect();
     const inside = box => box.width && box.height && view && box.top >= view.top && box.bottom <= view.bottom && box.left >= view.left && box.right <= view.right;
     const owners = [];
-    let maps = 0;
+    const seen = box => box.width && box.height && view && box.bottom > view.top && box.top < view.bottom && box.right > view.left && box.left < view.right;
+    const maps = [...document.querySelectorAll('article.dash-widget.kind-map')].filter(map => seen(map.getBoundingClientRect())).length;
     for (const node of document.querySelectorAll(${JSON.stringify(config)})) {
       const owner = node.closest('article.dash-widget');
-      if (!owner || !inside(node.getBoundingClientRect())) continue;
-      if (owner.classList.contains('kind-map')) { maps++; continue; }
+      if (!owner || owner.classList.contains('kind-map') || !inside(node.getBoundingClientRect())) continue;
       node.setAttribute('data-e2e-settings', String(owners.length));
       owners.push(owner.dataset.widget ?? null);
     }
@@ -518,9 +518,10 @@ async function playbackInputs() {
     const pinned = await s.until(`[...document.querySelectorAll('${time}')].some(button => button.textContent.trim() === 'Pinned')`);
     if (pinned) {
       const owner = `${article}[data-widget=${JSON.stringify(owners[index])}]`;
+      const held = await app.evaluate(`document.querySelector(${JSON.stringify(owner)})?.dataset.fixedHour ?? null`);
       await mark('pin');
       await s.click(time, { text: 'Pinned' });
-      if (!await s.until(`document.querySelector(${JSON.stringify(owner + '[data-fixed-hour]')})`))
+      if (!await s.until(`(hour => hour !== undefined && hour !== ${JSON.stringify(held)})(document.querySelector(${JSON.stringify(owner)})?.dataset.fixedHour)`))
         throw new Error(`Pinning widget ${owners[index]} did not fix its hour`);
       await s.frames(4);
       pinWidget = owners[index];
