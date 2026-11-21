@@ -1,5 +1,5 @@
 
-use installed_content_core::province_geometry::ProvinceGeometry;
+use content_reader_core::province_geometry::ProvinceGeometry;
 use replay_data::rows::{AirWingRow, ArmyOrderPlanRow};
 
 pub(super) fn invasion(plan: &ArmyOrderPlanRow) -> Result<i32, String> {
@@ -70,7 +70,7 @@ pub(super) fn distance(map: &ProvinceGeometry, source: u32, destination: u32) ->
             [0; 2]
         }
     };
-    installed_content_core::province_geometry::native_fixed_sqrt(
+    content_reader_core::province_geometry::native_fixed_sqrt(
         viewer_foundation::map::air_region_reach::province_squared(
             point(source),
             point(destination),

@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, io};
 
-use installed_content_save::{
+use content_reader_save::{
     Save,
     production::{UnitBonus, UnitBonusGrant, UnitBonusTarget},
 };
@@ -178,7 +178,7 @@ fn compare_entry(
 }
 
 fn named_stats(stats: &[UnitBonusStat], label: &str, report: &mut Report) -> Vec<(Vec<u8>, i64)> {
-    let metadata = installed_content_core::equipment::stat_metadata();
+    let metadata = content_reader_core::equipment::stat_metadata();
     stats
         .iter()
         .filter(|stat| stat.value_raw != 0)
@@ -192,7 +192,7 @@ fn named_stats(stats: &[UnitBonusStat], label: &str, report: &mut Report) -> Vec
         .collect()
 }
 
-fn saved_stats(stats: &[(Vec<u8>, installed_content_save::Decimal)]) -> Vec<(Vec<u8>, i64)> {
+fn saved_stats(stats: &[(Vec<u8>, content_reader_save::Decimal)]) -> Vec<(Vec<u8>, i64)> {
     stats
         .iter()
         .map(|(name, value)| (name.clone(), value.raw))

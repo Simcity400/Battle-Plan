@@ -1,6 +1,6 @@
 use super::*;
-use installed_content_core::gui::native::{resources::SHIELD_OVERLAY_EFFECT, sprites::SpriteKind};
-use installed_content_image::dds;
+use content_reader_core::gui::native::{resources::SHIELD_OVERLAY_EFFECT, sprites::SpriteKind};
+use content_reader_image::dds;
 use shader_pipeline::artwork::Draw;
 
 #[derive(Clone)]
@@ -17,7 +17,7 @@ const FLAG_CELL: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 impl MaskedShield {
     pub fn load(
         layers: &ResolvedLayers,
-        sprite: &installed_content_gfx::gfx::SpriteType,
+        sprite: &content_reader_gfx::gfx::SpriteType,
         decode: Decode,
     ) -> io::Result<Self> {
         let name = &sprite.name;
@@ -54,7 +54,7 @@ impl MaskedShield {
     pub fn overlay(&self) -> io::Result<Option<Rgba8Image>> {
         self.overlay
             .clone()
-            .map(installed_content_image::rgba::dds_base)
+            .map(content_reader_image::rgba::dds_base)
             .transpose()
     }
 
@@ -362,7 +362,7 @@ mod tests {
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let game = std::path::PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap());
         let layers = ResolvedLayers::from_folders(&[(game.as_path(), &[][..])]).unwrap();
-        let sprites = installed_content_gfx::gfx::read(&layers).unwrap();
+        let sprites = content_reader_gfx::gfx::read(&layers).unwrap();
         let SpriteKind::MaskedShield { shield, .. } =
             &sprites.lookup("GFX_shield_medium").unwrap().facts.kind
         else {

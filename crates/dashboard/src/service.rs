@@ -91,7 +91,7 @@ impl Lanes {
 type VisualCatalogue = (
     PathBuf,
     PathBuf,
-    Vec<installed_content_core::content::visual::InstalledMod>,
+    Vec<content_reader_core::content::visual::InstalledMod>,
 );
 
 #[cfg(test)]
@@ -192,7 +192,7 @@ impl Service {
         let options = match config.resolve_options() {
             Ok(options) => options,
             Err(_) => match Config::content_cache_dir() {
-                Ok(cache_dir) => installed_content_core::ResolveOptions {
+                Ok(cache_dir) => content_reader_core::ResolveOptions {
                     game_dir: cache_dir.join("no game folder chosen"),
                     user_dir: cache_dir.join("no user folder chosen"),
                     cache_dir,

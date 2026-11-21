@@ -272,7 +272,7 @@ fn only_a_linked_carrier_below_full_sortie_efficiency_reaches_its_member_sources
         crate::naval_labels::english(),
     );
     let content = super::super::naval_air_groups::Content::default();
-    let loc = installed_content_localisation::localisation::Localisation::default();
+    let loc = content_reader_localisation::localisation::Localisation::default();
     let breakdown = |plane: &NavalCombatPlane, efficiency| {
         sortie_member_breakdown(
             plane, efficiency, &detail, 0, &joins, &trees, &content, &NoIcons, &loc,
@@ -399,7 +399,7 @@ fn air_entries_bind_before_carrier_ships_on_both_grids() {
 
 #[test]
 fn recorded_air_hover_reaches_the_air_icon_binding() {
-    let mut loc: installed_content_localisation::localisation::Localisation = [(
+    let mut loc: content_reader_localisation::localisation::Localisation = [(
         "NAVAL_COMBAT_AIRWING_TOOLTIP_HEADER".to_owned(),
         "$MOD$ from $FROM$".to_owned(),
     )]

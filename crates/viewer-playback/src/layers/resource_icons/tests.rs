@@ -7,7 +7,7 @@ use crate::{
     },
     playhead_host::{MapSide, open, shared_maps_tests::Reads, units::Units},
 };
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use playhead::{
     Settings, Timeline,
     pages::{Pages, Run},

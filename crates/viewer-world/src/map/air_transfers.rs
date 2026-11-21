@@ -1,5 +1,5 @@
 use super::radar_symbols::{Field, Symbol};
-use installed_content_core::defines::Defines;
+use content_reader_core::defines::Defines;
 use replay_data::{rows::AirBaseRow, rows::AirTransferInputRow, rows::AirWingRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, BTreeSet};

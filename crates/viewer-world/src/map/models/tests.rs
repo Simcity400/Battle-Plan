@@ -189,7 +189,7 @@ fn merging_a_shard_rebases_every_palette_slot() {
         bound: 0.0,
         convoy_radius: None,
         attachments: 0,
-        cull_distance_squared: installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+        cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
     };
     let mut shard = ModelLibrary {
         palette: vec![joint; 3],
@@ -424,7 +424,7 @@ fn library_with_one_mesh(radius: f32) -> ModelLibrary {
             bound: radius.hypot(1.0),
             convoy_radius: None,
             attachments: 0,
-            cull_distance_squared: installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+            cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
         }],
         ..ModelLibrary::default()
     }
@@ -553,7 +553,7 @@ fn aircraft_callbacks_with_geometry(meshed: bool) {
     assert!(warnings.iter().all(|(_, line)| !line.contains("sound")));
     if !meshed {
         assert!(warnings.iter().any(|(kind, line)| *kind
-            == installed_content_core::DiagnosticKind::Warning
+            == content_reader_core::DiagnosticKind::Warning
             && line.contains("geometry-less entities")));
     }
     let scenario = descriptors.inherit("scenario").unwrap();
@@ -1191,19 +1191,19 @@ pub(crate) fn visual_stack(
     )
     .unwrap();
     std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
-    let options = installed_content_core::ResolveOptions {
+    let options = content_reader_core::ResolveOptions {
         game_dir: root.join("steamapps/common/Game"),
         user_dir: root.join("user"),
         cache_dir: root.join("cache"),
     };
     let base = root.join("base");
     let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
-    let selected = [installed_content_core::content::visual::Choice {
+    let selected = [content_reader_core::content::visual::Choice {
         id: "mod/art.mod".into(),
         name: "Art".into(),
     }];
     let cancel = std::sync::atomic::AtomicBool::new(false);
-    installed_content_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
+    content_reader_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
     (root, layers)
 }
 
@@ -1284,7 +1284,7 @@ fn a_visual_mod_entity_keeps_its_recorded_counterpart() {
 
 #[test]
 fn a_recorded_counterparts_mesh_read_reaches_the_presentation_trace() {
-    use installed_content_core::content::{ContentRead, ReadOutcome};
+    use content_reader_core::content::{ContentRead, ReadOutcome};
     let (root, layers) = visual_stack(
         "counterpart_trace",
         &[
@@ -1715,7 +1715,7 @@ fn the_game_cull_tests_the_eye_s_distance_to_the_sphere_s_centre_then_the_four_s
         x: 0.,
         pad: 0.,
     };
-    let default = installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
+    let default = content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
     assert_eq!(cull.test([400., 0., 0.], 1., default), None);
     assert_eq!(cull.test([420., 0., 0.], 1., default), Some(Culled::Distance));
     assert_eq!(cull.test([420., 0., 0.], 1., 600. * 600.), None, "a mesh's own cull distance");
@@ -1747,7 +1747,7 @@ fn a_pan_draws_a_moved_figure_by_its_own_camera_s_cull_and_its_held_one_only_gat
     let own = |x: f32| GameCull { eye: [x, 0.5, 0.], sides, x, pad: 0. };
     let camera = |x: f32| viewer_foundation::map::camera::Camera { center: [x, 0.], height: 100., map: MapSize::TEST, defines: MapDefines::test(), pose: viewer_foundation::map::camera::Pose::Map };
     let at = |x: f32| ModelInstance { position: [x, 0., 0.], scale: 1.0, ..ModelInstance::default() };
-    let default = installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
+    let default = content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
     assert_eq!(held.test([1434., 0.5, 0.], 1., default), None, "the held cull, moved by the pan, admits it");
     pass.set_cull(Some(held), Some(own(1000.)));
     assert_eq!(pass.game_culled(0, &at(1427.), 0., &camera(1000.)), None, "drawn while in range");

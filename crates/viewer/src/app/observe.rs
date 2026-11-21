@@ -1,5 +1,5 @@
 use dashboard::protocol::{MapOptions, ObservedCountry};
-use installed_content_core::map::ProvinceKind;
+use content_reader_core::map::ProvinceKind;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use viewer_foundation::map::perspective::Country;

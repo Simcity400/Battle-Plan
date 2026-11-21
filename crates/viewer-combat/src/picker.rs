@@ -266,7 +266,7 @@ impl Picker {
             .any(Retained::active)
     }
 
-    fn refresh_values(&mut self, state: &State<'_>, root: &installed_content_core::gui::native::Element) {
+    fn refresh_values(&mut self, state: &State<'_>, root: &content_reader_core::gui::native::Element) {
         if self.root_generation == Some(self.generation) {
             return;
         }
@@ -545,7 +545,7 @@ fn layout_name(four_buttons: bool) -> &'static str {
     }
 }
 
-fn authored_shortcut(root: &installed_content_core::gui::native::Element, path: &str) -> Option<String> {
+fn authored_shortcut(root: &content_reader_core::gui::native::Element, path: &str) -> Option<String> {
     let shortcut = root.path_named(path)?.button()?.shortcuts.first()?;
     std::str::from_utf8(shortcut).ok().map(str::to_owned)
 }
@@ -562,7 +562,7 @@ pub fn shortcuts(
 }
 
 fn shortcuts_in(
-    root: &installed_content_core::gui::native::Element,
+    root: &content_reader_core::gui::native::Element,
     four_buttons: bool,
     slots: usize,
 ) -> Vec<(Control, String)> {
@@ -590,7 +590,7 @@ fn shortcuts_in(
     out
 }
 
-fn picker_values(state: &State<'_>, root: &installed_content_core::gui::native::Element) -> Values {
+fn picker_values(state: &State<'_>, root: &content_reader_core::gui::native::Element) -> Values {
     let mut values = Values::new();
     let layout = layout_name(state.four_buttons);
     let other = layout_name(!state.four_buttons);
@@ -932,10 +932,10 @@ fn draw_slots(
 }
 
 fn grown(
-    root: &installed_content_core::gui::native::Element,
+    root: &content_reader_core::gui::native::Element,
     rows: usize,
-) -> Result<installed_content_core::gui::native::Element, String> {
-    use installed_content_core::gui::native::Fields;
+) -> Result<content_reader_core::gui::native::Element, String> {
+    use content_reader_core::gui::native::Fields;
     if rows == 0 {
         return Ok(root.clone());
     }
@@ -973,7 +973,7 @@ fn grown(
 #[allow(clippy::too_many_arguments)]
 fn draw_window(
     retained: &mut Retained,
-    root: &installed_content_core::gui::native::Element,
+    root: &content_reader_core::gui::native::Element,
     values: &Values,
     groups: Vec<Group<'_>>,
     windows: &viewer_foundation::map::native_windows::NativeWindows,

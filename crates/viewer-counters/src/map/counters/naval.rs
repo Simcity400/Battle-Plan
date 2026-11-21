@@ -81,7 +81,7 @@ pub(super) struct ShipTables {
 }
 
 pub(super) struct ShipInputs<'a> {
-    pub(super) equipment: Result<&'a installed_content_core::equipment::Database, &'a str>,
+    pub(super) equipment: Result<&'a content_reader_core::equipment::Database, &'a str>,
     pub(super) tables: Arc<ShipTables>,
 }
 
@@ -299,7 +299,7 @@ pub(super) struct NavalContext<'a> {
 #[derive(Clone, Copy)]
 pub(super) struct NavalSources<'a> {
     pub(super) type_tints: &'a type_tint::Index,
-    pub(super) equipment: Result<&'a installed_content_core::equipment::Database, &'a str>,
+    pub(super) equipment: Result<&'a content_reader_core::equipment::Database, &'a str>,
     pub(super) vision: &'a Vision,
     pub(super) native: &'a NativeInputs,
     pub(super) country_ids: &'a BTreeMap<u32, u32>,
@@ -315,7 +315,7 @@ fn set_frame_argument(number: u32) -> i32 {
 
 pub(super) fn ideology_frame(
     frame: &DecodedFrame,
-    ideologies: &installed_content_core::ideologies::Ideologies,
+    ideologies: &content_reader_core::ideologies::Ideologies,
     country_ids: &BTreeMap<u32, u32>,
     slot: u32,
 ) -> Result<Option<i32>, String> {

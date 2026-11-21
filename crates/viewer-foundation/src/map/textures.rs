@@ -7,11 +7,11 @@ use crate::map::test_support::GPU_TESTS;
 use std::io;
 
 use eframe::wgpu;
-use installed_content_core::{
+use content_reader_core::{
     gui::native::resources, gui::native::resources::NoTexture, map::MapData, map::ProvinceKind,
     terrain::TerrainDefinitions,
 };
-use installed_content_image::{IndexedImage, Rgba8Image, dds, native::Decode};
+use content_reader_image::{IndexedImage, Rgba8Image, dds, native::Decode};
 
 use super::{camera::MapSize, gradient_math};
 
@@ -168,9 +168,9 @@ fn sixteen_bit_texels(format: dds::TextureFormat, data: &[u8]) -> Option<Vec<u8>
     Some(out)
 }
 
-pub type Read<'a, B = installed_content_core::content::Bytes> = &'a dyn Fn(&[u8]) -> io::Result<B>;
+pub type Read<'a, B = content_reader_core::content::Bytes> = &'a dyn Fn(&[u8]) -> io::Result<B>;
 
-pub fn load_file<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_image::Bytes>>(name: &str, read: Read<'_, B>, decode: Decode) -> io::Result<dds::Texture> {
+pub fn load_file<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_image::Bytes>>(name: &str, read: Read<'_, B>, decode: Decode) -> io::Result<dds::Texture> {
     match resources::texture(name.as_bytes(), read, decode)? {
         Ok(texture) => Ok(texture.image),
         Err(NoTexture::Missing(tried)) => Err(io::Error::new(
@@ -181,7 +181,7 @@ pub fn load_file<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installe
     }
 }
 
-pub fn load_image<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_image::Bytes>>(name: &str, read: Read<'_, B>, decode: Decode) -> io::Result<installed_content_image::SharedRgba8Image> {
+pub fn load_image<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_image::Bytes>>(name: &str, read: Read<'_, B>, decode: Decode) -> io::Result<content_reader_image::SharedRgba8Image> {
     let texture = load_file(name, read, decode)?;
     if texture.format != dds::TextureFormat::Rgba8 || texture.faces != 1 {
         return Err(invalid(format!(
@@ -227,7 +227,7 @@ pub fn check_upload(label: &str, texture: &dds::Texture, space: ColorSpace) -> i
     Ok(())
 }
 
-pub fn load_uploadable<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_image::Bytes>>(
+pub fn load_uploadable<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_image::Bytes>>(
     name: &str,
     read: Read<'_, B>,
     decode: Decode,
@@ -244,7 +244,7 @@ pub struct MapTexture {
     pub unbound: bool,
 }
 
-pub fn load_map_texture<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_image::Bytes>>(
+pub fn load_map_texture<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_image::Bytes>>(
     name: &str,
     read: Read<'_, B>,
     decode: Decode,
@@ -745,7 +745,7 @@ fn write_texels(
 pub fn terrain_flag_mask(
     definitions: &TerrainDefinitions,
     terrain: &IndexedImage,
-    flag: impl Fn(&installed_content_core::terrain::TerrainType) -> bool,
+    flag: impl Fn(&content_reader_core::terrain::TerrainType) -> bool,
 ) -> Vec<bool> {
     let mut lookup = [false; 256];
     for (&index, kind) in &definitions.palette {

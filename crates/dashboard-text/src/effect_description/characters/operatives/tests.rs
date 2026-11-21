@@ -126,10 +126,10 @@ fn country_scopes() -> EventScopes {
     scopes
 }
 
-fn event(key: &str) -> Arc<installed_content_events::events::Event> {
-    Arc::new(installed_content_events::events::Event {
+fn event(key: &str) -> Arc<content_reader_events::events::Event> {
+    Arc::new(content_reader_events::events::Event {
         id: b"synthetic.1".to_vec(),
-        titles: installed_content_core::parser::parse(format!("title={key}").as_bytes())
+        titles: content_reader_core::parser::parse(format!("title={key}").as_bytes())
             .unwrap()
             .items,
         ..Default::default()
@@ -415,9 +415,9 @@ fn unit_event_conditional_titles_use_empty_scope_and_first_fallback() {
             "Event Unit AAA [Root.GetTag]",
         ),
     ] {
-        let event = Arc::new(installed_content_events::events::Event {
+        let event = Arc::new(content_reader_events::events::Event {
             id: b"synthetic.1".to_vec(),
-            titles: installed_content_core::parser::parse(titles.as_bytes())
+            titles: content_reader_core::parser::parse(titles.as_bytes())
                 .unwrap()
                 .items,
             ..Default::default()
@@ -441,9 +441,9 @@ fn unit_event_different_eligible_titles_have_named_counted_clock_refusal() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("EVENT");
-    let event = Arc::new(installed_content_events::events::Event {
+    let event = Arc::new(content_reader_events::events::Event {
         id: b"synthetic.1".to_vec(),
-        titles: installed_content_core::parser::parse(b"title=UNIT_TITLE title=OPERATIVE_TITLE")
+        titles: content_reader_core::parser::parse(b"title=UNIT_TITLE title=OPERATIVE_TITLE")
             .unwrap()
             .items,
         ..Default::default()
@@ -466,10 +466,10 @@ fn operative_leader_event() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("EFFECT");
-    let events = installed_content_events::events::parse(
+    let events = content_reader_events::events::parse(
         b"add_namespace=synthetic operative_leader_event={major=yes option={army_experience=7 name=CHOICE} is_triggered_only=yes desc=EXPLANATION title=OPERATIVE_TITLE id=synthetic.23}",
         "events/synthetic.txt",
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     );
     let lookup = |id: &[u8]| events.get(id).map(|event| Arc::new(event.clone()));
     let mut scopes = operative_scopes();

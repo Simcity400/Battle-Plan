@@ -1,7 +1,7 @@
 
 use super::{LAND_ROUTE, NAVAL_ROUTE, NO_ROUTE, RouteFields};
 use dashboard_core::protocol::PlanKind;
-use installed_content_core::{
+use content_reader_core::{
     adjacencies::SEA_CROSSING, province_geometry::ProvinceGeometry, province_graph::ProvinceGraph,
     province_graph::heap_pop, province_graph::heap_push,
 };

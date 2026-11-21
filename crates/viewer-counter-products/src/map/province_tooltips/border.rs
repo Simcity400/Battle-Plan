@@ -1,5 +1,5 @@
 use super::localise;
-use installed_content_localisation::localisation::{Argument as Arg, Localisation};
+use content_reader_localisation::localisation::{Argument as Arg, Localisation};
 #[cfg(test)]
 use replay_data::rows::DivisionRow;
 use replay_data::rows::{StateFlagRow, tables};

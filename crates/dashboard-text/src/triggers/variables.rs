@@ -17,7 +17,7 @@ fn localisation_status(
     }
 }
 
-use installed_content_core::{
+use content_reader_core::{
     parser::Item, parser::Operator, scope::Keyword as ScopeKeyword, scope::Names, scoped_variable,
     scoped_variable::Constant, scoped_variable::Link, scoped_variable::ScopedVariable,
     variable_builtins,
@@ -187,7 +187,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             }
             return Ok((id, token));
         }
-        let constant = installed_content_core::fixed5::fixed5_to_string(value, 5);
+        let constant = content_reader_core::fixed5::fixed5_to_string(value, 5);
         let Some(country) = self.scoped_country(constant.as_bytes(), scopes)? else {
             return Err(Self::NULL_IDEOLOGY.into());
         };

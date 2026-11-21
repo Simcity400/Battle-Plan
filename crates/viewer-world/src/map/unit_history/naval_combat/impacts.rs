@@ -1,7 +1,7 @@
 
 use std::sync::Arc;
 
-use installed_content_core::{mesh::NavalHitMissEffect, mesh::Transform};
+use content_reader_core::{mesh::NavalHitMissEffect, mesh::Transform};
 use {
     crate::map::entity_animation, crate::map::entity_animation::Clock,
     crate::map::entity_animation::Event, crate::map::entity_animation::Player,
@@ -286,7 +286,7 @@ fn effect_instance(matrix: Matrix, root_scale: f32, animation: u32) -> ModelInst
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_core::{mesh::EntityState, mesh::Mesh};
+    use content_reader_core::{mesh::EntityState, mesh::Mesh};
     use std::collections::BTreeMap;
     use {crate::map::entity_animation::Clip, crate::map::entity_animation::Node};
 

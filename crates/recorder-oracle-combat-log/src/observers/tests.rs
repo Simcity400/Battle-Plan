@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_save::{Decimal, LandCombat, combat_details::LandDetails, production::Equipment};
+use content_reader_save::{Decimal, LandCombat, combat_details::LandDetails, production::Equipment};
 use replay_data::rows::LandCombatProgressRow;
 use replay_data::rows::LandEquipmentLoss;
 use replay_data::rows::Recorded;

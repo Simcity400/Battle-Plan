@@ -285,18 +285,18 @@ fn naval_component_skill_icons_and_text_share_native_tooltips() {
     assert!(out.refused().is_empty(), "{:?}", out.refused());
 }
 
-fn modifiers(entries: &[(&str, &str)]) -> installed_content_core::modifiers::Modifiers {
+fn modifiers(entries: &[(&str, &str)]) -> content_reader_core::modifiers::Modifiers {
     let items: Vec<_> = entries
         .iter()
-        .map(|(key, value)| installed_content_core::parser::Item {
+        .map(|(key, value)| content_reader_core::parser::Item {
             key: Some(key.as_bytes().to_vec()),
             key_quoted: false,
-            operator: installed_content_core::parser::Operator::Equals,
-            value: installed_content_core::parser::Value::Scalar(value.as_bytes().to_vec()),
-            kind: installed_content_core::parser::Kind::Bare,
+            operator: content_reader_core::parser::Operator::Equals,
+            value: content_reader_core::parser::Value::Scalar(value.as_bytes().to_vec()),
+            kind: content_reader_core::parser::Kind::Bare,
         })
         .collect();
-    installed_content_core::modifiers::values(&items)
+    content_reader_core::modifiers::values(&items)
 }
 
 fn exile_localisation() -> Localisation {
@@ -701,7 +701,7 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
     definition.unsupported = vec!["a script value".into()];
     assert!(effects(&context, &definition, &mut dropped).is_err());
     definition.unsupported.clear();
-    let condition = |modifier: &str| installed_content_core::unit_leader::Conditional {
+    let condition = |modifier: &str| content_reader_core::unit_leader::Conditional {
         modifier: modifier.into(),
         place: "file.txt trait t modifier".into(),
     };
@@ -715,7 +715,7 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
     );
     definition.conditions.clear();
     let sub_unit = |key: &str, attack: i64, entries: &[(&str, &str)]| {
-        installed_content_core::unit_leader::SubUnitModifiers {
+        content_reader_core::unit_leader::SubUnitModifiers {
             adjuster: Adjuster {
                 key: key.into(),
                 attack,
@@ -1214,8 +1214,8 @@ fn advisor_traits_resolve_through_the_country_leader_traits() {
             "leader_traits = { valid_specialist = { } valid_genius_name = { } valid_expert = { } valid_genius_name = { } }",
         )
         .unwrap();
-    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let (traits, _) = installed_content_core::leader_traits::read(&layers).unwrap();
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let (traits, _) = content_reader_core::leader_traits::read(&layers).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
     let leaders = Leaders::from_files(
             vec![(

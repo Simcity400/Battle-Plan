@@ -259,12 +259,12 @@ impl Inputs {
 }
 
 #[derive(Default)]
-struct ScriptContentIndex(Mutex<Option<Arc<installed_content_events::events::LazyEvents>>>);
+struct ScriptContentIndex(Mutex<Option<Arc<content_reader_events::events::LazyEvents>>>);
 
-fn script_events(catalogue: &Catalogue) -> Arc<installed_content_events::events::LazyEvents> {
+fn script_events(catalogue: &Catalogue) -> Arc<content_reader_events::events::LazyEvents> {
     let cache = catalogue.content.layers.derived::<ScriptContentIndex>();
     let mut index = cache.0.lock().unwrap_or_else(PoisonError::into_inner);
-    Arc::clone(index.get_or_insert_with(|| Arc::new(installed_content_events::events::LazyEvents::from_content(Arc::clone(&catalogue.content)))))
+    Arc::clone(index.get_or_insert_with(|| Arc::new(content_reader_events::events::LazyEvents::from_content(Arc::clone(&catalogue.content)))))
 }
 
 pub const SCRIPTED_GAP: char = '\u{FFFC}';
@@ -605,7 +605,7 @@ fn decision_title_text(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<
     catalogue::plain_text(&expander.expand_names_in(&text, &scopes, &[])?)
 }
 
-fn render(catalogue: &Catalogue, inputs: &Inputs, decision: bool, source: &str, items: &[installed_content_core::parser::Item]) -> Result<effect_description::Description, String> {
+fn render(catalogue: &Catalogue, inputs: &Inputs, decision: bool, source: &str, items: &[content_reader_core::parser::Item]) -> Result<effect_description::Description, String> {
     let scripted = catalogue.scripted_content()?;
     let content = scripted.effects()?;
     let frame = DecodedFrame {
@@ -622,7 +622,7 @@ fn render(catalogue: &Catalogue, inputs: &Inputs, decision: bool, source: &str, 
     Ok(effect_description::describe(items, &context, &mut inputs.graph(decision)?))
 }
 
-fn body(notices: &mut Notices, catalogue: &Catalogue, item: &mut EventFeedItem, inputs: &Inputs, decision: bool, label: &str, items: &[installed_content_core::parser::Item]) -> io::Result<()> {
+fn body(notices: &mut Notices, catalogue: &Catalogue, item: &mut EventFeedItem, inputs: &Inputs, decision: bool, label: &str, items: &[content_reader_core::parser::Item]) -> io::Result<()> {
     if items.is_empty() {
         return Ok(());
     }

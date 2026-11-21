@@ -4,7 +4,7 @@ use engine_native::{
     raid_tooltip_operands::ADDITIONAL_ORDER, raid_tooltip_operands::ESSENTIAL_ORDER,
     raid_tooltip_operands::definition_key,
 };
-use installed_content_core::parser::Item;
+use content_reader_core::parser::Item;
 use std::collections::BTreeMap;
 use viewer_foundation::tooltip_text::country_localised;
 
@@ -620,7 +620,7 @@ mod tests {
     }
 
     fn parse(text: &str) -> Vec<Item> {
-        installed_content_core::parser::parse(text.as_bytes())
+        content_reader_core::parser::parse(text.as_bytes())
             .unwrap()
             .items
     }
@@ -652,7 +652,7 @@ mod tests {
             scripted_content: &Err("no scripted content in this test".into()),
             ours: 2,
             nato: false,
-            countries: installed_content_country_names::country_names::CountryNames::read(frame, &loc),
+            countries: content_reader_country_names::country_names::CountryNames::read(frame, &loc),
             flag_exists: &|_| true,
             scripted: Default::default(),
         });

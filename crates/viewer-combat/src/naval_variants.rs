@@ -1,5 +1,5 @@
 use dashboard_text::scripted_text::stored_text;
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use replay_data::{
     rows::CountryAppearanceRow, rows::CountryRow, rows::VariantDefinitionRow, rows::tables,
 };

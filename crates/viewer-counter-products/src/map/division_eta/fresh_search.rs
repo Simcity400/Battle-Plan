@@ -1,7 +1,7 @@
 
 use super::MovementContent;
 use engine_railways::crailway_manager::fresh_inputs;
-use installed_content_unit_path::{unit_path::CounterRequest, unit_path::Fact};
+use content_reader_unit_path::{unit_path::CounterRequest, unit_path::Fact};
 use replay_data::{
     rows::DivisionMovementRow, rows::DivisionRow, rows::ProvinceRow, rows::RailCooldownRow,
     rows::TableSchema, rows::tables,
@@ -274,7 +274,7 @@ impl<'a> Inputs<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_core::{
+    use content_reader_core::{
         movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
         movement::RailMovementDefines,
     };

@@ -1,6 +1,6 @@
 use super::{Catalogue, tests::Folder};
 use crate::products::equipment_icon::IconContent;
-use installed_content_core::equipment::Database;
+use content_reader_core::equipment::Database;
 use std::sync::Arc;
 
 fn equipment_catalogue(equipment: &[(&str, &str)]) -> (Arc<Catalogue>, Folder) {
@@ -105,7 +105,7 @@ fn icon_content_reads_only_files_the_store_key_stamps() {
         catalogue
             .content
             .layers
-            .with_read_trace(Arc::new(move |read: installed_content_core::content::ContentRead| {
+            .with_read_trace(Arc::new(move |read: content_reader_core::content::ContentRead| {
                 reads.lock().unwrap().push(read.path);
             }))
     };

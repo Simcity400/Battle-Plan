@@ -42,7 +42,7 @@ fn effect_key_names_share_the_complete_cached_registry_after_a_source_disappears
     let shared = layers.key_names().unwrap();
     let scripted = catalogue.scripted_content().unwrap();
     std::fs::remove_file(folder.0.join("common/country_tags/test.txt")).unwrap();
-    assert!(installed_content_core::key_names::KeyNames::read(layers).is_err());
+    assert!(content_reader_core::key_names::KeyNames::read(layers).is_err());
 
     let cached = scripted.effects().unwrap();
     assert!(Arc::ptr_eq(&shared, cached.key_names.as_ref().unwrap()));
@@ -182,7 +182,7 @@ fn advisor_templates_and_idea_notes_share_one_read() {
     );
     assert_eq!(
         templates.name("synthetic_advisor").unwrap(),
-        Some(&installed_content_core::characters::Authored::Asset(
+        Some(&content_reader_core::characters::Authored::Asset(
             "synthetic_name".to_owned()
         ))
     );
@@ -225,9 +225,9 @@ fn effect_catalogues_remain_available_without_map_inputs() {
         .trigger_world()
         .unwrap()
         .evaluate(
-            &installed_content_core::triggers::read(
+            &content_reader_core::triggers::read(
                 b"impassable=no ",
-                &installed_content_core::key_names::KeyNames::default(),
+                &content_reader_core::key_names::KeyNames::default(),
             )
             .items,
             crate::triggers::Scopes::of(crate::triggers::Scope::State(64)),
@@ -242,8 +242,8 @@ pub(super) struct Fixture {
     pub catalogue: Catalogue,
     _folder: Folder,
     dlcs: BTreeSet<String>,
-    pub(super) triggers: installed_content_core::trigger_keys::TriggerNames,
-    pub(super) aliases: Arc<installed_content_core::tag_aliases::TagAliases>,
+    pub(super) triggers: content_reader_core::trigger_keys::TriggerNames,
+    pub(super) aliases: Arc<content_reader_core::tag_aliases::TagAliases>,
     pub neighbors: Option<BTreeMap<u32, Vec<u32>>>,
 }
 
@@ -411,7 +411,7 @@ impl Fixture {
         content: Content<'_>,
     ) -> Description {
         self.render_items(
-            &installed_content_core::parser::parse(body.as_bytes())
+            &content_reader_core::parser::parse(body.as_bytes())
                 .unwrap()
                 .items,
             scopes,
@@ -426,7 +426,7 @@ impl Fixture {
         content: Content<'_>,
     ) -> Description {
         let items =
-            installed_content_core::effect_keys::read_body(body.as_bytes(), content.key_names.unwrap())
+            content_reader_core::effect_keys::read_body(body.as_bytes(), content.key_names.unwrap())
                 .unwrap();
         self.render_items(&items, scopes, content)
     }
@@ -518,7 +518,7 @@ fn native_country_targets_read_custom_target_fields() {
         "send_equipment_fraction={target=BBB}",
         "transfer_units_fraction={target=BBB}",
     ] {
-        let parsed = installed_content_core::parser::parse(body.as_bytes()).unwrap();
+        let parsed = content_reader_core::parser::parse(body.as_bytes()).unwrap();
         let target = fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
             renderer.country_target(&parsed.items[0], Scopes::of(Scope::Country(1)))
         });
@@ -1014,10 +1014,10 @@ fn doctrine_technology_is_named_instead_of_silently_dropped() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
-    let mut doctrines = installed_content_core::doctrines::Database::default();
+    let mut doctrines = content_reader_core::doctrines::Database::default();
     doctrines.entries.insert(
         b"land".to_vec(),
-        installed_content_core::doctrines::Folder {
+        content_reader_core::doctrines::Folder {
             name: b"FOLDER".to_vec(),
             refused: None,
         },
@@ -1039,14 +1039,14 @@ fn referenced_event_sole_title_uses_c_string_and_last_text_field() {
     let fixture = Fixture::new();
     let reference = |_: &[u8]| {
         let mut titles =
-            installed_content_core::parser::parse(b"title={text=TIP text=REFERENCE trigger={always=no}}")
+            content_reader_core::parser::parse(b"title={text=TIP text=REFERENCE trigger={always=no}}")
                 .unwrap()
                 .items;
-        let installed_content_core::parser::Value::Block(fields) = &mut titles[0].value else {
+        let content_reader_core::parser::Value::Block(fields) = &mut titles[0].value else {
             unreachable!()
         };
-        fields[1].value = installed_content_core::parser::Value::Scalar(b"REFERENCE\0ignored".to_vec());
-        Ok(Arc::new(installed_content_events::events::Event {
+        fields[1].value = content_reader_core::parser::Value::Scalar(b"REFERENCE\0ignored".to_vec());
+        Ok(Arc::new(content_reader_events::events::Event {
             titles,
             ..Default::default()
         }))
@@ -1082,12 +1082,12 @@ fn evaluator_opened_after_custom_text_shares_then_cleans_its_session() {
         Content::default(),
     );
     let mut graph = fresh();
-    let body = installed_content_core::parser::parse(b"custom_effect_tooltip=TIP if={limit={set_temp_variable={x=7}} custom_effect_tooltip=TIP} army_experience=temp_var:x").unwrap().items;
+    let body = content_reader_core::parser::parse(b"custom_effect_tooltip=TIP if={limit={set_temp_variable={x=7}} custom_effect_tooltip=TIP} army_experience=temp_var:x").unwrap().items;
     let out = describe(&body, &context, &mut graph);
     assert_eq!(out.text, "tip\ntip\nXP7\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let out = describe(
-        &installed_content_core::parser::parse(b"army_experience=temp_var:x")
+        &content_reader_core::parser::parse(b"army_experience=temp_var:x")
             .unwrap()
             .items,
         &context,
@@ -1137,7 +1137,7 @@ fn custom_only_completion_cleans_from_targets_without_world() {
         .global_tooltip_targets
         .push((b"global".to_vec(), EventObject::Country(1)));
     let out = describe(
-        &installed_content_core::parser::parse(b"custom_effect_tooltip=TIP")
+        &content_reader_core::parser::parse(b"custom_effect_tooltip=TIP")
             .unwrap()
             .items,
         &context,
@@ -1377,24 +1377,24 @@ fn reached_event_compositions_keep_scope_and_hidden_effect_behavior() {
                 ..Default::default()
             },
         ]));
-    let mut doctrines = installed_content_core::doctrines::Database::default();
+    let mut doctrines = content_reader_core::doctrines::Database::default();
     doctrines.entries.insert(
         b"land".to_vec(),
-        installed_content_core::doctrines::Folder {
+        content_reader_core::doctrines::Folder {
             name: b"FOLDER".to_vec(),
             refused: None,
         },
     );
-    let file = installed_content_core::ideas::parse_ideas(
+    let file = content_reader_core::ideas::parse_ideas(
         b"ideas={country={SYN_IDEA={name=SYN_IDEA}}}",
         &[],
         &Default::default(),
     );
-    let ideas = installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = installed_content_core::names::NameLists::default();
+    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = content_reader_core::names::NameLists::default();
     let reference = |_: &[u8]| {
-        Ok(Arc::new(installed_content_events::events::Event {
-            titles: installed_content_core::parser::parse(b"title=REFERENCE")
+        Ok(Arc::new(content_reader_events::events::Event {
+            titles: content_reader_core::parser::parse(b"title=REFERENCE")
                 .unwrap()
                 .items,
             ..Default::default()
@@ -1570,9 +1570,9 @@ fn timed_idea_repeats_native_target_prefix_and_floors_duration_components() {
                 })
                 .collect(),
         ));
-    let parsed=installed_content_core::ideas::parse_ideas(b"ideas={country={SYN_IDEA={name=SYN_IDEA targeted_modifier={tag=BBB attack_bonus_against=0.25 defense_bonus_against=0.15}}}}",&[],&Default::default());
-    let ideas = installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), parsed.ideas);
-    let names = installed_content_core::names::NameLists::default();
+    let parsed=content_reader_core::ideas::parse_ideas(b"ideas={country={SYN_IDEA={name=SYN_IDEA targeted_modifier={tag=BBB attack_bonus_against=0.25 defense_bonus_against=0.15}}}}",&[],&Default::default());
+    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), parsed.ideas);
+    let names = content_reader_core::names::NameLists::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&names),
@@ -1611,10 +1611,10 @@ fn country_event_random_block_is_described_as_a_native_child() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
-    let names = installed_content_core::key_names::KeyNames::default();
+    let names = content_reader_core::key_names::KeyNames::default();
     let reference = |_: &[u8]| {
-        Ok(Arc::new(installed_content_events::events::Event {
-            titles: installed_content_core::parser::parse(b"title=TIP").unwrap().items,
+        Ok(Arc::new(content_reader_events::events::Event {
+            titles: content_reader_core::parser::parse(b"title=TIP").unwrap().items,
             ..Default::default()
         }))
     };
@@ -1638,12 +1638,12 @@ fn country_event_uses_title_only_fresh_from_root_and_advances_seed_lane() {
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let reference = |_: &[u8]| {
-        Ok(Arc::new(installed_content_events::events::Event {
-            titles: installed_content_core::parser::parse(b"title=REFERENCE")
+        Ok(Arc::new(content_reader_events::events::Event {
+            titles: content_reader_core::parser::parse(b"title=REFERENCE")
                 .unwrap()
                 .items,
             options: vec![
-                installed_content_core::parser::parse(b"add_political_power=999")
+                content_reader_core::parser::parse(b"add_political_power=999")
                     .unwrap()
                     .items,
             ],
@@ -1732,13 +1732,13 @@ fn wtt_shaped_immediate_and_option_keep_marker_links_and_recorded_flag_condition
             description_seed: replay_data::rows::Recorded::Value(Some(None)),
             ..Default::default()
         }]));
-    let mut database = installed_content_core::decisions::Database::default();
+    let mut database = content_reader_core::decisions::Database::default();
     database.entries.insert(
         b"syn_decision".to_vec(),
-        installed_content_core::decisions::Decision {
+        content_reader_core::decisions::Decision {
             id: b"SYN_DECISION".to_vec(),
             name: b"SYN_DECISION".to_vec(),
-            seed_component: installed_content_core::decisions::seed_component(b"SYN_DECISION"),
+            seed_component: content_reader_core::decisions::seed_component(b"SYN_DECISION"),
             has_state_targets: true,
             target_states: vec![b"2".to_vec()],
             ..Default::default()
@@ -1917,7 +1917,7 @@ fn reads_alongside_reach_this_threads_consumers_once_joined() {
     let (seen, noted) = crate::catalogue::capture(|| {
         std::thread::scope(|threads| {
             let read = alongside(threads, || {
-                installed_content_core::content::credit_overlay_refusals(&refused);
+                content_reader_core::content::credit_overlay_refusals(&refused);
                 7
             });
             joined(read)

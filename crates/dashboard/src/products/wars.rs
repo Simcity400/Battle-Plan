@@ -23,7 +23,7 @@ use dashboard_query::{
     identity::{Holder, Holders},
     read,
 };
-use installed_content_country_names::country_names::{CountryNames, Operands};
+use content_reader_country_names::country_names::{CountryNames, Operands};
 use inputs::{Hour, Resolve, State, holds};
 use native::{Blob, Pair};
 use replay_looks::Look;
@@ -376,7 +376,7 @@ impl Names<'_> {
         slots.extend(goal.and_then(|goal| naming::goal_country(hour, &goal).ok().flatten()));
         let (mut operands, mut built) = dated.looks.operands(&hour.tags, &slots, dated.at);
         if slots.contains(&0) && !operands.contains_key(&0) {
-            let reads: Vec<at_hour::Read> = installed_content_country_names::country_names::TABLES.iter().map(|&table| at_hour::Read::all(table)).collect();
+            let reads: Vec<at_hour::Read> = content_reader_country_names::country_names::TABLES.iter().map(|&table| at_hour::Read::all(table)).collect();
             let frame = self.frames.frame(dated.at, &reads, "War name")?;
             let reserved = CountryNames::read_selected(&frame, &cat.localisation, [0]);
             built = built.or(reserved.reserved_built());

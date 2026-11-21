@@ -5,7 +5,7 @@ use crate::{
     catalogue::{self, CachedResult, Catalogue, View},
     products::{ContentOptions, LoadContext, Product, check_reply_budget},
 };
-use installed_content_equipment_graphics::{equipment_graphics, equipment_graphics::aircraft};
+use content_reader_equipment_graphics::{equipment_graphics, equipment_graphics::aircraft};
 use replay_data::{rows::TableId, rows::tables};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -220,8 +220,8 @@ fn built(
 }
 
 pub struct Content {
-    pub roster: Arc<installed_content_core::mesh::Roster>,
-    pub equipment: Arc<installed_content_core::equipment::Database>,
+    pub roster: Arc<content_reader_core::mesh::Roster>,
+    pub equipment: Arc<content_reader_core::equipment::Database>,
     pub pools: equipment_graphics::Content,
     pub warnings: Vec<String>,
 }
@@ -235,10 +235,10 @@ impl Content {
             warnings.push(format!(
                 "Which names are aircraft cannot be told from equipment: the equipment database is refused ({why}); every entity and mesh is still listed"
             ));
-            Arc::new(installed_content_core::equipment::Database::default())
+            Arc::new(content_reader_core::equipment::Database::default())
         });
         let pools = (|| {
-            let default_map = installed_content_core::terrain::read_default_map(layers)?;
+            let default_map = content_reader_core::terrain::read_default_map(layers)?;
             let names = equipment_graphics::Names::read(layers, &default_map, &mut warnings)?;
             equipment_graphics::Content::load(layers, &names)
         })()
@@ -306,7 +306,7 @@ fn recorded_designs(source: &Source, cancelled: &AtomicBool) -> io::Result<Vec<(
                         .iter()
                         .filter(|row| !row.explicit_entity.is_empty())
                     {
-                        let Ok(model) = installed_content_core::parser::text(&variant.explicit_entity)
+                        let Ok(model) = content_reader_core::parser::text(&variant.explicit_entity)
                         else {
                             continue;
                         };

@@ -10,8 +10,8 @@ use crate::{
     catalogue::{self, Catalogue, Refusals, View},
 };
 use dashboard_follow::live::{Cells, Source as Cell};
-use installed_content_core::unit_leader::{SubUnit, SubUnits};
-use installed_content_division_names::division_names::Database;
+use content_reader_core::unit_leader::{SubUnit, SubUnits};
+use content_reader_division_names::division_names::Database;
 use replay_data::rows::{ShipModelRow, ShipNamingOperands, ShipRow};
 use dashboard_text::variant_names::{self, Tags, Texts};
 use replay_data::rows::{TableId, tables};
@@ -164,7 +164,7 @@ fn sub_units(cat: &Catalogue) -> Result<Arc<SubUnits>, String> {
     cat.content
         .layers
         .derived::<catalogue::CachedResult<SubUnits>>()
-        .get_or_init(|| installed_content_core::unit_leader::sub_units(&cat.content.layers))
+        .get_or_init(|| content_reader_core::unit_leader::sub_units(&cat.content.layers))
         .map_err(|error| format!("Ship class content is unavailable: {error}"))
 }
 
@@ -172,7 +172,7 @@ fn name_groups(cat: &Catalogue) -> Result<Arc<ShipNameGroups>, String> {
     cat.content
         .layers
         .derived::<catalogue::CachedResult<ShipNameGroups>>()
-        .get_or_init(|| installed_content_division_names::division_names::read::<installed_content_core::Diagnostic>(&cat.content.layers).map(|(database, _)| ShipNameGroups(database)))
+        .get_or_init(|| content_reader_division_names::division_names::read::<content_reader_core::Diagnostic>(&cat.content.layers).map(|(database, _)| ShipNameGroups(database)))
         .map_err(|error| format!("Ship name lists are unavailable: {error}"))
 }
 

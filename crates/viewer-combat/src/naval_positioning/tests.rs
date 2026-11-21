@@ -397,12 +397,12 @@ fn relation_scopes_preserve_zero_sortie_carrier_air_defender_positioning_and_aa(
         ),
     )
     .unwrap();
-    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
     let mut warnings = Vec::new();
     let content = naval_air_groups::Content::load(
         &layers,
         &mut warnings,
-        installed_content_core::equipment::Database::default(),
+        content_reader_core::equipment::Database::default(),
     );
     std::fs::remove_dir_all(root).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");

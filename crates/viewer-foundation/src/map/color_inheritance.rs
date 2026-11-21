@@ -1,6 +1,6 @@
 use super::tables::{Available, rows};
 use crate::errors::invalid;
-use installed_content_core::map::MapData;
+use content_reader_core::map::MapData;
 use replay_data::{Hour, rows::SubjectRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{

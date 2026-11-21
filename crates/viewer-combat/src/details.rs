@@ -1,5 +1,5 @@
-use installed_content_division_names::{division_names::Database, division_names::Unresolved};
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_division_names::{division_names::Database, division_names::Unresolved};
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     rows::LandCombatDivisionRow, rows::LandCombatMember, rows::TableSchema,
     rows::land_combat_members, rows::tables,
@@ -404,7 +404,7 @@ fn entry(
                 text(
                     &mut values,
                     key,
-                    installed_content_core::fixed5::fixed5_to_string(raw, 0),
+                    content_reader_core::fixed5::fixed5_to_string(raw, 0),
                 );
             } else {
                 values.entry(key.into()).or_default().text = None;
@@ -1166,7 +1166,7 @@ fn naval(
                         text(
                             &mut out.values,
                             key,
-                            installed_content_core::fixed5::fixed5_percent(raw, 0, true),
+                            content_reader_core::fixed5::fixed5_percent(raw, 0, true),
                         );
                     }
                 }
@@ -1179,7 +1179,7 @@ fn naval(
                 &format!("header_container/{wnd}_wnd/stat_positioning"),
                 TEXT,
                 positioning[side]
-                    .map(|raw| installed_content_core::fixed5::fixed5_percent(raw, 0, true))
+                    .map(|raw| content_reader_core::fixed5::fixed5_percent(raw, 0, true))
                     .ok_or_else(|| {
                         format!(
                             "Naval combat {id} {label} positioning is hidden: the positioning modifier keys are refused or a required combat, ship or carrier-air operand is unavailable."
@@ -1202,7 +1202,7 @@ fn naval(
                             .map(|counter| counter.anti_air_base)
                     },
                 )
-                .map(|raw| installed_content_core::fixed5::fixed5_to_string(raw, 1))
+                .map(|raw| content_reader_core::fixed5::fixed5_to_string(raw, 1))
                 .map_err(|reason| {
                     format!("Naval combat {id} {label} anti-air is hidden: {reason}.")
                 })

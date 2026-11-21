@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_save::economy::{self, ConvoyCounts};
+use content_reader_save::economy::{self, ConvoyCounts};
 use replay_data::{
     rows::ConvoyClientRow, rows::Recorded, rows::RegionalConvoyEfficiencyRow,
     rows::ResourceDefinitionRow, rows::ResourceOriginRow, rows::ResourceRightRow,
@@ -47,7 +47,7 @@ pub fn resource_map(
     rows: &ResourceMapRows<'_>,
     saved: &saved::Pack,
     economy: &economy::Pack,
-    countries: &BTreeMap<Vec<u8>, installed_content_save::Country>,
+    countries: &BTreeMap<Vec<u8>, content_reader_save::Country>,
     links: &BTreeMap<u32, &CountryRow>,
     names: &BTreeMap<u32, &[u8]>,
     threshold: i64,
@@ -537,7 +537,7 @@ fn market_route_endpoints(
 fn regional(
     rows: &ResourceMapRows<'_>,
     saved: &saved::Pack,
-    countries: &BTreeMap<Vec<u8>, installed_content_save::Country>,
+    countries: &BTreeMap<Vec<u8>, content_reader_save::Country>,
     links: &BTreeMap<u32, &CountryRow>,
     threshold: i64,
     report: &mut Report,
@@ -607,7 +607,7 @@ struct SavedClient<'a> {
     category: u8,
     owner_ordinal: Option<u32>,
     endpoints: Option<[Option<&'a [u8]>; 2]>,
-    factors: [&'a installed_content_save::Decimal; 2],
+    factors: [&'a content_reader_save::Decimal; 2],
     request: Option<i32>,
     convoys: ConvoyCounts,
 }
@@ -833,7 +833,7 @@ mod client_tests {
     use economy::{ContractClient, Purchase};
     #[test]
     fn market_client_factors_and_counts_compare_independently_of_accumulated_efficiency() {
-        let decimal = |s: &[u8]| installed_content_save::Decimal::parse(s).unwrap();
+        let decimal = |s: &[u8]| content_reader_save::Decimal::parse(s).unwrap();
         let economy = economy::Pack {
             purchases: Some(BTreeMap::from([(
                 7,
@@ -949,7 +949,7 @@ mod market_route_tests {
     use super::*;
 
     fn contract(handle: u32, seller: &[u8], buyer: &[u8]) -> economy::Purchase {
-        let decimal = || installed_content_save::Decimal::parse(b"1").unwrap();
+        let decimal = || content_reader_save::Decimal::parse(b"1").unwrap();
         economy::Purchase {
             id: u64::from(handle),
             seller: seller.to_vec(),
@@ -973,7 +973,7 @@ mod market_route_tests {
 
     #[test]
     fn market_endpoints_compare_saved_land_and_naval_routes_through_contract_countries() {
-        let items = installed_content_core::parser::parse(br#"countries={
+        let items = content_reader_core::parser::parse(br#"countries={
             AA={resources={delivery_routes={BB={type=1 from_state=11 to_state=22}}}}
             CC={resources={delivery_routes={DD={type=2 from_state=33 to_state=44 from_port=100 to_port=200}
                 BB={type=2 from_state=33 to_state=22}}}}

@@ -10,7 +10,7 @@ use crate::{
     },
     playhead_host::{MapSide, open},
 };
-use installed_content_core::movement::MovementMap;
+use content_reader_core::movement::MovementMap;
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::{Field, NativeValue, Opaque, TableId};
 use viewer_counters::map::counters::combat_markers::{LandCombatDefines, MarkerOutcome};

@@ -76,7 +76,7 @@ fn descriptor_selection_preserves_small_fallback_and_native_draw_count() {
 
 #[test]
 fn shown_weather_entities_present_their_sound_events_while_their_region_keeps_its_weather() {
-    let sound = |effect: &str, time: f32| installed_content_weather::weather::WeatherSound {
+    let sound = |effect: &str, time: f32| content_reader_weather::weather::WeatherSound {
         effect: effect.into(),
         time,
     };
@@ -834,7 +834,7 @@ pub(crate) fn activation_test_emitter() -> Emitter {
         leads: true,
         delay: 0.0,
         local_space: false,
-        render: installed_content_core::particles::RenderDescriptor::read(&[]).unwrap(),
+        render: content_reader_core::particles::RenderDescriptor::read(&[]).unwrap(),
         system_local_space: false,
     }
 }
@@ -893,7 +893,7 @@ fn fresh_emitter_accumulates_births_only_after_frame_updates() {
 
 #[test]
 fn native_births_interpolate_motion_without_retransforming_survivors() {
-    use installed_content_core::mesh::Transform;
+    use content_reader_core::mesh::Transform;
     let mut emitter = activation_test_emitter();
     emitter.emission.base = 2.;
     emitter.velocity.base = 0.;

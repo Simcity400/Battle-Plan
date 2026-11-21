@@ -23,11 +23,11 @@ use std::{
     io,
 };
 
-use installed_content_core::{
+use content_reader_core::{
     ResolvedLayers, buildings::BuildingType, buildings::Buildings, gui::native, map::MapData,
     map::ProvinceKind, province_geometry::ProvinceGeometry,
 };
-use installed_content_raids::{raids::Catalog, raids::RaidType};
+use content_reader_raids::{raids::Catalog, raids::RaidType};
 use replay_data::{rows::RaidRow, rows::RaidScope, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
@@ -56,7 +56,7 @@ pub struct RaidAssets {
     pub priority: i8,
     pub geometry: ProvinceGeometry,
     pub paths: Result<paths::PathSearch, String>,
-    pub moves: Result<installed_content_unit_path::unit_path::MoveGraph, String>,
+    pub moves: Result<content_reader_unit_path::unit_path::MoveGraph, String>,
     pub(crate) recorded_indexes: launch::RecordedIndexes,
     pub(crate) table_indexes: launch::TableIndexes,
     batch: Result<usize, String>,
@@ -68,17 +68,17 @@ pub struct RaidAssets {
     pub regions: BTreeMap<u32, u32>,
     pub region_provinces: BTreeMap<u32, Vec<u32>>,
     day_night: Result<replay_data::day_night::Defines, String>,
-    pub transport_sub_units: Result<installed_content_core::unit_leader::SubUnits, String>,
+    pub transport_sub_units: Result<content_reader_core::unit_leader::SubUnits, String>,
     pub combat_minimum_time: i32,
     pub naval_combat_min_duration: Result<i32, String>,
     pub avoid_enemy: bool,
     sites: BTreeMap<(u32, Site), Vec<u32>>,
     refused_sites: Option<String>,
-    pub equipment: installed_content_core::equipment::Database,
-    pub equipment_groups: installed_content_core::equipment::Groups,
+    pub equipment: content_reader_core::equipment::Database,
+    pub equipment_groups: content_reader_core::equipment::Groups,
     pub equipment_lost: Option<String>,
     pub defines: RaidDefines,
-    pub warnings: Vec<installed_content_core::Diagnostic>,
+    pub warnings: Vec<content_reader_core::Diagnostic>,
 }
 impl std::fmt::Debug for RaidAssets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -139,7 +139,7 @@ pub struct RaidDefines {
 }
 
 impl RaidDefines {
-    pub fn read(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
+    pub fn read(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
         Ok(Self {
             base_max_command_power: defines.fixed5("NCountry", "BASE_MAX_COMMAND_POWER")?,
             naval_invasion_priority: defines.int32("NNavy", "NAVAL_INVASION_PRIORITY")?,
@@ -207,8 +207,8 @@ impl RaidAssets {
         &self,
     ) -> Result<
         (
-            &installed_content_core::equipment::Database,
-            &installed_content_core::equipment::Groups,
+            &content_reader_core::equipment::Database,
+            &content_reader_core::equipment::Groups,
         ),
         String,
     > {
@@ -228,7 +228,7 @@ impl RaidAssets {
 
     pub fn load(
         layers: &ResolvedLayers,
-        defines: &installed_content_core::defines::Defines,
+        defines: &content_reader_core::defines::Defines,
         map: &MapData,
         registry: &native::resources::Registry,
     ) -> io::Result<Self> {
@@ -238,7 +238,7 @@ impl RaidAssets {
     pub fn load_with_products(
         products: Option<&map_content::loader::Loader>,
         layers: &ResolvedLayers,
-        defines: &installed_content_core::defines::Defines,
+        defines: &content_reader_core::defines::Defines,
         map: &MapData,
         registry: &native::resources::Registry,
     ) -> io::Result<Self> {
@@ -255,20 +255,20 @@ impl RaidAssets {
     pub fn load_content_with_products(
         products: Option<&map_content::loader::Loader>,
         layers: &ResolvedLayers,
-        defines: &installed_content_core::defines::Defines,
+        defines: &content_reader_core::defines::Defines,
         map: &MapData,
     ) -> io::Result<Self> {
         let product = map_content::loader::TriggerLoader::new(layers, products);
         let mut warnings = Vec::new();
-        let catalog = installed_content_raids::raids::read(layers)?;
+        let catalog = content_reader_raids::raids::read(layers)?;
         if !catalog.refused.is_empty() {
-            warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
+            warnings.push((content_reader_core::DiagnosticKind::Refused, format!(
                 "Raid types declared more than once cannot be used; targets they may be offered against are withheld: {}.",
                 catalog.refused.join(", ")
             )));
         }
         for (name, reason) in &catalog.unsupported {
-            warnings.push((installed_content_core::DiagnosticKind::Unsupported, format!(
+            warnings.push((content_reader_core::DiagnosticKind::Unsupported, format!(
                 "Raid type {name} cannot be read ({reason}); targets it may be offered against are withheld."
             )));
         }
@@ -282,12 +282,12 @@ impl RaidAssets {
         let tag_aliases = product.tag_aliases()?;
         warnings.extend(tag_aliases.unknown.iter().map(|reason| {
             (
-                installed_content_core::DiagnosticKind::Unsettled,
+                content_reader_core::DiagnosticKind::Unsettled,
                 format!("Raids: tag aliases: {reason}."),
             )
         }));
-        let equipment = installed_content_core::equipment::Database::load(layers)?;
-        let equipment_groups = installed_content_core::equipment::Groups::load(layers)?;
+        let equipment = content_reader_core::equipment::Database::load(layers)?;
+        let equipment_groups = content_reader_core::equipment::Groups::load(layers)?;
         let equipment_lost = match (&equipment.lost, &equipment_groups.lost) {
             (Some(lost), _) => Some(format!(
                 "the equipment database cannot be followed past {lost}"
@@ -299,7 +299,7 @@ impl RaidAssets {
         };
         if let Some(lost) = &equipment_lost {
             warnings.push((
-                installed_content_core::DiagnosticKind::Unsettled,
+                content_reader_core::DiagnosticKind::Unsettled,
                 format!("Raids: {lost}, so every raid fact that reads equipment stays unknown."),
             ));
         }
@@ -309,14 +309,14 @@ impl RaidAssets {
                 .iter()
                 .chain(&equipment_groups.misreads)
                 .map(|misread| {
-                    (installed_content_core::DiagnosticKind::Misread, format!(
+                    (content_reader_core::DiagnosticKind::Misread, format!(
                         "Equipment content: {misread}; raid requirements follow the game's reading."
                     ))
                 }),
         );
         for (name, building) in &buildings.types {
             if let Some(reason) = &building.raid_refused {
-                warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
+                warnings.push((content_reader_core::DiagnosticKind::Refused, format!(
                     "Building {name}'s raid facts are refused, so raids that read them stay unknown: {reason}."
                 )));
             }
@@ -333,7 +333,7 @@ impl RaidAssets {
         let glyphs = wanted;
         let leader_roles = product.leader_roles();
         if let Err(error) = &leader_roles {
-            warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
+            warnings.push((content_reader_core::DiagnosticKind::Refused, format!(
                 "Character templates cannot be read ({error}); unit leaders whose visibility has a condition are undecided."
             )));
         }
@@ -341,19 +341,19 @@ impl RaidAssets {
         let states = states.definitions();
         let (graph, geometry) = product.graph()?;
         if let Err(error) = &graph {
-            warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
+            warnings.push((content_reader_core::DiagnosticKind::Refused, format!(
                 "The province graph cannot be built ({error}); naval and building raid sources cannot be ranged."
             )));
         }
         let paths = graph.map(paths::PathSearch::new);
         let moves = paths
             .as_ref()
-            .map(|paths| installed_content_unit_path::unit_path::MoveGraph::new(paths.graph(), &geometry))
+            .map(|paths| content_reader_unit_path::unit_path::MoveGraph::new(paths.graph(), &geometry))
             .map_err(Clone::clone);
         if let Ok(moves) = &moves {
             for rule in moves.rules() {
                 if let Some(reason) = &rule.unsupported {
-                    warnings.push((installed_content_core::DiagnosticKind::Unsupported, format!(
+                    warnings.push((content_reader_core::DiagnosticKind::Unsupported, format!(
                         "Adjacency rule {} is refused ({reason}); army paths across it are unknown.",
                         rule.name
                     )));
@@ -364,12 +364,12 @@ impl RaidAssets {
         let neighbor_states =
             product.neighbor_states(paths.as_ref().map(|paths| paths.graph()), &state_provinces);
         if let Err(error) = &neighbor_states {
-            warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
+            warnings.push((content_reader_core::DiagnosticKind::Refused, format!(
                 "State neighbours cannot be derived ({error}); any_neighbor_state and all_neighbor_state are unknown."
             )));
         }
         let mut regions = BTreeMap::new();
-        let database = installed_content_regions::regions::read(layers)?.regions;
+        let database = content_reader_regions::regions::read(layers)?.regions;
         let region_provinces: BTreeMap<_, _> = database
             .into_iter()
             .map(|(id, region)| (id, region.provinces))
@@ -380,7 +380,7 @@ impl RaidAssets {
         )
         .map_err(|error| error.to_string());
         if let Err(error) = &day_night {
-            warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
+            warnings.push((content_reader_core::DiagnosticKind::Refused, format!(
                 "The day/night defines cannot be read ({error}); province clocks the game updated hourly are unknown."
             )));
         }
@@ -479,7 +479,7 @@ impl RaidAssets {
         &self,
     ) -> Result<
         (
-            &installed_content_core::province_graph::ProvinceGraph,
+            &content_reader_core::province_graph::ProvinceGraph,
             &ProvinceGeometry,
         ),
         String,
@@ -626,7 +626,7 @@ fn map_icon_priority(define: f64) -> Result<i8, String> {
     Ok(define as i32 as i8)
 }
 
-fn target_batch(defines: &installed_content_core::defines::Defines) -> Result<usize, String> {
+fn target_batch(defines: &content_reader_core::defines::Defines) -> Result<usize, String> {
     defines
         .int32("NRaids", "MAX_TARGETS_TO_UPDATE_PER_FRAME")
         .map(|rows| rows.max(1) as usize)
@@ -640,11 +640,11 @@ fn invalid(message: impl Into<String>) -> io::Error {
 fn sites(
     layers: &ResolvedLayers,
     map: &MapData,
-    states: &BTreeMap<u32, installed_content_states::states::StateDefinition>,
+    states: &BTreeMap<u32, content_reader_states::states::StateDefinition>,
     buildings: &Buildings,
 ) -> io::Result<BTreeMap<(u32, Site), Vec<u32>>> {
     let mut out: BTreeMap<(u32, Site), Vec<u32>> = BTreeMap::new();
-    for slot in installed_content_core::positions::read_buildings(layers)? {
+    for slot in content_reader_core::positions::read_buildings(layers)? {
         let Some(province) = province_at(map, slot.x, slot.z) else {
             continue;
         };
@@ -1089,7 +1089,7 @@ fn finish(
 }
 
 pub fn target_country(world: &World<'_>, scope: &RaidScope) -> Result<Option<u32>, String> {
-    installed_content_raids::raids::target::country(world.frame(), scope)?
+    content_reader_raids::raids::target::country(world.frame(), scope)?
         .map(|raw| {
             world
                 .slot(raw)

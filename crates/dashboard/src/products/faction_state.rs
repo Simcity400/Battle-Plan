@@ -73,7 +73,7 @@ impl Art {
             None => self
                 .default_icon
                 .get_or_init(|| {
-                    installed_content_core::defines::read(&cat.content.layers)
+                    content_reader_core::defines::read(&cat.content.layers)
                         .and_then(|defines| defines.text("NFactions", "FACTION_DEFAULT_ICON"))
                         .map_err(|why| format!("Faction logo: {why}"))
                 })

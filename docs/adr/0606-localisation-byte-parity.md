@@ -10,4 +10,4 @@ Formatting follows the argument type and native rounding. Signed integers ignore
 
 A parse memo reuses only the parse of identical bytes for the same language and executable stamp. It cannot replace looking up, reading or verifying files. A damaged memo or one written by a different build falls back to parsing. Separate program names keep the viewer and dashboard from sharing an incompatible memo. Publish complete files using distinct temporary paths and a trailing digest, and write a new memo only when the set of cached parses changes.
 
-[Localisation reader, formatter and memo](../../crates/installed-content-localisation/src/localisation.rs)
+[Localisation reader, formatter and memo](../../crates/content-reader-localisation/src/localisation.rs)

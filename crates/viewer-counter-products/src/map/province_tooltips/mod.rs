@@ -23,8 +23,8 @@ mod trade_routes;
 pub(super) mod units;
 mod weather;
 
-use installed_content_localisation::{localisation::Argument as Arg, localisation::Localisation};
-use installed_content_states::states::StateDefinition;
+use content_reader_localisation::{localisation::Argument as Arg, localisation::Localisation};
+use content_reader_states::states::StateDefinition;
 use inputs::Names;
 use replay_data::{rows::ProvinceRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -44,7 +44,7 @@ pub struct Content {
     members: BTreeMap<u32, Vec<u32>>,
     impassable: BTreeSet<u32>,
     neighbors: Result<BTreeMap<u32, Vec<u32>>, String>,
-    temperature: Result<installed_content_weather::weather::TemperatureRanges, String>,
+    temperature: Result<content_reader_weather::weather::TemperatureRanges, String>,
     pass: Result<replay_data::temperature::Content, String>,
     derived: inputs::TemperaturesByFrame,
     pub(super) units: Result<units::Content, String>,
@@ -74,18 +74,18 @@ impl Content {
         &self.members
     }
     pub fn load(
-        layers: &installed_content_core::ResolvedLayers,
-        defines: &installed_content_core::defines::Defines,
+        layers: &content_reader_core::ResolvedLayers,
+        defines: &content_reader_core::defines::Defines,
         states: &BTreeMap<u32, StateDefinition>,
-        temperature: &Result<installed_content_weather::weather::TemperatureRanges, String>,
-        subunits: Result<&installed_content_core::unit_leader::SubUnits, &str>,
+        temperature: &Result<content_reader_weather::weather::TemperatureRanges, String>,
+        subunits: Result<&content_reader_core::unit_leader::SubUnits, &str>,
         labels: Arc<viewer_foundation::recorded_labels::RecordedLabels>,
     ) -> Self {
         let members = states
             .iter()
             .map(|(&id, state)| (id, state.provinces.clone()))
             .collect();
-        let graph = installed_content_core::province_graph::ProvinceGraph::read(layers);
+        let graph = content_reader_core::province_graph::ProvinceGraph::read(layers);
         Self {
             labels,
             impassable: states
@@ -100,7 +100,7 @@ impl Content {
                 .as_ref()
                 .map_err(|e| e.to_string())
                 .and_then(|(graph, geometry)| {
-                    installed_content_weather::weather::temperature::read_with(layers, graph, geometry)
+                    content_reader_weather::weather::temperature::read_with(layers, graph, geometry)
                         .map_err(|e| e.to_string())
                 }),
             derived: Default::default(),
@@ -530,7 +530,7 @@ fn route_text(content: &counter_content::Content, frame: &DecodedFrame, ours: u3
             .checked_sub(1)
             .and_then(|at| resources.resources.get(at))
             .ok_or_else(|| format!("recorded resource {id} has no declaration in the content's resource files"))?;
-        let key = format!("PRODUCTION_MATERIALS_{}", installed_content_localisation::localisation::crt_case_text(&declared.token, true, false));
+        let key = format!("PRODUCTION_MATERIALS_{}", content_reader_localisation::localisation::crt_case_text(&declared.token, true, false));
         localise(&content.localisation, &key, &[])
     };
     let viewed = |raw: u32| Ok(links.as_ref().map_err(Clone::clone)?.get(&raw) == Some(&ours));
@@ -572,9 +572,9 @@ fn state_name_of(content: &counter_content::Content, frame: &DecodedFrame, id: u
     })
 }
 
-fn click_footer(loc: &Localisation, kind: Option<installed_content_core::map::ProvinceKind>, out: &mut Tooltip) {
+fn click_footer(loc: &Localisation, kind: Option<content_reader_core::map::ProvinceKind>, out: &mut Tooltip) {
     match kind {
-        Some(installed_content_core::map::ProvinceKind::Land) => match localise(loc, "PROVINCE_CLICK_VIEW", &[]) {
+        Some(content_reader_core::map::ProvinceKind::Land) => match localise(loc, "PROVINCE_CLICK_VIEW", &[]) {
             Ok(text) => {
                 viewer_foundation::tooltip_text::ensure_newlines(&mut out.body, 1);
                 out.body.push_str(&text);
@@ -616,7 +616,7 @@ impl Context<'_> {
                 "country slot {slot} flag tag is not three codepoints"
             ));
         }
-        let name = installed_content_localisation::localisation::crt_case_text(
+        let name = content_reader_localisation::localisation::crt_case_text(
             &self.countries.name_with(slot, "_DEF")?,
             true,
             true,

@@ -1,13 +1,13 @@
 use super::*;
-use installed_content_raids::{raids::RaidCategory, raids::RaidType as Kind, raids::TargetType};
+use content_reader_raids::{raids::RaidCategory, raids::RaidType as Kind, raids::TargetType};
 use replay_data::{
     rows::LexicalTokenRow, rows::RaidCountryRow, rows::RaidTargetRow, rows::RaidTargetStatusRow,
     rows::TableSchema,
 };
 use replay_frame::frame::TableView;
 use viewer_foundation::map::test_support::gui;
-pub fn parse(source: &str) -> Vec<installed_content_core::parser::Item> {
-    installed_content_core::parser::parse(source.as_bytes())
+pub fn parse(source: &str) -> Vec<content_reader_core::parser::Item> {
+    content_reader_core::parser::parse(source.as_bytes())
         .unwrap()
         .items
 }
@@ -16,7 +16,7 @@ pub fn set_counts(assets: &mut RaidAssets) {
     let facts = &mut assets.trigger_content;
     let ideologies = facts.ideologies.get_or_insert_with(Default::default);
     let mut names = (*facts.triggers).clone();
-    names.counts = Some(installed_content_core::trigger_keys::CountTriggerNames::new(
+    names.counts = Some(content_reader_core::trigger_keys::CountTriggerNames::new(
         &facts.buildings,
         ideologies,
         &Default::default(),
@@ -246,7 +246,7 @@ pub fn target(id: u32, province: u32, detected: u8) -> RaidTargetRow {
 }
 
 pub fn path_assets() -> RaidAssets {
-    let mut graph = installed_content_core::province_graph::ProvinceGraph::default();
+    let mut graph = content_reader_core::province_graph::ProvinceGraph::default();
     for id in 1..=4_u32 {
         let next: Vec<_> = [id.wrapping_sub(1), id + 1]
             .into_iter()
@@ -257,7 +257,7 @@ pub fn path_assets() -> RaidAssets {
     }
     let mut assets = assets();
     assets.geometry.land = BTreeSet::from([3, 4]);
-    assets.moves = Ok(installed_content_unit_path::unit_path::MoveGraph::new(
+    assets.moves = Ok(content_reader_unit_path::unit_path::MoveGraph::new(
         &graph,
         &assets.geometry,
     ));

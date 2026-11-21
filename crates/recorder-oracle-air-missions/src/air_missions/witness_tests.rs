@@ -47,7 +47,7 @@ fn every_pool_witness_matches_capture_with_any_mission_region_and_registration()
                 &mut frame,
                 TableRows::AirReferenceWitnesses(vec![witness.clone()]),
             );
-            saved.air.bases = vec![installed_content_save::air::AirBase {
+            saved.air.bases = vec![content_reader_save::air::AirBase {
                 id: base,
                 state: Some(1),
                 host: None,

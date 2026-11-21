@@ -7,7 +7,7 @@ pub(super) fn format_variable(expression: &str, value: i64) -> String {
     let format = expression
         .split_once('|')
         .map(|(_, format)| format.as_bytes());
-    installed_content_localisation::localisation::format_scripted_variable(value, format)
+    content_reader_localisation::localisation::format_scripted_variable(value, format)
 }
 
 impl<'a> ScriptedText<'a> {

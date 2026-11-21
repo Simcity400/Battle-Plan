@@ -50,13 +50,13 @@ use viewer_foundation::table_access::TokenKeys;
 use viewer_foundation::table_access::rows as table_access_rows;
 use viewer_foundation::unit_handle::Unit;
 
-use installed_content_core::{
+use content_reader_core::{
     ResolvedLayers, buildings::Slot, defines::Defines, flags, flags::FlagSet, gui::native,
     map::MapData, map::ProvinceKind, positions,
 };
-use installed_content_gfx::gfx::SpriteSet;
-use installed_content_image::dds;
-use installed_content_regions::regions;
+use content_reader_gfx::gfx::SpriteSet;
+use content_reader_image::dds;
+use content_reader_regions::regions;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 
@@ -239,7 +239,7 @@ pub struct CounterDefines {
 }
 
 impl CounterDefines {
-    pub fn read(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
+    pub fn read(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
         let number = |name| defines.number("NGraphics", name).map(|value| value as f32);
         let fixed = |name| {
             defines
@@ -578,14 +578,14 @@ pub struct CounterAssets {
     pub types: templates::TypeAtlas,
     portraits: counter_portraits::Portraits,
     recorded_sheets: BTreeMap<String, SpriteSheet>,
-    pub ability_sprites: Arc<installed_content_abilities::abilities::AbilitySprites>,
+    pub ability_sprites: Arc<content_reader_abilities::abilities::AbilitySprites>,
     pub warnings: Vec<String>,
 }
 
 pub fn gui_assets(
     windows: &NativeWindows,
     registry: &native::resources::Registry,
-    localisation: &installed_content_localisation::localisation::Localisation,
+    localisation: &content_reader_localisation::localisation::Localisation,
     tooltip_assets: Assets,
 ) -> Assets {
     let mut assets = gui_windows::window_assets(windows, registry, localisation);
@@ -626,7 +626,7 @@ impl CounterAssets {
         (layouts, windows): (Layouts, SharedNativeWindows),
         defines: &Defines,
         (sprites, registry): (&SpriteSet, &native::resources::Registry),
-        (language, map_size, decode): (&str, [u32; 2], installed_content_image::native::Decode),
+        (language, map_size, decode): (&str, [u32; 2], content_reader_image::native::Decode),
         images: &mut Vec<dds::Texture>,
         lazy: &Arc<LazyTextures>,
     ) -> io::Result<Self> {
@@ -754,7 +754,7 @@ impl CounterAssets {
             }
         }
         let ability_sprites = if layouts.abilities.is_some() {
-            installed_content_abilities::abilities::read(layers).unwrap_or_else(|error| {
+            content_reader_abilities::abilities::read(layers).unwrap_or_else(|error| {
                 warnings.push(format!(
                     "common/abilities cannot be read ({error}); the counter ability grid is not drawn"
                 ));
@@ -824,7 +824,7 @@ impl CounterAssets {
     pub fn load_gui(
         &mut self,
         layers: &ResolvedLayers,
-        localisation: &installed_content_localisation::localisation::Localisation,
+        localisation: &content_reader_localisation::localisation::Localisation,
         tooltip_assets: Assets,
         images: &mut Vec<dds::Texture>,
     ) -> io::Result<Vec<String>> {
@@ -1042,7 +1042,7 @@ impl CounterAssets {
 
 pub struct CounterContent {
     pub terrain: Arc<TerrainContent>,
-    pub wing_types: Result<Arc<installed_content_core::unit_leader::SubUnits>, String>,
+    pub wing_types: Result<Arc<content_reader_core::unit_leader::SubUnits>, String>,
     mission_content: Result<naval_mission_inputs::Content, String>,
     pub recorded_labels: Option<Arc<viewer_foundation::naval_labels::RecordedLabels>>,
     pub port_mission_defines: viewer_foundation::map::port_mission_defines::Defines,
@@ -1077,7 +1077,7 @@ pub struct CounterContent {
     pub ability_comms_scaling: Result<Arc<Vec<i64>>, String>,
     pub ability_no_hq_scaling: Result<i64, String>,
     pub subunit_tokens: Result<TokenKeys, String>,
-    pub ideologies: installed_content_core::ideologies::Ideologies,
+    pub ideologies: content_reader_core::ideologies::Ideologies,
 }
 
 impl CounterContent {
@@ -1085,7 +1085,7 @@ impl CounterContent {
         layers: &ResolvedLayers,
         artwork: &ResolvedLayers,
         map: &MapData,
-        defines: &installed_content_core::defines::Defines,
+        defines: &content_reader_core::defines::Defines,
         regions: &BTreeMap<u32, regions::StrategicRegion>,
     ) -> io::Result<Self> {
         Self::load_with_products(None, layers, artwork, map, defines, regions)
@@ -1096,7 +1096,7 @@ impl CounterContent {
         layers: &ResolvedLayers,
         artwork: &ResolvedLayers,
         map: &MapData,
-        defines: &installed_content_core::defines::Defines,
+        defines: &content_reader_core::defines::Defines,
         regions: &BTreeMap<u32, regions::StrategicRegion>,
     ) -> io::Result<Self> {
         let stacks = match products {
@@ -1106,7 +1106,7 @@ impl CounterContent {
         let anchors = stacks.positions;
         let stack_scales = stacks.scales;
         let mut ports = BTreeMap::new();
-        let definitions = installed_content_core::buildings::read(layers)?;
+        let definitions = content_reader_core::buildings::read(layers)?;
         let port_slots = port_slot_names(&definitions);
         let provinces = ProvinceMap {
             width: map.width,
@@ -1114,10 +1114,10 @@ impl CounterContent {
             ids: &map.province_ids,
         };
         let building_slots = positions::read_buildings(layers)?;
-        let (states, _) = installed_content_states::states::read(layers, defines, &map.definitions)?;
+        let (states, _) = content_reader_states::states::read(layers, defines, &map.definitions)?;
         let roster = artwork.descriptor_roster()?;
-        let admit = |spawn: &installed_content_core::buildings::SpawnPoint,
-                     slot: &installed_content_core::positions::BuildingPosition,
+        let admit = |spawn: &content_reader_core::buildings::SpawnPoint,
+                     slot: &content_reader_core::positions::BuildingPosition,
                      province: Option<u32>| {
             viewer_foundation::map::building_facts::admit_slot(
                 spawn,
@@ -1173,8 +1173,8 @@ impl CounterContent {
             }
             region_provinces.insert(id, members);
         }
-        let (terrain, default_map) = installed_content_core::terrain::read(layers)?;
-        let wing_types = installed_content_core::unit_leader::sub_units(layers)
+        let (terrain, default_map) = content_reader_core::terrain::read(layers)?;
+        let wing_types = content_reader_core::unit_leader::sub_units(layers)
             .map(Arc::new)
             .map_err(|error| error.to_string());
         let attrition = viewer_foundation::map::counter_attrition::Content::read(
@@ -1273,7 +1273,7 @@ impl CounterContent {
             subunit_tokens: viewer_foundation::map::subunit_files::subunit_keys(layers)
                 .map(|keys| TokenKeys::new(&keys))
                 .map_err(|error| error.to_string()),
-            ideologies: installed_content_core::ideologies::Ideologies::default(),
+            ideologies: content_reader_core::ideologies::Ideologies::default(),
         })
     }
 
@@ -1411,7 +1411,7 @@ fn seeded_only(anchors: &BTreeMap<(u32, u32), [f32; 3]>, province: u32, kind: u3
 }
 
 fn combat_terrains(bytes: &[u8]) -> io::Result<BTreeMap<u32, String>> {
-    installed_content_core::map::province_terrains(bytes)?
+    content_reader_core::map::province_terrains(bytes)?
         .into_iter()
         .map(|(id, terrain)| {
             String::from_utf8(terrain)
@@ -1421,7 +1421,7 @@ fn combat_terrains(bytes: &[u8]) -> io::Result<BTreeMap<u32, String>> {
         .collect()
 }
 
-fn port_slot_names(definitions: &installed_content_core::buildings::Buildings) -> BTreeSet<&str> {
+fn port_slot_names(definitions: &content_reader_core::buildings::Buildings) -> BTreeSet<&str> {
     definitions
         .types
         .values()
@@ -1432,11 +1432,11 @@ fn port_slot_names(definitions: &installed_content_core::buildings::Buildings) -
 
 pub struct CounterInputs<'a> {
     pub content: &'a CounterContent,
-    pub equipment: Result<&'a installed_content_core::equipment::Database, &'a str>,
+    pub equipment: Result<&'a content_reader_core::equipment::Database, &'a str>,
     pub assets: &'a CounterAssets,
     pub windows: &'a SharedNativeWindows,
     pub fonts: &'a text::Fonts,
-    pub localisation: &'a installed_content_localisation::localisation::Localisation,
+    pub localisation: &'a content_reader_localisation::localisation::Localisation,
     pub recorded_language: &'a str,
     pub map: &'a MapData,
     pub hour: i32,
@@ -2703,8 +2703,8 @@ pub fn hour_tables(
     vision: Arc<Vision>,
     content: &CounterContent,
     assets: &CounterAssets,
-    equipment: Result<&installed_content_core::equipment::Database, &str>,
-    localisation: &installed_content_localisation::localisation::Localisation,
+    equipment: Result<&content_reader_core::equipment::Database, &str>,
+    localisation: &content_reader_localisation::localisation::Localisation,
     etas: &Etas,
     movement_content: Option<&MovementContent>,
     engaged: Option<&History>,
@@ -2714,8 +2714,8 @@ pub fn hour_tables(
     reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
     mission_topology: Result<
         (
-            &installed_content_core::province_graph::ProvinceGraph,
-            &installed_content_core::province_geometry::ProvinceGeometry,
+            &content_reader_core::province_graph::ProvinceGraph,
+            &content_reader_core::province_geometry::ProvinceGeometry,
         ),
         String,
     >,
@@ -2906,8 +2906,8 @@ pub fn naval_dominance_sources(
     reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
     mission_topology: Result<
         (
-            &installed_content_core::province_graph::ProvinceGraph,
-            &installed_content_core::province_geometry::ProvinceGeometry,
+            &content_reader_core::province_graph::ProvinceGraph,
+            &content_reader_core::province_geometry::ProvinceGeometry,
         ),
         String,
     >,
@@ -2938,8 +2938,8 @@ pub fn hour_tables_profiled(
     vision: Arc<Vision>,
     content: &CounterContent,
     assets: &CounterAssets,
-    equipment: Result<&installed_content_core::equipment::Database, &str>,
-    localisation: &installed_content_localisation::localisation::Localisation,
+    equipment: Result<&content_reader_core::equipment::Database, &str>,
+    localisation: &content_reader_localisation::localisation::Localisation,
     etas: &Etas,
     movement_content: Option<&MovementContent>,
     engaged: Option<&History>,
@@ -2949,8 +2949,8 @@ pub fn hour_tables_profiled(
     reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
     mission_topology: Result<
         (
-            &installed_content_core::province_graph::ProvinceGraph,
-            &installed_content_core::province_geometry::ProvinceGeometry,
+            &content_reader_core::province_graph::ProvinceGraph,
+            &content_reader_core::province_geometry::ProvinceGeometry,
         ),
         String,
     >,
@@ -4225,7 +4225,7 @@ impl Countries {
         let (cosmetic, original) = self.flag_tags.get(&slot)?;
         let cosmetic = cosmetic.as_ref().ok()?;
         let group = self.groups.get(&slot)?.as_ref().ok()?;
-        let keys = installed_content_country_names::country_names::flag_keys(
+        let keys = content_reader_country_names::country_names::flag_keys(
             original.as_deref().ok(),
             cosmetic,
             group.as_deref(),

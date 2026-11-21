@@ -13,7 +13,7 @@ use crate::{
     },
 };
 use dashboard_query::identity::{Holder, Holders};
-use installed_content_country_names::country_names::CountryNames;
+use content_reader_country_names::country_names::CountryNames;
 use replay_data::rows::{CharacterOperativeRow, CharacterPortraitRow, OperativeMembershipRow, Recorded, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};

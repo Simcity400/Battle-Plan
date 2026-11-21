@@ -33,7 +33,7 @@ pub fn texture_catalogue(
     }
     let layers =
         ResolvedLayers::from_folders(&[(&base.0, &[][..]), (&modification.0, &[][..])]).unwrap();
-    catalogue.sprites = installed_content_gfx::gfx::read(&layers).unwrap();
+    catalogue.sprites = content_reader_gfx::gfx::read(&layers).unwrap();
     catalogue.guis = Default::default();
     catalogue.content = Arc::new(ResolvedContent {
         layers,
@@ -252,7 +252,7 @@ fn a_sprite_batch_draws_only_what_its_images_do_not_hold() {
     hold(sprites[1]);
     sprite_frames_png(layers, &requests, decode, 96).unwrap();
     assert!(
-        installed_content_core::content::strict(|| sprite_frames_png(layers, &requests, decode, 96))
+        content_reader_core::content::strict(|| sprite_frames_png(layers, &requests, decode, 96))
             .is_err()
     );
 }
@@ -977,9 +977,9 @@ fn artwork_shader_source_warnings_survive_lazy_reads() {
     );
     let layers = &catalogue.content.layers;
     let reads = layers.report_uncovered_reads();
-    let ((program, warnings), _) = installed_content_core::content::diagnostics::capture(|| {
+    let ((program, warnings), _) = content_reader_core::content::diagnostics::capture(|| {
         let program =
-            installed_content_core::pdxshader::program::read_reported(layers, b"outside/test.lua")
+            content_reader_core::pdxshader::program::read_reported(layers, b"outside/test.lua")
                 .unwrap();
         (program, catalogue.reader_warning_lines())
     });

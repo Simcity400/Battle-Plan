@@ -22,8 +22,8 @@ pub(super) fn hour_temperature(content: &Content, frame: &DecodedFrame, rows: &[
         .province_hover
         .temperature_at(frame, rows, province)
 }
-use installed_content_core::gui::native;
-use installed_content_localisation::localisation::Argument;
+use content_reader_core::gui::native;
+use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{Recorded, tables};
 use replay_frame::frame::DecodedFrame;
 use std::io;

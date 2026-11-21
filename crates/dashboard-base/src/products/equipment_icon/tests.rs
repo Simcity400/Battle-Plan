@@ -20,7 +20,7 @@ fn equipment_icon_warnings_name_every_refused_technology() {
     let refused: Vec<_> = (0..9).map(|entry| format!("technology_{entry}")).collect();
     let content = crate::products::equipment_icon::IconContent::from_parts(
         Default::default(),
-        installed_content_core::technology::Enablers {
+        content_reader_core::technology::Enablers {
             refused: refused.clone(),
             ..Default::default()
         },
@@ -39,8 +39,8 @@ fn equipment_icon_warnings_name_every_refused_technology() {
 #[test]
 fn equipment_icons_keep_null_archetype_fallbacks() {
     use super::{Icon, IconContent, IconHour};
-    use installed_content_core::{technology::Enabler, technology::Enablers};
-    use installed_content_equipment_graphics::equipment_graphics;
+    use content_reader_core::{technology::Enabler, technology::Enablers};
+    use content_reader_equipment_graphics::equipment_graphics;
     use replay_data::rows::VariantDefinitionRow;
 
     let units = equipment_types(&[br#"
@@ -149,7 +149,7 @@ fn equipment_icons_keep_null_archetype_fallbacks() {
 #[test]
 fn equipment_icons_distinguish_real_empty_names_from_null_archetypes() {
     use super::{Icon, IconContent, IconHour};
-    use installed_content_equipment_graphics::equipment_graphics;
+    use content_reader_equipment_graphics::equipment_graphics;
     use replay_data::rows::VariantDefinitionRow;
 
     let units = equipment_types(&[br#"
@@ -192,7 +192,7 @@ fn equipment_icons_distinguish_real_empty_names_from_null_archetypes() {
 #[test]
 fn authored_equipment_icons_keep_null_archetype_candidates() {
     use super::{Icon, IconContent};
-    use installed_content_core::{technology::Enabler, technology::Enablers};
+    use content_reader_core::{technology::Enabler, technology::Enablers};
 
     let content = IconContent::from_parts(
         equipment_types(&[b"equipments = { bare_type = { } }"]).unwrap(),
@@ -234,8 +234,8 @@ fn equipment_icons_follow_the_production_rows_rule() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::equipment_icon::{Icon, IconContent, IconHour};
-    use installed_content_core::{technology::Enabler, technology::Enablers};
-    use installed_content_equipment_graphics::equipment_graphics;
+    use content_reader_core::{technology::Enabler, technology::Enablers};
+    use content_reader_equipment_graphics::equipment_graphics;
     use replay_data::{rows::PoliticalPartyRow, rows::PoliticsRow, rows::VariantDefinitionRow};
     let units = equipment_types(&[br#"
         equipments = {
@@ -551,8 +551,8 @@ fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::equipment_icon::{Icon, IconContent, IconHour};
-    use installed_content_core::{ResolvedLayers, technology};
-    use installed_content_equipment_graphics::equipment_graphics;
+    use content_reader_core::{ResolvedLayers, technology};
+    use content_reader_equipment_graphics::equipment_graphics;
     use replay_data::{rows::PoliticalPartyRow, rows::PoliticsRow, rows::VariantDefinitionRow};
     let root = std::env::temp_dir().join(format!(
         "hoi4_dashboard_modded_icons_{}_{:?}",
@@ -596,9 +596,9 @@ fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
         std::fs::write(file, text).unwrap();
     }
     let layers = ResolvedLayers::from_folders(&[(&vanilla, &[][..]), (&modded, &[][..])]).unwrap();
-    let sprites = installed_content_gfx::gfx::read(&layers).unwrap();
+    let sprites = content_reader_gfx::gfx::read(&layers).unwrap();
     let content = IconContent::from_parts(
-        installed_content_core::equipment::Database::load_complete(&layers).unwrap(),
+        content_reader_core::equipment::Database::load_complete(&layers).unwrap(),
         technology::read_enablers(&layers, |_| Err("no limit is decided here".to_owned())).unwrap(),
         equipment_graphics::Content::from_texts(
             &[],

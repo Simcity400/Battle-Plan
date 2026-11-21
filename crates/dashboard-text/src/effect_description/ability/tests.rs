@@ -1,6 +1,6 @@
 use super::*;
 use crate::effect_description::tests::{Fixture, fresh};
-use installed_content_core::{modifiers, parser, unit_leader::Adjuster};
+use content_reader_core::{modifiers, parser, unit_leader::Adjuster};
 
 fn fixture() -> Fixture {
     let mut fixture = Fixture::new();

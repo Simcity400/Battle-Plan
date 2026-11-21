@@ -1,5 +1,5 @@
-use installed_content_core::{ResolvedLayers, mesh};
-use installed_content_image::native::Decode;
+use content_reader_core::{ResolvedLayers, mesh};
+use content_reader_image::native::Decode;
 use shader_pipeline::library::Library;
 use std::{io, sync::Arc};
 

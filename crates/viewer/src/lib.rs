@@ -302,7 +302,7 @@ struct Options {
     out: Option<PathBuf>,
     headless_dump: bool,
     playback_cost_end: Option<Hour>,
-    visual_mods: Vec<installed_content_core::content::visual::Choice>,
+    visual_mods: Vec<content_reader_core::content::visual::Choice>,
     window_dump: bool,
     fly: Option<app::fly::Scripted>,
     fly_view: Option<controls::flight::View>,
@@ -359,7 +359,7 @@ struct Options {
 impl Options {
     pub(crate) fn counter_settings(
         &self,
-        game: &installed_content_settings::settings::MapOptions,
+        game: &content_reader_settings::settings::MapOptions,
     ) -> viewer_counters::map::counters::CounterSettings {
         viewer_counters::map::counters::CounterSettings {
             color_mode: self.counter_colors.unwrap_or(
@@ -632,7 +632,7 @@ impl Options {
                         .and_then(|value| value.into_string().ok())
                         .filter(|value| !value.is_empty())
                         .ok_or_else(|| invalid("--visual-mod needs a mod id, such as mod/name.mod"))?;
-                    options.visual_mods.push(installed_content_core::content::visual::Choice {
+                    options.visual_mods.push(content_reader_core::content::visual::Choice {
                         name: id.clone(),
                         id,
                     });
@@ -2420,10 +2420,10 @@ mod tests {
     #[test]
     fn counter_options_override_the_users_settings() {
         use viewer_counters::map::counters::{CounterColorMode, CounterSettings};
-        let from_file = &installed_content_settings::settings::MapOptions {
+        let from_file = &content_reader_settings::settings::MapOptions {
             country_counter_colours: true,
             nato_counters: true,
-            ..installed_content_settings::settings::MapOptions::DEFAULT
+            ..content_reader_settings::settings::MapOptions::DEFAULT
         };
         let default = parse(&["campaign.battleplan"]).unwrap();
         assert_eq!(

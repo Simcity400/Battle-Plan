@@ -2,7 +2,7 @@
 use super::build::{Hour, Shared};
 use super::values::{self, ONE};
 use super::*;
-use installed_content_localisation::localisation::Argument as Arg;
+use content_reader_localisation::localisation::Argument as Arg;
 use replay_data::rows::{CharacterOperativeRow, Recorded};
 use viewer_foundation::tooltip_text::localise;
 
@@ -83,7 +83,7 @@ fn defense_breakdown(
     let mut text = values::coloured('H', &header);
     text.push('\n');
     if defines.base != 0 {
-        let base = installed_content_core::fixed5::fixed5_to_string(defines.base, 1);
+        let base = content_reader_core::fixed5::fixed5_to_string(defines.base, 1);
         text.push_str(&localise(
             hour.localisation,
             "MODIFIER_BASE_VALUE_STR",
@@ -159,7 +159,7 @@ fn defense_breakdown(
         text.push_str(": ");
         text.push_str(&values::coloured(
             'H',
-            &installed_content_core::fixed5::fixed5_to_string(contribution, 1),
+            &content_reader_core::fixed5::fixed5_to_string(contribution, 1),
         ));
         text.push('\n');
     }
@@ -201,7 +201,7 @@ pub(super) fn operative<'h, 'f>(
 pub(super) fn offer(
     hour: &Hour<'_, '_>,
     row: &replay_data::rows::AgencyBufferedOffer,
-    definition: Result<&installed_content_core::intelligence::Operation, String>,
+    definition: Result<&content_reader_core::intelligence::Operation, String>,
 ) -> Tooltip {
     let mut text = Tooltip::default();
     text.line(
@@ -286,7 +286,7 @@ fn codename(hour: &Hour<'_, '_>, character: &CharacterOperativeRow) -> Result<St
 pub(super) fn operation(
     hour: &Hour<'_, '_>,
     row: &OperationRow,
-    definition: Option<&installed_content_core::intelligence::Operation>,
+    definition: Option<&content_reader_core::intelligence::Operation>,
     state: OperationState,
     value: Option<Result<i64, String>>,
 ) -> Tooltip {

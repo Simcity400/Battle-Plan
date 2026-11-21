@@ -6,7 +6,7 @@ use replay_frame::{frame::Metrics, frame::TableView};
 
 #[test]
 fn typed_weather_comparison_keeps_exact_words_and_refuses_unavailable_rows() {
-    let mut saved = installed_content_save::parse(
+    let mut saved = content_reader_save::parse(
         br#"HOI4txt
 date=1936.1.1.1 game_unique_id=campaign game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 version=build
 countries={} states={} provinces={}
@@ -405,7 +405,7 @@ fn weather_dense_census_includes_zero_and_rejects_duplicates_or_holes() {
 
 #[test]
 fn anchored_temperatures_compare_their_derivation_and_refuse_without_one() {
-    let saved = installed_content_save::parse(
+    let saved = content_reader_save::parse(
         br#"HOI4txt
 date=1936.1.1.1 game_unique_id=campaign game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 version=build
 countries={} states={} provinces={}
@@ -530,11 +530,11 @@ fn static_list(
     }))
 }
 
-fn statics(values: &[(&str, i64)]) -> installed_content_core::modifiers::Modifiers {
-    let mut block = installed_content_core::modifiers::Modifiers::default();
+fn statics(values: &[(&str, i64)]) -> content_reader_core::modifiers::Modifiers {
+    let mut block = content_reader_core::modifiers::Modifiers::default();
     block.values = values
         .iter()
-        .map(|&(name, value)| installed_content_core::modifiers::Modifier {
+        .map(|&(name, value)| content_reader_core::modifiers::Modifier {
             key: name.to_owned(),
             name: name.to_ascii_lowercase(),
             text: String::new(),
@@ -557,7 +557,7 @@ fn entries(values: &[(u32, i64)]) -> replay_data::rows::Recorded<Option<Province
 fn province_modifier_accumulators_compare_with_their_rebuild_from_the_save() {
     use replay_data::{rows::LexicalTokenRow, rows::ModifierDefinitionRow};
 
-    let saved = installed_content_save::parse(
+    let saved = content_reader_save::parse(
         br#"HOI4txt
 date=1936.1.1.1 game_unique_id=campaign game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 version=build
 countries={} states={} provinces={}

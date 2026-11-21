@@ -1,4 +1,4 @@
-use installed_content_core::province_geometry::ProvinceGeometry;
+use content_reader_core::province_geometry::ProvinceGeometry;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy)]
@@ -7,7 +7,7 @@ pub struct AirTransportContent<'a> {
     pub state_provinces: &'a BTreeMap<u32, Vec<u32>>,
     pub region_by_province: &'a BTreeMap<u32, u32>,
     pub region_provinces: &'a BTreeMap<u32, Vec<u32>>,
-    pub sub_units: Result<&'a installed_content_core::unit_leader::SubUnits, &'a str>,
+    pub sub_units: Result<&'a content_reader_core::unit_leader::SubUnits, &'a str>,
     pub map_scale: i64,
     pub ace_wing_size: i64,
     pub ace_wing_size_max_bonus: i64,
@@ -29,7 +29,7 @@ impl AirTransportContent<'_> {
         let name = units.name(index).ok_or_else(|| {
             format!("pool sub-unit index {index} is not in the recorded content")
         })??;
-        let bit = installed_content_core::equipment::category_mask("air_transport")
+        let bit = content_reader_core::equipment::category_mask("air_transport")
             .expect("air_transport category is defined");
         Ok(units.category(name.as_bytes())? & bit != 0)
     }

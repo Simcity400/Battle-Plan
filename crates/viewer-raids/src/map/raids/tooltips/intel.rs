@@ -43,7 +43,7 @@ impl Default for Defines {
 }
 
 impl Defines {
-    pub fn read(d: &installed_content_core::defines::Defines) -> Result<Self, String> {
+    pub fn read(d: &content_reader_core::defines::Defines) -> Result<Self, String> {
         let raid = |name| d.fixed5("NRaids", name).map_err(|e| e.to_string());
         let op = |name| d.fixed5("NOperatives", name).map_err(|e| e.to_string());
         Ok(Self {
@@ -328,7 +328,7 @@ pub fn current(
 }
 
 pub fn target_state(world: &World<'_>, scope: &RaidScope) -> Result<Option<u32>, String> {
-    installed_content_raids::raids::target::state(world.frame(), scope)
+    content_reader_raids::raids::target::state(world.frame(), scope)
 }
 
 #[cfg(test)]

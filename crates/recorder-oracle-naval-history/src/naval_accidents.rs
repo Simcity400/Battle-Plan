@@ -1,5 +1,5 @@
 use super::{Report, complete, country_tag, invalid, required_country_tag};
-use installed_content_save::{naval_accidents as saved, naval_history::Pack};
+use content_reader_save::{naval_accidents as saved, naval_history::Pack};
 use replay_data::rows::CountryRow;
 use replay_data::rows::NavalAccidentReportRow;
 use replay_data::rows::tables;
@@ -127,7 +127,7 @@ mod tests {
             ..Default::default()
         };
         let links = BTreeMap::from([(1, &victim), (2, &mine_owner)]);
-        let date = installed_content_save::GameDate::parse(b"1943.5.2.1").unwrap();
+        let date = content_reader_save::GameDate::parse(b"1943.5.2.1").unwrap();
         let row = NavalAccidentReportRow {
             kind: 1,
             owner: 1,

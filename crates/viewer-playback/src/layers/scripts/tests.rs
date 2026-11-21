@@ -6,7 +6,7 @@ use crate::playhead_host::{
     views::{Need, Recording, Views, apart::Apart},
 };
 use dashboard_text::triggers::World;
-use installed_content_sound::music::{Music, Song, Track};
+use content_reader_sound::music::{Music, Song, Track};
 use playhead::{
     Settings, Timeline,
     pages::{Pages, Run},
@@ -207,7 +207,7 @@ fn music() -> Arc<viewer_audio::Content> {
     let mut music = Music::default();
     for (index, body) in ["base=1", "base=7 modifier={has_war_with=ENG factor=2}"].into_iter().enumerate() {
         music.tracks.push(Track { name: format!("t{index}"), path: format!("music/t{index}.ogg"), volume: 1.0, source: String::new() });
-        music.songs.push(Song { track: index, station: "on".into(), chance: installed_content_core::parser::parse(body.as_bytes()).unwrap().items, source: String::new() });
+        music.songs.push(Song { track: index, station: "on".into(), chance: content_reader_core::parser::parse(body.as_bytes()).unwrap().items, source: String::new() });
     }
     Arc::new(viewer_audio::Content::new(Default::default(), None).with_music(music, Some(vec!["on".into()]), 0))
 }

@@ -7,7 +7,7 @@ use crate::{
 use dashboard_base::catalogue::{self, CachedResult, Catalogue, View};
 use dashboard_query::{Query, log, read, series::MissingSpan};
 use engine_native::craid_instance as native;
-use installed_content_raids::raids::Catalog;
+use content_reader_raids::raids::Catalog;
 use replay::lanes::{self, Cell, Keys};
 use replay_data::rows::{RaidEndRow, RaidScope, TableId, TagHolderRow};
 use serde::{Deserialize, Serialize};
@@ -233,7 +233,7 @@ impl Content {
     fn load(source: &Source, context: &LoadContext) -> Self {
         let catalogue = context.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|error| error.to_string());
         let raids = catalogue.as_ref().map_err(Clone::clone).and_then(|cat| {
-            cat.content.layers.derived::<CachedResult<Catalog>>().get_or_init(|| installed_content_raids::raids::read(&cat.content.layers)).map_err(|error| error.to_string())
+            cat.content.layers.derived::<CachedResult<Catalog>>().get_or_init(|| content_reader_raids::raids::read(&cat.content.layers)).map_err(|error| error.to_string())
         });
         Self { catalogue, raids }
     }

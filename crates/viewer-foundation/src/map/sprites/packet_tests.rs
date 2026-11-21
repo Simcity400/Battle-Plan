@@ -4,7 +4,7 @@ use crate::map::{
     sprites::{self, Batch, Exact, Quad, SpritePass},
 };
 use eframe::wgpu;
-use installed_content_core::pdxshader::{
+use content_reader_core::pdxshader::{
     Address,
     program::{Filter, Program, Sampler, Technique as AuthoredTechnique},
 };
@@ -205,7 +205,7 @@ fn sprite_packet_failed_selects_stay_uncached_and_replay_every_refusal() {
     for (stage, name) in [(&mut source.vertex, "V"), (&mut source.pixel, "P")] {
         stage
             .entries
-            .push(installed_content_core::pdxshader::program::Entry {
+            .push(content_reader_core::pdxshader::program::Entry {
                 name: name.into(),
                 source: Default::default(),
             });
@@ -336,7 +336,7 @@ fn sprite_packet_multiframe_pixels_refusals_bakes_and_arenas_match_fixed_expecta
     let pages: Vec<_> = [[255, 0, 0, 255], [0, 255, 0, 255]]
         .into_iter()
         .map(|c| {
-            installed_content_image::dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
+            content_reader_image::dds::Texture::from_rgba8(content_reader_image::Rgba8Image {
                 width: 1,
                 height: 1,
                 pixels: c.to_vec(),

@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn partial_invalid_route_uses_the_sample_count_for_port_admission() {
-        use installed_content_core::{
+        use content_reader_core::{
             movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
         };
         let terrain = ProvinceTerrain { flags: 1, index: 1 };
@@ -277,7 +277,7 @@ mod tests {
                 noncore_supply: [None; 2],
                 combat_movement: None,
             },
-            rail: Ok(installed_content_core::movement::RailMovementDefines {
+            rail: Ok(content_reader_core::movement::RailMovementDefines {
                 speed: [0; 4],
                 maximum_level: 0,
             }),

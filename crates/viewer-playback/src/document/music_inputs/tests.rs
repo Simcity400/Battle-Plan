@@ -1,7 +1,7 @@
 use super::*;
 use dashboard_text::triggers::ContentFacts;
-use installed_content_core::{tag_aliases::TagAliases, trigger_keys::TriggerNames};
-use installed_content_sound::music::{Music, Song, Track};
+use content_reader_core::{tag_aliases::TagAliases, trigger_keys::TriggerNames};
+use content_reader_sound::music::{Music, Song, Track};
 use replay_data::rows::*;
 use replay_frame::frame::{Metrics, TableView};
 use std::collections::BTreeSet;
@@ -45,7 +45,7 @@ fn fixture_content() -> Arc<viewer_audio::Content> {
         music.songs.push(Song {
             track: index,
             station: station.into(),
-            chance: installed_content_core::parser::parse(body.as_bytes())
+            chance: content_reader_core::parser::parse(body.as_bytes())
                 .unwrap()
                 .items,
             source: String::new(),
@@ -460,7 +460,7 @@ fn music_inputs_recheck_has_war_end_hours_and_unresolved_unrelated_endpoints() {
         music.songs.push(Song {
             track: index,
             station: "on".into(),
-            chance: installed_content_core::parser::parse(body.as_bytes())
+            chance: content_reader_core::parser::parse(body.as_bytes())
                 .unwrap()
                 .items,
             source: String::new(),
@@ -622,7 +622,7 @@ fn music_outcomes_keep_f64_scaling_and_leave_refused_songs_unknown_in_order() {
         music.songs.push(Song {
             track: index,
             station: station.into(),
-            chance: installed_content_core::parser::parse(body.as_bytes())
+            chance: content_reader_core::parser::parse(body.as_bytes())
                 .unwrap()
                 .items,
             source: String::new(),
@@ -653,7 +653,7 @@ fn music_outcomes_keep_f64_scaling_and_leave_refused_songs_unknown_in_order() {
         "base=-0.12345",
     ]
     .map(|body| {
-        installed_content_core::parser::parse(body.as_bytes())
+        content_reader_core::parser::parse(body.as_bytes())
             .unwrap()
             .items
     });

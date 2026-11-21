@@ -811,8 +811,8 @@ impl<'a> PlateStyle<'a> {
                 viewer_foundation::map::counter_hovers::gui_authored::Authored::read(root, false)
             }),
             takes_pointer: root
-                .and_then(|root| root.find(installed_content_core::gui::native::Kind::Button, "count_bg"))
-                .and_then(installed_content_core::gui::native::Element::button)
+                .and_then(|root| root.find(content_reader_core::gui::native::Kind::Button, "count_bg"))
+                .and_then(content_reader_core::gui::native::Element::button)
                 .is_some_and(|button| !button.always_transparent && button.enabled),
             child: if gun {
                 inputs.assets.layouts.gun.as_ref().ok().map(|gun| &gun.plate)

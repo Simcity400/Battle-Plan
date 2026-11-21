@@ -1,6 +1,6 @@
 
 use super::*;
-use installed_content_save::ActualCountry;
+use content_reader_save::ActualCountry;
 use replay_data::{rows::CountryIntelRow, rows::ReservedCountryNamingRow};
 
 const LABEL: &str = "ReservedCountryNaming.country_intel_sample";
@@ -71,7 +71,7 @@ fn admitted<'a>(frame: &'a DecodedFrame, report: &mut Report) -> io::Result<Opti
 
 fn compare_records(
     actual: &Admitted<'_>,
-    saved: Option<&[installed_content_save::CountryIntelRecord]>,
+    saved: Option<&[content_reader_save::CountryIntelRecord]>,
     label: &str,
     report: &mut Report,
 ) -> io::Result<()> {

@@ -1,5 +1,5 @@
 use eframe::wgpu;
-use installed_content_core::pdxshader::{
+use content_reader_core::pdxshader::{
     Address,
     program::{Filter, Program, Sampler, Technique},
 };

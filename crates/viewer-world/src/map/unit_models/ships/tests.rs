@@ -499,7 +499,7 @@ fn kotka_hulls(
         .map(|force| {
             (
                 force.province,
-                installed_content_core::movement::ProvinceTerrain {
+                content_reader_core::movement::ProvinceTerrain {
                     flags: u8::from(land),
                     index: 1,
                 },
@@ -507,7 +507,7 @@ fn kotka_hulls(
             )
         })
         .collect();
-    let map = installed_content_core::movement::MovementMap::from_parts(&provinces);
+    let map = content_reader_core::movement::MovementMap::from_parts(&provinces);
     let world = counter_move::RouteWorld {
         map: &map,
         width: 5632.0,

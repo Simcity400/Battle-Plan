@@ -1,5 +1,5 @@
 
-use installed_content_core::{
+use content_reader_core::{
     ResolveOptions,
     content::{
         ResolvedContent,

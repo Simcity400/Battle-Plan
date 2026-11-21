@@ -1,5 +1,5 @@
 use crate::errors::invalid;
-use installed_content_image::{Rgba8Image, dds, rgba::bc_block};
+use content_reader_image::{Rgba8Image, dds, rgba::bc_block};
 use std::io;
 
 pub(crate) fn rgba8(texture: &dds::Texture) -> io::Result<dds::Texture> {

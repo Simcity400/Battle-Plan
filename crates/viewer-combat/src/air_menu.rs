@@ -6,7 +6,7 @@ mod power;
 pub(crate) mod summary;
 
 use super::{binding::Bindings, content::Content};
-use installed_content_localisation::localisation::Argument;
+use content_reader_localisation::localisation::Argument;
 use replay_frame::frame::DecodedFrame;
 use std::io;
 use viewer_foundation::{

@@ -15,7 +15,7 @@ use super::{Candidate, legacy};
 use {
     crate::map::model_selection::Content, crate::map::model_selection::EquipmentModel,
     crate::map::model_selection::SubUnit, crate::map::model_selection::model_facts,
-    installed_content_equipment_graphics::equipment_graphics::countries::ModelCountry,
+    content_reader_equipment_graphics::equipment_graphics::countries::ModelCountry,
     viewer_foundation::map::tables::rows,
 };
 
@@ -607,7 +607,7 @@ fn held_equipment(content: &Content, fact: model_facts::Fact) -> legacy::Equipme
             .name_str()
             .expect("validated archetype spelling"),
         archetype_ordinal: fact.archetype,
-        sprite: installed_content_core::parser::text(&equipment[fact.equipment].model)
+        sprite: content_reader_core::parser::text(&equipment[fact.equipment].model)
             .expect("validated model spelling"),
         visual_level: fact.visual_level,
         model_priority: fact.model_priority,

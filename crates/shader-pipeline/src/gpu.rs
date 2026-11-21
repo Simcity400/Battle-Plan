@@ -1,7 +1,7 @@
 
 use super::{Buffer, Compiled};
-use installed_content_core::content::diagnostics::{self, Diagnostics};
-use installed_content_core::pdxshader::{
+use content_reader_core::content::diagnostics::{self, Diagnostics};
+use content_reader_core::pdxshader::{
     Address, DepthStencilState, RasterizerState,
     program::{Filter, Program, Sampler, Stage, Technique},
 };
@@ -320,6 +320,12 @@ impl Bindings {
         a.pipeline == b.pipeline && a.groups[1..] == b.groups[1..]
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn same_groups(&self, other: &Self) -> bool {
+        let (a, b) = (self.resources.get(), other.resources.get());
+        a.pipeline == b.pipeline && a.groups == b.groups
+    }
+
     pub fn bind(&self, pass: &mut wgpu::RenderPass<'_>) {
         self.bind_after(pass, None);
     }
@@ -572,6 +578,27 @@ impl BindingProgram {
         blocks: &[(&[u8], u32)],
         rows: u32,
     ) -> Result<Bindings, String> {
+        let (offsets, count) = self.row_offsets(blocks, rows)?;
+        let resolved = self
+            .resolve_groups(arena, buffer.clone(), false)
+            .map_err(|reason| format!("{}: {reason}", self.label))?;
+        Ok(self.row_bindings(ResourceHandle::Inline(resolved.resources), offsets, count, blocks))
+    }
+
+    pub fn rebind_rows(
+        &self,
+        bound: &Bindings,
+        blocks: &[(&[u8], u32)],
+        rows: u32,
+    ) -> Result<Bindings, String> {
+        let (offsets, count) = self.row_offsets(blocks, rows)?;
+        if count != bound.count {
+            return Err(format!("{}: {count} dynamic offsets for bindings of {}", self.label, bound.count));
+        }
+        Ok(self.row_bindings(bound.resources.clone(), offsets, count, blocks))
+    }
+
+    fn row_offsets(&self, blocks: &[(&[u8], u32)], rows: u32) -> Result<([u32; BUFFERS], usize), String> {
         if blocks.len() != self.buffers.len() {
             return Err(format!(
                 "{}: {} constant blocks for {} reads",
@@ -590,22 +617,31 @@ impl BindingProgram {
         }
         offsets[count] = rows;
         count += 1;
-        let resolved = self
-            .resolve_groups(arena, buffer.clone(), false)
-            .map_err(|reason| format!("{}: {reason}", self.label))?;
+        Ok((offsets, count))
+    }
+
+    fn row_bindings(
+        &self,
+        resources: ResourceHandle,
+        offsets: [u32; BUFFERS],
+        count: usize,
+        blocks: &[(&[u8], u32)],
+    ) -> Bindings {
+        #[cfg(not(any(test, feature = "test-support")))]
+        let _ = blocks;
         #[cfg(any(test, feature = "test-support"))]
         let sized: Vec<_> = blocks
             .iter()
             .zip(&self.buffers)
             .map(|((bytes, _), spec)| (*bytes, u64::from(spec.size)))
             .collect();
-        Ok(Bindings {
-            resources: ResourceHandle::Inline(resolved.resources),
+        Bindings {
+            resources,
             offsets,
             count,
             #[cfg(any(test, feature = "test-support"))]
             proof: preparation_bytes(&self.buffers, &sized),
-        })
+        }
     }
 
     fn resolve_groups(

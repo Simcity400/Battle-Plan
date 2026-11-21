@@ -1,4 +1,3 @@
-
 [profile.default]
 fail-fast = false
 slow-timeout = { period = "60s", terminate-after = 60 }
@@ -7,9 +6,6 @@ slow-timeout = { period = "60s", terminate-after = 60 }
 filter = '''
 test(/5000|5_000|five_thousand/)
 | (package(replay) & test(/^acceptance::/))
-| (package(dashboard-air-superiority) & test(/shared_driver/))
-| (package(dashboard-stability) & test(/native_work_is_flat|at_scale/))
-| (package(dashboard-special-projects) & test(/world_variable_names/))
 | (package(collector) & test(/oob_entry_tests|oob_root_fields|role_capture_cost/))
 '''
 priority = 60
@@ -17,3 +13,6 @@ priority = 60
 [[profile.default.overrides]]
 filter = 'package(dashboard)'
 priority = 50
+
+[profile.daily.junit]
+path = "junit.xml"

@@ -1,6 +1,6 @@
 use super::{Content, DecodedFrame, State, loc};
 use dashboard_base::products::equipment_icon::{self, Icon, IconHour};
-use installed_content_localisation::localisation::Argument;
+use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{VariantDefinitionRow, tables};
 use replay_derive::air_region_derive::{
     self as derive, EquipmentOrder, EquipmentPool, EquipmentPools, Filter, Retained,
@@ -51,7 +51,7 @@ impl<'a> Sources<'a> {
     fn definition(
         &self,
         variant: &VariantDefinitionRow,
-    ) -> Result<(usize, &installed_content_core::equipment::Database), String> {
+    ) -> Result<(usize, &content_reader_core::equipment::Database), String> {
         let database = self
             .content
             .assets

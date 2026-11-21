@@ -236,7 +236,7 @@ fn fixture() -> (TestDir, ModelLibrary, usize) {
             bound: 1.,
             convoy_radius: None,
             attachments: 0,
-            cull_distance_squared: installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+            cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
         });
         library.rigs.push(Arc::new(Rig {
             nodes: vec![entity_animation::Node {

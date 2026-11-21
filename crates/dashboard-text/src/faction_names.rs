@@ -1,9 +1,9 @@
 
-use installed_content_core::{
+use content_reader_core::{
     faction_templates::Catalog, gui::native::BoundLocalization, gui::native::BoundNode,
     gui::native::BoundValue, gui::native::FormattedLocalization,
 };
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     codec::{Decoder, invalid_static, put_fixed, put_varint},
     rows::LexicalTokenRow,
@@ -1300,7 +1300,7 @@ mod tests {
             nodes: (0..count)
                 .map(|index| BoundNode {
                     key: FormattedLocalization::Key(b"PASS".to_vec()),
-                    arguments: vec![installed_content_core::gui::native::BoundArgument {
+                    arguments: vec![content_reader_core::gui::native::BoundArgument {
                         name: b"ARG".to_vec(),
                         value: if index + 1 == count {
                             BoundValue::Localization(FormattedLocalization::Key(
@@ -1323,13 +1323,13 @@ mod tests {
             nodes: vec![BoundNode {
                 key: FormattedLocalization::Key(b"ROOT".to_vec()),
                 arguments: vec![
-                    installed_content_core::gui::native::BoundArgument {
+                    content_reader_core::gui::native::BoundArgument {
                         name: vec![0xff],
                         value: BoundValue::Localization(FormattedLocalization::Key(
                             b"first".to_vec(),
                         )),
                     },
-                    installed_content_core::gui::native::BoundArgument {
+                    content_reader_core::gui::native::BoundArgument {
                         name: b"ARG".to_vec(),
                         value: BoundValue::Localization(FormattedLocalization::Token(
                             b"later".to_vec(),

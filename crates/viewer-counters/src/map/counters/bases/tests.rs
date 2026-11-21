@@ -86,13 +86,13 @@ fn building_tokens_fold_like_the_lexer_and_refuse_ambiguity() {
 fn a_type_sharing_its_lexer_token_with_an_ordinary_type_is_refused() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let buildings = installed_content_core::buildings::parse(
+    let buildings = content_reader_core::buildings::parse(
         b"buildings={
             Dock={naval_headquarter=yes} dock={show_on_map=1}
             Yard={specialization={specialization_air}} yard={show_on_map=1}
             hq={naval_headquarter=yes} fac={specialization={specialization_naval}}
         }",
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     )
     .unwrap();
     let provinces = ProvinceMap {
@@ -166,7 +166,7 @@ fn a_type_sharing_its_lexer_token_with_an_ordinary_type_is_refused() {
 fn a_bucket_a_repeated_declaration_reaches_refuses_before_the_fallback() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let buildings = installed_content_core::buildings::parse(
+    let buildings = content_reader_core::buildings::parse(
         b"buildings={
             port={is_port=yes spawn_point=SHARED}
             hq={naval_headquarter=yes spawn_point=shared}
@@ -177,7 +177,7 @@ fn a_bucket_a_repeated_declaration_reaches_refuses_before_the_fallback() {
             hq_elsewhere={naval_headquarter=yes spawn_point=lone}
         }
         spawn_points={shared={} facility_spawn={} lone={}}",
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     )
     .unwrap();
     assert!(!buildings.types["port"].is_port);
@@ -252,14 +252,14 @@ fn building(location: u32, building_type: u32, ordinal: u32, level: i16) -> Buil
 fn repeated_icon_templates_are_refused_by_name() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let buildings = installed_content_core::buildings::parse(
+    let buildings = content_reader_core::buildings::parse(
         b"buildings={
             hq={naval_headquarter=yes} later_hq={naval_headquarter=yes}
             dock={specialization={specialization_naval}} yard={specialization={specialization_air}}
             hq={show_on_map=1}
             yard={specialization={specialization_air} show_on_map=2}
         }",
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     )
     .unwrap();
     let provinces = ProvinceMap {
@@ -325,7 +325,7 @@ fn repeated_icon_templates_are_refused_by_name() {
 fn icons_anchor_only_at_buckets_their_kind_redirects_into() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let buildings = installed_content_core::buildings::parse(
+    let buildings = content_reader_core::buildings::parse(
         b"buildings={
             port={is_port=yes spawn_point=Port_Spawn}
             hq_at_port={naval_headquarter=yes only_costal=yes spawn_point=port_spawn}
@@ -333,7 +333,7 @@ fn icons_anchor_only_at_buckets_their_kind_redirects_into() {
             facility={specialization={specialization_air second} spawn_point=FACILITY_SPAWN}
         }
         spawn_points={port_spawn={} Facility_Spawn={}}",
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     )
     .unwrap();
     let ids = [7, 8];
@@ -377,11 +377,11 @@ fn icons_anchor_only_at_buckets_their_kind_redirects_into() {
 fn icons_anchor_only_at_records_the_loader_admits() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use installed_content_core::{
+    use content_reader_core::{
         map::CountryColors, map::MapData, map::ProvinceDefinition, map::ProvinceKind, mesh::Roster,
     };
-    use installed_content_states::states::StateDefinition;
-    let buildings = installed_content_core::buildings::parse(
+    use content_reader_states::states::StateDefinition;
+    let buildings = content_reader_core::buildings::parse(
         b"buildings={
             port={is_port=yes spawn_point=port_spawn}
             hq={naval_headquarter=yes spawn_point=port_spawn}
@@ -390,7 +390,7 @@ fn icons_anchor_only_at_records_the_loader_admits() {
             lone_port={is_port=yes spawn_point=lone_spawn}
         }
         spawn_points={port_spawn={} facility_spawn={} lone_spawn={}}",
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     )
     .unwrap();
     let definition = |id, kind| ProvinceDefinition {

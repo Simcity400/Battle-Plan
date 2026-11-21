@@ -1,0 +1,257 @@
+"""Tests for tools/check-patterns.py: python tools/check_patterns_test.py"""
+
+import contextlib
+import importlib.util
+import io
+import os
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SPEC = importlib.util.spec_from_file_location("check_patterns", os.path.join(ROOT, "tools", "check-patterns.py"))
+cp = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(cp)
+
+
+class Repository:
+    """A Git repository of its own, standing in for the checkout while a test runs."""
+
+    def __init__(self, files):
+        self.folder = tempfile.TemporaryDirectory()
+        self.root = Path(self.folder.name)
+        self.git("init", "-q", "-b", "main")
+        self.write(files)
+        self.git("add", "-A")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "base", "--allow-empty")
+        self.saved, cp.ROOT = cp.ROOT, self.root
+
+    def git(self, *args):
+        subprocess.run(["git", *args], cwd=self.root, check=True, capture_output=True)
+
+    def write(self, files):
+        for name, text in files.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+
+    def close(self):
+        cp.ROOT = self.saved
+        self.folder.cleanup()
+
+
+def rust(files, name):
+    repository = Repository(files)
+    try:
+        return cp.matches(name, cp.Revision(None))
+    finally:
+        repository.close()
+
+
+def check(base, change, *, commit=False):
+    repository = Repository(base)
+    try:
+        repository.git("checkout", "-q", "-b", "change")
+        repository.write(change)
+        head = None
+        if commit:
+            repository.git("add", "-A")
+            repository.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "change")
+            head = "HEAD"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = cp.against("main", head)
+        return code, out.getvalue()
+    finally:
+        repository.close()
+
+
+LIB = "crates/a/src/lib.rs"
+
+
+class Mask(unittest.TestCase):
+    def test_comments_and_literal_contents_are_blanked_with_length_and_lines_kept(self):
+        text = 'let a = "Box::leak(x)"; // Box::leak\n/* outer /* inner */ Box::leak */ let b = r#"q"#; let c = \'"\';\n'
+        code = cp.mask(text)
+        self.assertEqual(len(code), len(text))
+        self.assertEqual(code.count("\n"), text.count("\n"))
+        self.assertNotIn("leak", code)
+        self.assertIn("let c", code)
+
+    def test_a_lifetime_is_code(self):
+        self.assertEqual(cp.mask("fn f<'a>(x: &'a str) {}"), "fn f<'a>(x: &'a str) {}")
+
+
+class Cfg(unittest.TestCase):
+    def test_only_a_predicate_false_outside_tests_is_test_only(self):
+        self.assertIs(cp.cfg_value("test"), False)
+        self.assertIs(cp.cfg_value('any(test, feature = "test-support")'), False)
+        self.assertIs(cp.cfg_value("all(test, windows)"), False)
+        self.assertIsNone(cp.cfg_value('any(test, feature = "export-types")'))
+        self.assertIs(cp.cfg_value("not(test)"), True)
+        self.assertIsNone(cp.cfg_value("windows"))
+
+
+class TestCode(unittest.TestCase):
+    def test_the_clock_counts_in_test_items_and_test_modules_only(self):
+        files = {
+            LIB: "fn live() { let _ = std::time::Instant::now(); }\n#[cfg(test)]\nmod tests;\n#[cfg(test)]\nmod inline {\n    fn f() { std::thread::sleep(D); }\n}\n#[test]\nfn t() { let _ = Instant::now(); }\n",
+            "crates/a/src/tests.rs": "fn f() { std::thread::sleep(D); }\n",
+        }
+        self.assertEqual(rust(files, LIB)["test-clock"], [6, 9])
+        self.assertEqual(rust(files, "crates/a/src/tests.rs")["test-clock"], [1])
+
+    def test_a_module_is_test_code_through_a_path_attribute_an_inline_parent_or_a_test_parent(self):
+        files = {
+            LIB: '#[cfg(test)]\n#[path = "x/named_elsewhere.rs"]\nmod checks;\nmod live;\nmod outer {\n    #[cfg(test)]\n    mod live;\n}\n#[cfg(test)]\nmod kit;\n',
+            "crates/a/src/x/named_elsewhere.rs": "fn f() { Box::leak(b); }\n",
+            "crates/a/src/live.rs": "fn f() { Box::leak(b); }\n",
+            "crates/a/src/outer/live.rs": "fn f() { Box::leak(b); }\n",
+            "crates/a/src/kit.rs": "mod deep;\n",
+            "crates/a/src/kit/deep.rs": "fn f() { Box::leak(b); }\n",
+            "crates/a/tests/it.rs": "fn f() { Instant::now(); }\n",
+        }
+        leaks = {name: rust(files, name)["box-leak"] for name in files if name.endswith(".rs") and name != LIB and "/tests/" not in name and "kit.rs" not in name}
+        self.assertEqual(leaks, {"crates/a/src/x/named_elsewhere.rs": [], "crates/a/src/live.rs": [1], "crates/a/src/outer/live.rs": [], "crates/a/src/kit/deep.rs": []})
+        self.assertEqual(rust(files, "crates/a/tests/it.rs")["test-clock"], [1])
+
+    def test_an_inner_test_cfg_covers_its_module_and_not_the_file(self):
+        text = "mod tests {\n    #![cfg(test)]\n    fn f() { Box::leak(a); }\n}\nfn live() { Box::leak(b); }\n"
+        self.assertEqual(rust({LIB: text}, LIB)["box-leak"], [5])
+        files = {LIB: '#![cfg(feature = "test-support")]\nmod kit;\n', "crates/a/src/kit.rs": "fn f() { Box::leak(b); }\n"}
+        self.assertEqual(rust(files, "crates/a/src/kit.rs")["box-leak"], [])
+
+    def test_a_path_inside_an_inline_module_resolves_under_it(self):
+        files = {
+            LIB: 'mod outer {\n    #[cfg(test)]\n    #[path = "fixture.rs"]\n    mod cases;\n}\n',
+            "crates/a/src/outer/fixture.rs": "fn f() { std::thread::sleep(D); }\n",
+        }
+        self.assertEqual(rust(files, "crates/a/src/outer/fixture.rs")["test-clock"], [1])
+
+    def test_a_file_production_also_declares_is_not_test_code(self):
+        files = {LIB: 'mod live;\n#[cfg(test)]\n#[path = "live.rs"]\nmod alias;\n', "crates/a/src/live.rs": "fn f() { Box::leak(b); }\n"}
+        self.assertEqual(rust(files, "crates/a/src/live.rs")["box-leak"], [1])
+
+    def test_a_file_path_loads_owns_its_directory(self):
+        files = {
+            LIB: '#[cfg(test)]\n#[path = "fixtures/suite.rs"]\nmod suite;\n',
+            "crates/a/src/fixtures/suite.rs": "mod child;\n",
+            "crates/a/src/fixtures/child.rs": "fn f() { std::thread::sleep(D); }\n",
+        }
+        self.assertEqual(rust(files, "crates/a/src/fixtures/child.rs")["test-clock"], [1])
+
+    def test_a_path_quoted_in_a_comment_is_not_read(self):
+        files = {LIB: '// #[path = "wrong.rs"]\n#[cfg(test)]\nmod child;\n', "crates/a/src/child.rs": "fn f() { std::thread::sleep(D); }\n"}
+        self.assertEqual(rust(files, "crates/a/src/child.rs")["test-clock"], [1])
+
+    def test_a_test_target_on_the_library_root_leaves_it_production_code(self):
+        files = {"crates/a/Cargo.toml": '[package]\nname = "a"\n[[test]]\nname = "t"\npath = "src/lib.rs"\n', LIB: "fn f() { Box::leak(b); }\n"}
+        self.assertEqual(rust(files, LIB)["box-leak"], [1])
+
+    def test_anything_under_a_crates_tests_folder_is_test_code(self):
+        files = {"crates/b/tests/support/world.rs": "fn f() { std::thread::sleep(D); }\n"}
+        self.assertEqual(rust(files, "crates/b/tests/support/world.rs")["test-clock"], [1])
+
+    def test_js_and_powershell_tests_count_their_own_waits_and_other_files_are_not_read(self):
+        files = {"ui/a.test.ts": "await new Promise(r => setTimeout(r, 5));\nsetInterval(f, 1);\n", "ui/a.ts": "setTimeout(f);\n", "tools/x.tests.ps1": "Start-Sleep -Milliseconds 5\n"}
+        self.assertEqual(rust(files, "ui/a.test.ts"), {"test-clock": [1, 2]})
+        self.assertEqual(rust(files, "ui/a.ts"), {})
+        self.assertEqual(rust(files, "tools/x.tests.ps1"), {"test-clock": [1]})
+
+
+class DebugHash(unittest.TestCase):
+    def test_debug_output_fed_to_a_hash_or_digest_is_found(self):
+        text = (
+            'fn a(s: &mut H) { format!("{:?}", self.0).hash(s); }\n'
+            'fn b() -> [u8; 32] { Sha256::digest(format!("{self:?}").as_bytes()).into() }\n'
+            'fn c() { field(&mut hash, format!("{:#?}", x).as_bytes()); }\n'
+            'fn d() { write_fmt(&mut hasher, format_args!("{value:?}")); }\n'
+            'fn e(s: &mut H) { format!{"{:?}", self.0}.hash(s); }\n'
+            'fn f() -> H { blake3::hash(format!("{x:?}").as_bytes()) }\n'
+            'fn g(h: &mut H) { format!{"{:?}", Foo { x }}.hash(h); }\n'
+            'fn h() -> H { blake3::hash(r.iter().map(|r| { format!("{r:?}") }).collect::<String>().as_bytes()) }\n'
+            'fn i() -> Identity { Identity {\n    exe: digest(format!("{:?}", a).as_bytes()),\n    game: digest(format!("{:?}", b).as_bytes()),\n} }\n'
+        )
+        self.assertEqual(rust({LIB: text}, LIB)["debug-hash"], [1, 2, 3, 4, 5, 6, 7, 8, 10, 11])
+
+    def test_debug_output_in_a_hashed_tuple_or_a_later_chained_update_is_found(self):
+        text = (
+            'fn a(h: &mut H) { ("weather", format!("{identity:?}")).hash(h); }\n'
+            'fn b(hasher: &mut H) { hasher.update(&[1]).update(&key).update(format!("{encoded:?}").as_bytes()); }\n'
+            'fn c() -> K { Sha256::new().chain_update(b"facts").chain_update(format!("{raw:?}").as_bytes()).finalize() }\n'
+            'fn d() -> H { blake3::hash(name.to_str().map(str::to_owned).unwrap_or_else(|| format!("bytes:{:?}", name)).as_bytes()) }\n'
+        )
+        self.assertEqual(rust({LIB: text}, LIB)["debug-hash"], [1, 2, 3, 4])
+
+    def test_display_output_messages_and_tests_are_not(self):
+        text = (
+            'fn a(s: &mut H) { format!("{}", self.0).hash(s); }\n'
+            'fn b() { let e = format!("{x:?} {{:?}}"); }\n'
+            'fn c() { match x { A => format!("{x:?}"), B => d.hash(s) } }\n'
+            'fn shown(digest: u64) -> String { format!("{:?}", digest) }\n'
+            'fn told(h: &mut H) { eprintln!{ "{}", format!("{x:?}") } x.hash(h); }\n'
+            'fn key(asset: &str) -> String { format!("{asset}#{:?}", blake3::hash(pixels)) }\n'
+            'fn digest(&self) -> Digest { eprint!("{}", format_args!("computing {self:?}")); make() }\n'
+            'fn exe(p: &Path) -> R { hash_executable(File::open(p).map_err(|e| { format!("open {p:?}: {e}") })?) }\n'
+            '#[cfg(test)]\nmod tests { fn d() { format!("{:?}", x).hash(s); } }\n'
+        )
+        self.assertEqual(rust({LIB: text}, LIB)["debug-hash"], [])
+
+
+class Against(unittest.TestCase):
+    def test_existing_instances_pass_and_a_new_one_fails_at_its_line(self):
+        base = {LIB: "fn a() { Box::leak(x); }\n"}
+        self.assertEqual(check(base, {LIB: "fn a() { Box::leak(x); }\nfn b() {}\n"})[0], 0)
+        code, out = check(base, {LIB: "fn a() { Box::leak(x); }\nfn b() { Box::leak(y); }\n"})
+        self.assertEqual(code, 1)
+        self.assertIn(f"{LIB}: box-leak: 1 at the base, 2 now; new at line 2", out)
+
+    def test_an_untracked_file_and_a_committed_head_are_both_checked(self):
+        self.assertEqual(check({}, {"crates/a/src/new.rs": "fn b() { Box::leak(y); }\n"})[0], 1)
+        self.assertEqual(check({LIB: ""}, {LIB: "fn b() { Box::leak(y); }\n"}, commit=True)[0], 1)
+
+    def test_dropping_a_test_cfg_from_a_mod_declaration_checks_the_unchanged_child(self):
+        base = {LIB: "#[cfg(test)]\nmod fixture;\n", "crates/a/src/fixture.rs": "fn f() { Box::leak(x); }\n"}
+        code, out = check(base, {LIB: "mod fixture;\n"})
+        self.assertEqual(code, 1)
+        self.assertIn("crates/a/src/fixture.rs: box-leak: 0 at the base, 1 now", out)
+
+    def test_declaring_an_unchanged_orphan_under_tests_checks_it(self):
+        base = {LIB: "", "crates/a/src/orphan.rs": "fn f() { std::thread::sleep(D); }\n"}
+        code, out = check(base, {LIB: "#[cfg(test)]\nmod orphan;\n"})
+        self.assertEqual(code, 1)
+        self.assertIn("crates/a/src/orphan.rs: test-clock", out)
+
+    def test_a_manifest_target_that_makes_test_code_production_is_checked(self):
+        manifest = '[package]\nname = "a"\n'
+        base = {"crates/a/Cargo.toml": manifest, LIB: "#[cfg(test)]\nmod kit;\n", "crates/a/src/kit.rs": "fn f() { Box::leak(x); }\n"}
+        code, out = check(base, {"crates/a/Cargo.toml": manifest + '[[bin]]\nname = "k"\npath = "src/kit.rs"\n'})
+        self.assertEqual(code, 1)
+        self.assertIn("crates/a/src/kit.rs: box-leak", out)
+
+    def test_a_file_renamed_from_an_unread_tree_brings_no_allowance(self):
+        repository = Repository({"vendor/x/fixture.rs": "fn f() { Box::leak(x); }\n" + "fn pad() {}\n" * 20})
+        try:
+            repository.git("checkout", "-q", "-b", "change")
+            (repository.root / "crates/a/src").mkdir(parents=True)
+            repository.git("mv", "vendor/x/fixture.rs", LIB)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cp.against("main", None), 1)
+        finally:
+            repository.close()
+
+    def test_a_renamed_file_keeps_its_count(self):
+        base = {LIB: "fn a() { Box::leak(x); }\n" + "fn pad() {}\n" * 20}
+        repository = Repository(base)
+        try:
+            repository.git("mv", LIB, "crates/a/src/main.rs")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(cp.against("main", None), 0)
+        finally:
+            repository.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

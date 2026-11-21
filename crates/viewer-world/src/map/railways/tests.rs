@@ -95,25 +95,25 @@ fn anchor_slots_fold_ascii_case_and_skip_ambiguous_slots() {
         definitions: BTreeMap::new(),
         country_colors: Default::default(),
     };
-    let rivers = installed_content_image::IndexedImage {
+    let rivers = content_reader_image::IndexedImage {
         width: 32,
         height: 32,
         indices: vec![255; 1024].into(),
         palette: [[0; 4]; 256],
     };
-    let types = installed_content_core::buildings::parse(
-        b"buildings={Hub={supply_node=yes} Port={is_port=yes spawn_point=Harbour}} spawn_points={Harbour={}}", &installed_content_core::key_names::KeyNames::default(),
+    let types = content_reader_core::buildings::parse(
+        b"buildings={Hub={supply_node=yes} Port={is_port=yes spawn_point=Harbour}} spawn_points={Harbour={}}", &content_reader_core::key_names::KeyNames::default(),
     )
     .unwrap();
     let positions =
-        installed_content_core::positions::parse_buildings(b"1;hUB;4;5;6;0;0\n1;hARBOUR;7;8;9;0;0\n")
+        content_reader_core::positions::parse_buildings(b"1;hUB;4;5;6;0;0\n1;hARBOUR;7;8;9;0;0\n")
             .unwrap();
     let geometry =
         RailGeometry::new(&map, &positions, &types, &rivers, heightmap(100), defines()).unwrap();
     assert_eq!(geometry.anchors[&1], [4.0, 5.0, 6.0]);
     assert_eq!(geometry.ports[&1], [7.0, 8.0, 9.0]);
-    let ambiguous = installed_content_core::buildings::parse(
-        b"buildings={Hub={supply_node=yes} hub={} Port={is_port=yes spawn_point=Harbour}} spawn_points={Harbour={} harbour={}}", &installed_content_core::key_names::KeyNames::default(),
+    let ambiguous = content_reader_core::buildings::parse(
+        b"buildings={Hub={supply_node=yes} hub={} Port={is_port=yes spawn_point=Harbour}} spawn_points={Harbour={} harbour={}}", &content_reader_core::key_names::KeyNames::default(),
     )
     .unwrap();
     let geometry = RailGeometry::new(
@@ -668,7 +668,7 @@ fn construction_keeps_immutable_heights_and_rejects_a_different_height_owner() {
         definitions: BTreeMap::new(),
         country_colors: Default::default(),
     };
-    let rivers = installed_content_image::IndexedImage {
+    let rivers = content_reader_image::IndexedImage {
         width: 32,
         height: 32,
         indices: vec![255; 1024].into(),

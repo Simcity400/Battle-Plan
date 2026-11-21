@@ -2,8 +2,8 @@
 use super::{BranchParams, LoadContext, Product, identities::CountryIdentityRun};
 use crate::{Source, catalogue, content, span::HourSpan};
 use dashboard_query::{Query, identity::Holder, read};
-use installed_content_core::faction_templates::Catalog;
-use installed_content_localisation::localisation::Localisation;
+use content_reader_core::faction_templates::Catalog;
+use content_reader_localisation::localisation::Localisation;
 use replay::columnar_frames::Recording;
 use replay_columnar::store::{TableView, Value};
 use replay_data::rows::{GroupSpanRow as Span, TableId, TagHolderRow, WarEventRow};

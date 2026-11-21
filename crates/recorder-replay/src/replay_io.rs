@@ -39,7 +39,7 @@ pub use session::{
     is_unsaved_recording, journal_campaigns, locate, note_discard, noted_discards, recorded_before_load,
     reconcile_session, save_waiting, session_loads, unsaved, unsaved_bytes, waiting_name, written_campaigns,
 };
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use replay::{
     recorder_settings::RecorderSettings, recording_files,
 };

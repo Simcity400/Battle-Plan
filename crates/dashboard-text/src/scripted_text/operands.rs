@@ -1,7 +1,7 @@
 
 use job_priority::SpawnCarried as _;
 use super::{numeric::format_variable, properties::date_property_at, *};
-use installed_content_country_names::country_names::Operands as Naming;
+use content_reader_country_names::country_names::Operands as Naming;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -740,7 +740,7 @@ impl<'r> Recorded<'r> {
         }
         let caller = job_priority::Caller::current();
         let cpu = replay_frame::cpu::Context::capture();
-        let diagnostics = installed_content_core::content::diagnostics::Context::capture();
+        let diagnostics = content_reader_core::content::diagnostics::Context::capture();
         let memory = engine_allocation::labels::current();
         std::thread::scope(|scope| {
             std::thread::Builder::new()

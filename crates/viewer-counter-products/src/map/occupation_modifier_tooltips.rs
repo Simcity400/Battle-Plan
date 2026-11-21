@@ -1,6 +1,6 @@
 use super::counter_content;
 use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, Link, ScriptedText};
-use installed_content_core::{occupation_modifiers::Definition, occupation_modifiers::Kind};
+use content_reader_core::{occupation_modifiers::Definition, occupation_modifiers::Kind};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use viewer_foundation::tooltip_text::{self, Tooltip};

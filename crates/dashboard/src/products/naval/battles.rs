@@ -706,7 +706,7 @@ fn fleets_at(seeker: &mut Seeker<'_>, run: u32, hour: i32, combats: &[u64], cont
                 }
                 match name {
                     Recorded::Value(Some(bytes)) => match dashboard_text::scripted_text::stored_text(&cat.localisation, &cat.recorded_language, bytes, "fleet name")
-                        .and_then(|text| installed_content_localisation::localisation::display_text(text.as_bytes()))
+                        .and_then(|text| content_reader_localisation::localisation::display_text(text.as_bytes()))
                     {
                         Ok(name) if !name.is_empty() => side.names.push(name),
                         Ok(_) => missing += 1,

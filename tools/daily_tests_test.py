@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,28 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import daily_tests as dt
+
+CI_DIR = os.path.abspath("runner")
+
+
+def setUpModule():
+    patch = mock.patch.dict(os.environ, {"BATTLE_PLAN_CI": CI_DIR})
+    patch.start()
+    unittest.addModuleCleanup(patch.stop)
+    dt.configure(CI_DIR)
+
+
+class FakeGitHub:
+    """Records what would be published; never calls GitHub."""
+
+    def __init__(self):
+        self.statuses, self.tracked = [], []
+
+    def status(self, commit, context, state, description):
+        self.statuses.append((commit, context, state, description))
+
+    def track(self, failing, title, body):
+        self.tracked.append((failing, title, body))
 
 
 class GameDir(unittest.TestCase):
@@ -26,6 +49,11 @@ class GameDir(unittest.TestCase):
                         self.assertEqual(dt.parse([command, "--game-dir", "game"]).game_dir, given)
                 with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game"}):
                     self.assertEqual(dt.parse(["run"]).game_dir, given)
+                with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game", "BATTLE_PLAN_CI": ""}):
+                    for command in ("install", "run"):
+                        self.assertEqual(dt.parse([command, "--ci-dir", "ci"]).ci_dir, os.path.join(os.getcwd(), "ci"))
+                with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game", "BATTLE_PLAN_CI": "ci"}):
+                    self.assertEqual(dt.parse(["run"]).ci_dir, os.path.join(os.getcwd(), "ci"))
             finally:
                 os.chdir(previous)
 
@@ -33,6 +61,115 @@ class GameDir(unittest.TestCase):
         with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": ""}), \
                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             dt.parse(["run"])
+
+    def test_an_empty_variable_names_no_runner_folder(self):
+        for command in ("install", "run"):
+            with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game", "BATTLE_PLAN_CI": ""}), \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                dt.parse([command])
+
+
+class Install(unittest.TestCase):
+    def setUp(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.root, self.ci, game = root, root / "runner folder", root / "game"
+        game.mkdir()
+        (game / "hoi4.exe").touch()
+        self.owner, self.commands, self.task = None, [], None
+        self.gitdir, self.commons = root / "clone" / ".git" / "worktrees" / "main", {}
+        self.addCleanup(dt.configure, CI_DIR)
+        self.enterContext(mock.patch.dict(os.environ, {"USERDOMAIN": "domain", "USERNAME": "user"}))
+        self.enterContext(mock.patch.object(dt.subprocess, "run", side_effect=self.command))
+        self.enterContext(contextlib.redirect_stdout(io.StringIO()))
+        self.enterContext(mock.patch.object(sys, "argv", [
+            "daily_tests.py", "install", "--ci-dir", str(self.ci), "--game-dir", str(game),
+        ]))
+
+    def command(self, command, **kwargs):
+        self.commands.append(command)
+        stdout = ""
+        if command[0] == "schtasks":
+            self.task = Path(command[command.index("/XML") + 1]).read_text(encoding="utf-16")
+        elif command[3:5] == ["worktree", "add"]:
+            self.runner_script(Path(command[6]))
+            self.gitdir.mkdir(parents=True)
+        elif command[3:] == ["rev-parse", "--show-toplevel"]:
+            stdout = self.owner
+        elif command[3:] == ["rev-parse", "--absolute-git-dir"]:
+            stdout = str(self.gitdir)
+        elif command[3:] == ["rev-parse", "--path-format=absolute", "--git-common-dir"]:
+            stdout = self.commons.get(command[2], str(self.root / "clone" / ".git"))
+        elif command[3] == "checkout":
+            held = dt.hold_checkout()
+            self.free_during_checkout = held is not None
+            if held is not None:
+                os.close(held)
+        return subprocess.CompletedProcess(command, 0, stdout=stdout)
+
+    def runner_script(self, worktree):
+        (worktree / "tools").mkdir(parents=True)
+        (worktree / "tools" / "daily_tests.py").touch()
+
+    def installed_runner(self):
+        worktree = self.ci / "main"
+        self.runner_script(worktree)
+        (worktree / ".git").write_text(f"gitdir: {self.gitdir}\n", encoding="utf-8")
+        self.gitdir.mkdir(parents=True)
+        (self.gitdir / dt.RUNNER_MARK).touch()
+        (self.gitdir / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")
+        self.owner = str(worktree)
+        return worktree
+
+    def refused(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            dt.main()
+        self.assertFalse(any("checkout" in command for command in self.commands))
+        self.assertIsNone(self.task)
+
+    def test_the_task_runs_the_runner_in_its_folder_with_its_folder(self):
+        self.assertEqual(dt.main(), 0)
+        worktree = self.ci / "main"
+        self.assertIn(["git", "-C", str(dt.ROOT), "worktree", "add", "--detach", str(worktree), "origin/main"], self.commands)
+        self.assertTrue((self.gitdir / dt.RUNNER_MARK).is_file())
+        self.assertIn(f"<WorkingDirectory>{worktree}</WorkingDirectory>", self.task)
+        self.assertIn(f'run --ci-dir "{self.ci}"', self.task)
+        self.assertEqual((dt.E2E_APP, dt.REPORTS), (self.ci / "e2e-app", self.ci / "reports"))
+
+    def test_an_installed_runner_of_this_clone_moves_to_main_before_the_task_is_registered(self):
+        worktree = self.installed_runner()
+        self.assertEqual(dt.main(), 0)
+        checkout = ["git", "-C", str(worktree), "checkout", "--quiet", "--detach", "--force", "origin/main"]
+        self.assertLess(self.commands.index(checkout), [command[0] for command in self.commands].index("schtasks"))
+        self.assertFalse(self.free_during_checkout)
+
+    def test_a_new_runner_is_made_only_in_an_empty_folder(self):
+        (self.ci / "reports").mkdir(parents=True)
+        (self.ci / "reports" / "TESTS_RUNNING").write_text("4242 2026-11-20 03:00\n", encoding="utf-8")
+        self.refused()
+        self.assertFalse(any("worktree" in command for command in self.commands))
+
+    def test_a_runner_of_another_clone_is_refused(self):
+        worktree = self.installed_runner()
+        self.commons[str(worktree)] = str(self.root / "other" / ".git")
+        self.refused()
+
+    def test_a_folder_install_did_not_make_is_refused_even_when_it_is_a_worktree(self):
+        self.runner_script(self.ci / "main")
+        self.gitdir.mkdir(parents=True)
+        self.owner = str(self.ci / "main")
+        self.refused()
+
+    def test_a_marked_folder_git_places_in_another_checkout_is_refused(self):
+        self.installed_runner()
+        self.owner = str(self.root)
+        self.refused()
+
+    def test_a_runner_whose_checkout_is_held_is_not_moved(self):
+        self.installed_runner()
+        dt.configure(self.ci)
+        held = dt.hold_checkout()
+        self.addCleanup(os.close, held)
+        self.refused()
 
 
 class Continuation(unittest.TestCase):
@@ -46,24 +183,37 @@ class Continuation(unittest.TestCase):
         self.enterContext(mock.patch.multiple(
             dt, WORKTREE=self.worktree, REPORTS=self.reports, MARKER=self.marker,
         ))
+        self.gitdir = root / "gitdir"
+        self.gitdir.mkdir()
+        (self.gitdir / dt.RUNNER_MARK).touch()
+        (self.worktree / ".git").write_text(f"gitdir: {self.gitdir}\n", encoding="utf-8")
+        (self.gitdir / "gitdir").write_text(f"{self.worktree / '.git'}\n", encoding="utf-8")
         self.lock = self.enterContext(mock.patch.object(dt, "lock_runner", return_value=41))
+        self.hold = self.enterContext(mock.patch.object(dt, "hold_checkout", return_value=43))
         self.close = self.enterContext(mock.patch.object(dt.os, "close"))
         self.git = self.enterContext(mock.patch.object(dt, "git", side_effect=self.git_command))
         self.clock = self.enterContext(mock.patch.object(dt.time, "monotonic", return_value=100.0))
         self.step = self.enterContext(mock.patch.object(dt, "run_step", side_effect=self.complete))
         self.record_history = dt.record_history
+        self.mark = self.enterContext(mock.patch.object(dt, "write_marker", wraps=dt.write_marker))
         self.history = self.enterContext(mock.patch.object(dt, "record_history", wraps=self.record_history))
         self.write_report = dt.write_report
         self.report = self.enterContext(mock.patch.object(dt, "write_report", wraps=self.write_report))
         self.enterContext(mock.patch.object(dt, "target_dir", return_value=self.worktree / "target"))
+        self.github = FakeGitHub()
+        self.enterContext(mock.patch.object(dt, "publisher", return_value=self.github))
         self.args = dt.parse(["run", "--game-dir", str(self.worktree / "game")])
 
     def git_command(self, *args):
+        if args == ("rev-parse", "--show-toplevel"):
+            return str(self.worktree)
+        if args == ("rev-parse", "--absolute-git-dir"):
+            return str(self.gitdir)
         return "synthetic commit" if args[0] == "log" else self.commit
 
     def complete(self, command, log, environment, seconds):
         self.assertTrue(self.marker.is_file())
-        self.close.assert_not_called()
+        self.assertNotIn(mock.call(41), self.close.call_args_list)
         child = dt.parse(command[2:])
         folder = Path(child.continue_run[3])
         (folder / "result.json").write_text(json.dumps({
@@ -84,12 +234,11 @@ class Continuation(unittest.TestCase):
     def test_the_parent_runs_the_checked_out_script_once_and_keeps_exclusion_until_reporting(self):
         def record(*args):
             self.assertTrue(self.marker.is_file())
-            self.close.assert_not_called()
+            self.assertNotIn(mock.call(41), self.close.call_args_list)
             return self.record_history(*args)
 
         self.history.side_effect = record
-        with mock.patch.object(dt, "MARKER", wraps=self.marker) as marker:
-            self.assertEqual(dt.run(self.args), 0)
+        self.assertEqual(dt.run(self.args), 0)
         self.step.assert_called_once()
         command, log, environment, seconds = self.step.call_args.args
         self.assertEqual(command[:6], [
@@ -97,22 +246,114 @@ class Continuation(unittest.TestCase):
             "--game-dir", self.args.game_dir, "--continue-run",
         ])
         self.assertEqual(command[6], self.commit)
+        self.assertEqual(command[-2:], ["--ci-dir", CI_DIR])
         self.assertIsNone(environment)
         self.assertEqual(log.name, "runner.log")
         self.assertEqual(self.git.call_args_list, [
+            mock.call("rev-parse", "--show-toplevel"),
+            mock.call("rev-parse", "--absolute-git-dir"),
             mock.call("fetch", "--quiet", "origin", "main"),
             mock.call("checkout", "--quiet", "--detach", "--force", "origin/main"),
             mock.call("rev-parse", "HEAD"),
         ])
         self.lock.assert_called_once_with()
-        self.close.assert_called_once_with(41)
-        marker.write_text.assert_called_once()
-        marker.unlink.assert_called_once_with(missing_ok=True)
+        self.assertEqual(self.close.call_args_list, [mock.call(43), mock.call(41)])
+        self.assertEqual(self.mark.call_count, 2)
+        self.assertTrue(self.mark.call_args.args[0].endswith(f"{self.step.call_args.args[1].parent.name}\n"))
         self.assertFalse(self.marker.exists())
         self.history.assert_called_once()
         self.assertEqual([call.args[0] for call in self.report.call_args_list], ["RUNNING", "PASSED"])
         self.assertEqual(self.report.call_args, mock.call("PASSED", ["synthetic report"]))
         self.assertEqual(len((self.reports / "history.tsv").read_text().splitlines()), 1)
+
+    def test_an_interrupted_marker_rewrite_keeps_the_run_it_named(self):
+        dt.write_marker("4242 2026-11-20 03:00 2026-11-20-0300-aaaaaaaaaa\n")
+
+        def stopped(path, *args, **kwargs):
+            path.write_bytes(b"")
+            raise OSError("stopped mid-write")
+
+        with mock.patch.object(Path, "write_text", stopped), self.assertRaises(OSError):
+            dt.write_marker("4242 2026-11-21 03:00\n")
+        self.assertEqual(self.marker.read_text(encoding="utf-8"), "4242 2026-11-20 03:00 2026-11-20-0300-aaaaaaaaaa\n")
+
+    def test_an_interrupted_open_groups_write_still_closes_the_groups_listed_before(self):
+        folder = self.reports / "run"
+        folder.mkdir()
+        dt.write_open_groups(folder, ["checks", "rust"])
+
+        def stopped(path, *args, **kwargs):
+            path.write_bytes(b"")
+            raise OSError("stopped mid-write")
+
+        with mock.patch.object(Path, "write_text", stopped), self.assertRaises(OSError):
+            dt.write_open_groups(folder, ["rust"])
+        publishing = mock.Mock()
+        dt.close_open_groups(folder, self.commit, publishing, "unfinished")
+        self.assertEqual(publishing.status.call_args_list, [
+            mock.call(self.commit, f"{dt.STATUS}/checks", "error", "unfinished"),
+            mock.call(self.commit, f"{dt.STATUS}/rust", "error", "unfinished"),
+        ])
+
+    def test_a_runner_folder_git_places_in_another_checkout_is_refused_before_locking_or_publishing(self):
+        enclosing = str(self.worktree.parent)
+        self.git.side_effect = lambda *args: (
+            enclosing if args == ("rev-parse", "--show-toplevel") else self.git_command(*args)
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(dt.run(self.args), 2)
+        self.assertEqual(self.git.call_args_list, [mock.call("rev-parse", "--show-toplevel")])
+        self.lock.assert_not_called()
+        self.assertEqual((self.github.statuses, self.github.tracked), ([], []))
+
+    def test_a_worktree_install_did_not_mark_is_refused_before_locking(self):
+        (self.gitdir / dt.RUNNER_MARK).unlink()
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(dt.run(self.args), 2)
+        self.assertEqual(self.git.call_args_list, [
+            mock.call("rev-parse", "--show-toplevel"), mock.call("rev-parse", "--absolute-git-dir"),
+        ])
+        self.lock.assert_not_called()
+
+    def test_a_copy_of_the_runner_is_refused_before_locking(self):
+        (self.gitdir / "gitdir").write_text(f"{self.worktree.parent / 'original' / '.git'}\n", encoding="utf-8")
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(dt.run(self.args), 2)
+        self.lock.assert_not_called()
+
+    def test_a_runner_whose_git_folder_points_back_relatively_is_its_own(self):
+        (self.gitdir / "gitdir").write_text("../worktree/.git\n", encoding="utf-8")
+        self.assertIsNone(dt.not_the_runner(self.git_command))
+
+    def test_a_hard_linked_copy_of_the_runner_is_not_its_own(self):
+        copy = self.worktree.parent / "copy"
+        copy.mkdir()
+        os.link(self.worktree / ".git", copy / ".git")
+        query = lambda *args: str(copy) if args == ("rev-parse", "--show-toplevel") else self.git_command(*args)
+        with mock.patch.object(dt, "WORKTREE", copy):
+            self.assertIn("copy of the runner", dt.not_the_runner(query))
+
+    def test_a_checkout_lock_that_cannot_be_opened_releases_the_runner_lock(self):
+        self.hold.side_effect = OSError("synthetic lock folder is unreadable")
+        with self.assertRaises(OSError):
+            dt.run(self.args)
+        self.assertEqual(self.close.call_args_list, [mock.call(41)])
+
+    def test_the_parent_holds_the_checkout_until_it_has_moved_it_and_frees_it_for_the_child(self):
+        seen = {}
+
+        def git_command(*args):
+            if args[0] == "checkout":
+                seen["checkout"] = mock.call(43) in self.close.call_args_list
+            return self.git_command(*args)
+
+        def complete(*args):
+            seen["child"] = mock.call(43) in self.close.call_args_list
+            return self.complete(*args)
+
+        self.git.side_effect, self.step.side_effect = git_command, complete
+        self.assertEqual(dt.run(self.args), 0)
+        self.assertEqual(seen, {"checkout": False, "child": True})
 
     def test_running_is_written_before_fetch_and_replaced_by_the_final_report(self):
         latest = self.reports / "latest.md"
@@ -261,7 +502,7 @@ class Continuation(unittest.TestCase):
         self.assertEqual((folder / "report.md").read_text(), report)
         prune.assert_called_once_with(self.history.call_args.args[0])
         self.assertFalse(self.marker.exists())
-        self.close.assert_called_once_with(41)
+        self.assertEqual(self.close.call_args_list, [mock.call(43), mock.call(41)])
 
     def test_a_latest_report_failure_still_writes_the_run_report_and_prunes(self):
         def write_report(heading, lines):
@@ -294,6 +535,207 @@ class Continuation(unittest.TestCase):
                          "# Daily tests: PASSED\n\nsynthetic report\n")
         prune.assert_called_once_with(self.history.call_args.args[0])
         self.assertFalse(self.marker.exists())
+
+    def test_the_run_publishes_pending_then_its_result_and_tracks_failure(self):
+        self.assertEqual(dt.run(self.args), 0)
+        self.assertEqual([status[:3] for status in self.github.statuses], [
+            (self.commit, dt.STATUS, "pending"), (self.commit, dt.STATUS, "success"),
+        ])
+        self.assertEqual(len(self.github.tracked), 1)
+        failing, title, body = self.github.tracked[0]
+        self.assertEqual((failing, title), (False, dt.ISSUE_TITLE))
+        self.assertTrue(body.startswith("# Daily tests: PASSED\n"))
+
+        self.github.statuses.clear()
+        self.step.side_effect = lambda command, log, environment, seconds: 1
+        self.assertEqual(dt.run(self.args), 2)
+        self.assertEqual(self.github.statuses[-1][1:3], (dt.STATUS, "error"))
+        failing, _, body = self.github.tracked[-1]
+        self.assertTrue(failing)
+        self.assertIn("checked-out runner failed (exit 1)", body)
+        self.assertNotIn(str(self.worktree), body)
+
+    def test_a_run_that_recorded_its_result_is_published_not_called_unfinished_by_the_next(self):
+        def power_loss(*args):
+            raise KeyboardInterrupt
+        track, self.github.track = self.github.track, power_loss
+        with self.assertRaises(KeyboardInterrupt):
+            dt.run(self.args)
+        self.assertTrue(self.marker.exists())
+        self.github.track, self.github.statuses = track, []
+        self.close.reset_mock()
+        self.assertEqual(dt.run(self.args), 0)
+        history = [line.split("\t")[2] for line in (self.reports / "history.tsv").read_text().splitlines()]
+        self.assertEqual(history, ["passed", "passed"])
+        self.assertEqual(self.github.statuses[0][:3], (self.commit, dt.STATUS, "success"))
+        self.assertEqual(self.github.tracked[0][0], False)
+        self.assertIn("saved its result but stopped before publishing it", (self.reports / "latest.md").read_text())
+
+    def test_a_saved_outcome_missing_from_history_is_recorded_once_and_an_error_closes_its_groups(self):
+        folder = self.reports / f"2026-11-20-0300-{'e' * 10}"
+        folder.mkdir()
+        (folder / dt.RUN_MARK).write_text(f"2026-11-20 03:00\t{'e' * 40}\n", encoding="utf-8")
+        dt.write_open_groups(folder, ["acceptance"])
+        dt.save_outcome(folder, {"result": "error", "failed": None, "recorded": False, "state": "error",
+                                 "description": "error 2026-11-20 03:00", "failing": True, "body": "body"})
+        self.marker.write_text(f"4242 2026-11-20 03:00 {folder.name}\n", encoding="utf-8")
+        self.assertEqual(dt.run(self.args), 0)
+        history = (self.reports / "history.tsv").read_text().splitlines()
+        self.assertEqual(history[0], f"2026-11-20 03:00\t{'e' * 10}\terror\t")
+        self.assertEqual(len(history), 2)
+        self.assertEqual([status[1:3] for status in self.github.statuses[:2]], [
+            (f"{dt.STATUS}/acceptance", "error"), (dt.STATUS, "error"),
+        ])
+
+    def test_a_run_interrupted_while_its_tests_run_is_recovered_by_the_next(self):
+        def interrupted(command, log, environment, seconds):
+            raise KeyboardInterrupt
+        self.step.side_effect = interrupted
+        with self.assertRaises(KeyboardInterrupt):
+            dt.run(self.args)
+        self.assertTrue(self.marker.exists())
+        self.assertIsNotNone(dt.unfinished_run())
+        self.step.side_effect, self.github.statuses = self.complete, []
+        self.close.reset_mock()
+        self.assertEqual(dt.run(self.args), 0)
+        self.assertEqual(self.github.statuses[0][:3], (self.commit, dt.STATUS, "error"))
+        self.assertEqual((self.reports / "history.tsv").read_text().splitlines()[0].split("\t")[1:3],
+                         [self.commit[:10], "unfinished"])
+
+    def test_a_run_whose_parent_alone_stopped_is_published_from_its_runners_result(self):
+        folder = self.reports / f"2026-11-20-0300-{'e' * 10}"
+        folder.mkdir()
+        (folder / dt.RUN_MARK).write_text(f"2026-11-20 03:00\t{'e' * 40}\n", encoding="utf-8")
+        (folder / "result.json").write_text(json.dumps({
+            "result": "passed", "failed": 0, "lines": ["local"], "public": ["all passed"],
+        }), encoding="utf-8")
+        self.marker.write_text(f"4242 2026-11-20 03:00 {folder.name}\n", encoding="utf-8")
+        self.assertEqual(dt.run(self.args), 0)
+        self.assertEqual((self.reports / "history.tsv").read_text().splitlines()[0],
+                         f"2026-11-20 03:00\t{'e' * 10}\tpassed\t0")
+        self.assertEqual(self.github.statuses[0][:3], ("e" * 40, dt.STATUS, "success"))
+        self.assertEqual(self.github.tracked[0][0], False)
+        self.assertIn("all passed", self.github.tracked[0][2])
+
+    def test_a_history_that_cannot_be_appended_still_closes_the_earlier_runs_statuses(self):
+        folder = self.reports / f"2026-11-20-0300-{'e' * 10}"
+        folder.mkdir()
+        (folder / dt.RUN_MARK).write_text(f"2026-11-20 03:00\t{'e' * 40}\n", encoding="utf-8")
+        dt.write_open_groups(folder, ["rust"])
+        self.marker.write_text(f"4242 2026-11-20 03:00 {folder.name}\n", encoding="utf-8")
+
+        def locked(started, commit, result, failed):
+            if result == "unfinished":
+                raise PermissionError("history.tsv is locked")
+            return self.record_history(started, commit, result, failed)
+        self.history.side_effect = locked
+        self.assertEqual(dt.run(self.args), 0)
+        self.assertEqual([status[:3] for status in self.github.statuses[:2]], [
+            ("e" * 40, dt.STATUS, "error"), ("e" * 40, f"{dt.STATUS}/rust", "error"),
+        ])
+        self.assertIn("history.tsv is locked", (self.reports / "latest.md").read_text())
+
+    def test_the_earlier_run_is_recovered_before_this_run_can_fail(self):
+        self.marker.write_text("4242 2026-11-20 03:00\n", encoding="utf-8")
+
+        def write_report(heading, lines):
+            raise PermissionError("latest is locked")
+        self.report.side_effect = write_report
+        self.assertEqual(dt.run(self.args), 2)
+        history = (self.reports / "history.tsv").read_text().splitlines()
+        self.assertEqual(history[0], "2026-11-20 03:00\t\tunfinished\t")
+
+    def test_a_child_that_dies_leaves_no_group_pending(self):
+        def die(command, log, environment, seconds):
+            dt.write_open_groups(Path(dt.parse(command[2:]).continue_run[3]), ["rust", "acceptance"])
+            log.write_text("killed", encoding="utf-8")
+            return 1
+        self.step.side_effect = die
+        self.assertEqual(dt.run(self.args), 2)
+        self.assertEqual([status[1:3] for status in self.github.statuses], [
+            (dt.STATUS, "pending"), (f"{dt.STATUS}/rust", "error"), (f"{dt.STATUS}/acceptance", "error"),
+            (dt.STATUS, "error"),
+        ])
+        self.assertIn("The runner failed: checked-out runner failed (exit 1).", self.github.tracked[-1][2])
+
+    def test_a_child_without_a_result_publishes_no_local_path(self):
+        self.step.side_effect = lambda command, log, environment, seconds: 0
+        self.assertEqual(dt.run(self.args), 2)
+        body = self.github.tracked[-1][2]
+        self.assertIn("left no readable result", body)
+        self.assertNotIn(str(self.reports), body)
+
+    def test_publishing_failures_are_reported_and_never_fail_the_run(self):
+        self.github.status = lambda *args: "status daily-tests: HTTP 401"
+        self.github.track = lambda *args: "tracking issue: gh auth login"
+        self.assertEqual(dt.run(self.args), 0)
+        report = (self.reports / "latest.md").read_text()
+        self.assertTrue(report.startswith("# Daily tests: PASSED\n"))
+        self.assertIn("Not published: status daily-tests: HTTP 401", report)
+        self.assertIn("Not published: tracking issue: gh auth login", report)
+
+    def test_a_run_that_never_reported_is_recorded_unfinished_by_the_next(self):
+        folder = self.reports / f"2026-11-20-0300-{'e' * 10}"
+        folder.mkdir()
+        (folder / dt.RUN_MARK).write_text(f"2026-11-20 03:00\t{'e' * 40}\n", encoding="utf-8")
+        dt.write_open_groups(folder, ["rust", "acceptance"])
+        self.marker.write_text(f"4242 2026-11-20 03:00 {folder.name}\n", encoding="utf-8")
+        self.assertEqual(dt.run(self.args), 0)
+        history = (self.reports / "history.tsv").read_text().splitlines()
+        self.assertEqual(history[0], f"2026-11-20 03:00\t{'e' * 10}\tunfinished\t")
+        self.assertEqual(history[1].split("\t")[2], "passed")
+        self.assertEqual([status[:3] for status in self.github.statuses[:3]], [
+            ("e" * 40, dt.STATUS, "error"), ("e" * 40, f"{dt.STATUS}/rust", "error"),
+            ("e" * 40, f"{dt.STATUS}/acceptance", "error"),
+        ])
+        self.assertTrue(self.github.tracked[0][0])
+        self.assertIn("never reported", self.github.tracked[0][2])
+        self.assertIn("never reported", (self.reports / "latest.md").read_text())
+        self.assertFalse(self.marker.exists())
+
+        self.marker.write_text("4243 2026-11-21 03:00\n", encoding="utf-8")
+        self.github.statuses.clear()
+        self.close.reset_mock()
+        self.assertEqual(dt.run(self.args), 0)
+        self.assertEqual((self.reports / "history.tsv").read_text().splitlines()[2], "2026-11-21 03:00\t\tunfinished\t")
+        self.assertEqual([status[2] for status in self.github.statuses], ["pending", "success"])
+
+    def test_each_group_is_published_and_reported_as_it_ends(self):
+        args = self.child_args()
+        seen = []
+
+        def step(outcome):
+            def run(build, log):
+                latest = self.reports / "latest.md"
+                seen.append(([status[1:3] for status in self.github.statuses],
+                             latest.read_text() if latest.exists() else ""))
+                return outcome
+            return run
+
+        plan = [
+            ("Machine paths", "machine-paths", step((0, "passed")), None),
+            ("UI install", "ui-install", step((1, "failed")), None),
+            ("UI tests", "ui-tests", step((0, "passed")), "ui-install"),
+            ("Disk space", "disk", step((0, "passed")), None),
+            ("Rust tests", "rust", step((1, "failed")), "disk"),
+        ]
+        with mock.patch.object(dt, "steps", return_value=plan):
+            self.assertEqual(dt.run(args), 0)
+        self.assertEqual(len(seen), 4)
+        self.assertEqual(seen[0][0], [(f"{dt.STATUS}/{group}", "pending") for group in ("repository", "ui", "rust")])
+        self.assertEqual(seen[1][0][-1], (f"{dt.STATUS}/repository", "success"))
+        self.assertIn("| Machine paths | passed |", seen[1][1])
+        self.assertIn("Still running: ui, rust.", seen[1][1])
+        descriptions = {status[1]: (status[2], status[3]) for status in self.github.statuses}
+        self.assertEqual(descriptions[f"{dt.STATUS}/ui"], ("failure", "failed: UI install, UI tests"))
+        state, description = descriptions[f"{dt.STATUS}/rust"]
+        self.assertEqual(state, "failure")
+        self.assertTrue(description.startswith("failed: Rust tests; passed not recorded"), description)
+        completed = json.loads((Path(args.continue_run[3]) / "result.json").read_text())
+        self.assertEqual(completed["result"], "failed")
+        self.assertIn("Rust tests: passed not recorded, failed not recorded, skipped not recorded, missing not recorded.",
+                      completed["lines"])
+        self.assertFalse(any(args.continue_run[3] in line for line in completed["public"]))
 
 
 KEPT, OLD, SCRIPT, RUN = "a" * 16, "b" * 16, "c" * 16, "d" * 16
@@ -447,6 +889,115 @@ class Disk(unittest.TestCase):
             self.assertIsNone(dt.size_of(Path(root) / "missing"))
             self.assertEqual(dt.gigabytes(None), "absent")
 
+    def setUp(self):
+        self.tracked, self.ignored = "", True
+
+        def git(*args):
+            if args[0] == "ls-files":
+                return self.tracked
+            if not self.ignored:
+                raise RuntimeError("git check-ignore: ")
+            return ""
+        self.enterContext(mock.patch.object(dt, "git", side_effect=git))
+
+    def reclaiming(self, root, free, target_size):
+        """A runner worktree under `root` whose Cargo target holds `target_size` bytes, on a drive
+        with `free` bytes free until the target is removed."""
+        worktree = Path(root) / "worktree"
+        target = worktree / ".cargo-target"
+        (target / "debug").mkdir(parents=True)
+        (worktree / ".cargo").mkdir()
+        (worktree / ".cargo" / "config.toml").write_text('[build]\ntarget-dir = ".cargo-target"\n', encoding="utf-8")
+        (target / "debug" / "lib.rlib").write_bytes(b"x" * target_size)
+        usage = lambda drive: mock.Mock(free=free + (0 if target.exists() else target_size))
+        return worktree, target, usage
+
+    def test_below_the_floor_the_runners_own_target_is_removed_when_that_reaches_it(self):
+        with tempfile.TemporaryDirectory() as root:
+            worktree, target, usage = self.reclaiming(root, dt.DISK_FLOOR - 5, 10)
+            log = Path(root) / "disk.log"
+            with mock.patch.object(dt, "WORKTREE", worktree), mock.patch.object(dt.shutil, "disk_usage", side_effect=usage):
+                code, outcome = dt.check_disk(dt.Build(target), log)
+            self.assertEqual(code, 0, outcome)
+            self.assertIn("after removing the runner's", outcome)
+            self.assertFalse(target.exists())
+            self.assertIn("removed the runner's Cargo target", log.read_text(encoding="utf-8"))
+
+    def test_a_target_whose_removal_would_not_reach_the_floor_is_kept(self):
+        with tempfile.TemporaryDirectory() as root:
+            worktree, target, usage = self.reclaiming(root, dt.DISK_FLOOR - 50, 10)
+            log = Path(root) / "disk.log"
+            with mock.patch.object(dt, "WORKTREE", worktree), mock.patch.object(dt.shutil, "disk_usage", side_effect=usage):
+                code, outcome = dt.check_disk(dt.Build(target), log)
+            self.assertEqual(code, 1)
+            self.assertIn("below the 60.0 GB floor", outcome)
+            self.assertTrue(target.exists())
+            self.assertIn("would not reach the floor", log.read_text(encoding="utf-8"))
+
+    def test_a_target_outside_the_runners_worktree_or_behind_a_link_is_never_removed(self):
+        with tempfile.TemporaryDirectory() as root:
+            worktree, target, usage = self.reclaiming(root, dt.DISK_FLOOR - 5, 10)
+            elsewhere = Path(root) / "elsewhere"
+            elsewhere.mkdir()
+            with mock.patch.object(dt, "WORKTREE", elsewhere), mock.patch.object(dt.shutil, "disk_usage", side_effect=usage):
+                self.assertEqual(dt.check_disk(dt.Build(target), Path(root) / "disk.log")[0], 1)
+            self.assertTrue(target.exists())
+            linked = worktree / "linked-target"
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(linked), str(target)], check=True, capture_output=True)
+            try:
+                with mock.patch.object(dt, "WORKTREE", worktree):
+                    self.assertEqual(dt.not_owned(linked), "it is not a plain folder")
+                    self.assertEqual(dt.not_owned(worktree), "it is not the runner worktree's own Cargo target")
+                    captures = worktree / "captures"
+                    captures.mkdir()
+                    self.assertEqual(dt.not_owned(captures), "it is not the runner worktree's own Cargo target")
+                    self.assertIsNone(dt.not_owned(target))
+            finally:
+                os.rmdir(linked)
+            self.assertTrue((target / "debug" / "lib.rlib").exists())
+
+    def test_a_target_holding_a_link_to_elsewhere_is_never_removed(self):
+        with tempfile.TemporaryDirectory() as root:
+            worktree, target, usage = self.reclaiming(root, dt.DISK_FLOOR - 5, 10)
+            elsewhere = Path(root) / "elsewhere"
+            elsewhere.mkdir()
+            (elsewhere / "big.rlib").write_bytes(b"x" * 100)
+            linked = target / "release"
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(linked), str(elsewhere)], check=True, capture_output=True)
+            try:
+                with mock.patch.object(dt, "WORKTREE", worktree), mock.patch.object(dt.shutil, "disk_usage", side_effect=usage):
+                    self.assertEqual(dt.not_owned(target), "it links elsewhere at release")
+                    self.assertEqual(dt.check_disk(dt.Build(target), Path(root) / "disk.log")[0], 1)
+                self.assertTrue((elsewhere / "big.rlib").exists())
+                self.assertTrue(target.exists())
+            finally:
+                os.rmdir(linked)
+
+    def test_a_tracked_or_unignored_folder_or_one_a_boat_run_holds_is_never_removed(self):
+        with tempfile.TemporaryDirectory() as root:
+            worktree, target, usage = self.reclaiming(root, dt.DISK_FLOOR - 5, 10)
+            with mock.patch.object(dt, "WORKTREE", worktree), mock.patch.object(dt.shutil, "disk_usage", side_effect=usage):
+                self.tracked = "ui/src/app.ts"
+                self.assertEqual(dt.check_disk(dt.Build(target), Path(root) / "disk.log")[0], 1)
+                self.assertIn("Git tracks files in it", (Path(root) / "disk.log").read_text(encoding="utf-8"))
+                self.tracked, self.ignored = "", False
+                self.assertEqual(dt.not_owned(target), "Git does not ignore it")
+                self.ignored = True
+                (target / "boat-test" / "run").mkdir(parents=True)
+                held = open(target / "boat-test" / "run" / ".boat-test.lock", "a+b")
+                try:
+                    held.write(b"0")
+                    held.flush()
+                    held.seek(0)
+                    dt.msvcrt.locking(held.fileno(), dt.msvcrt.LK_NBLCK, 1)
+                    self.assertEqual(dt.not_owned(target), f"a build holds {os.path.join('boat-test', 'run', '.boat-test.lock')}")
+                    held.seek(0)
+                    dt.msvcrt.locking(held.fileno(), dt.msvcrt.LK_UNLCK, 1)
+                finally:
+                    held.close()
+                self.assertIsNone(dt.not_owned(target))
+            self.assertTrue(target.exists())
+
 
 class Acceptance(unittest.TestCase):
     def setUp(self):
@@ -512,11 +1063,139 @@ class Acceptance(unittest.TestCase):
             ("Both", "both", lambda build, log: ran.append("both") or (0, "passed"), ("first", "second")),
         ]
         args = dt.parse(["run", "--game-dir", "game", "--continue-run", "c" * 40, "2026-11-08T03:00:00", "1e12", str(folder)])
-        with mock.patch.multiple(dt, WORKTREE=root), mock.patch.object(dt, "steps", return_value=plan),                 mock.patch.object(dt, "git", return_value="c" * 40), mock.patch.object(dt, "target_dir", return_value=root / "target"):
+        with mock.patch.multiple(dt, WORKTREE=root, REPORTS=root / "reports"), \
+                mock.patch.object(dt, "steps", return_value=plan), \
+                mock.patch.object(dt, "git", return_value="c" * 40), \
+                mock.patch.object(dt, "target_dir", return_value=root / "target"), \
+                mock.patch.object(dt, "hold_checkout", return_value=43), \
+                mock.patch.object(dt, "publisher", return_value=FakeGitHub()):
             dt.run(args)
         lines = json.loads((folder / "result.json").read_text(encoding="utf-8"))["lines"]
         self.assertEqual(ran, [])
         self.assertIn("| Both | not run: second failed | | |", lines)
+
+
+LISTING = json.dumps({"rust-suites": {"replay": {"testcases": {
+    "reads": {"filter-match": {"status": "matches"}},
+    "writes": {"filter-match": {"status": "matches"}},
+    "slow": {"filter-match": {"status": "mismatch", "reason": "ignored"}},
+}}}})
+
+
+class RustTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.build = dt.Build(self.root / "cargo-target", self.root, {}, 1e12)
+        self.worktree = self.root / "worktree"
+        self.enterContext(mock.patch.object(dt, "WORKTREE", self.worktree))
+        self.junit = dt.nextest_junit()
+        self.assertEqual(self.junit, self.worktree / "target" / "nextest" / dt.NEXTEST_PROFILE / "junit.xml")
+        self.junit.parent.mkdir(parents=True)
+        self.junit.write_text("<testsuites/>", encoding="utf-8")
+
+    def bounded(self, listed, junit, run_code=0):
+        def run(command, stdout, stderr, seconds, environment=None):
+            if command == dt.RUST_LIST:
+                if listed is None:
+                    return 101
+                stdout.write(listed.encode())
+                return 0
+            self.assertEqual(command, dt.RUST_TESTS)
+            self.assertFalse(self.junit.exists(), "the last run's report is removed first")
+            stdout.write(messages(self.build.target / "debug").getvalue())
+            if junit is not None:
+                self.junit.write_text(junit, encoding="utf-8")
+            return run_code
+        return mock.patch.object(dt, "bounded", side_effect=run)
+
+    def test_a_run_counts_its_tests_and_keeps_its_listing_and_report(self):
+        junit = ('<testsuites><testsuite name="replay"><testcase name="reads"/>'
+                 '<testcase name="writes"><failure/></testcase></testsuite></testsuites>')
+        with self.bounded(LISTING, junit, 100):
+            code, outcome = dt.rust_tests(self.build, self.root / "rust.log")
+        self.assertEqual((code, outcome), (1, "failed (exit 100): 1 passed, 1 failed, 1 skipped, 0 missing"))
+        self.assertEqual(self.build.tests.failures, ["replay writes"])
+        self.assertIsNotNone(self.build.units)
+        self.assertEqual((self.root / "rust-junit.xml").read_text(encoding="utf-8"), junit)
+        self.assertEqual((self.root / "rust-list.json").read_text(encoding="utf-8"), LISTING)
+
+    def test_the_report_is_read_from_the_nextest_store_the_config_names(self):
+        (self.worktree / ".config").mkdir()
+        (self.worktree / ".config" / "nextest.toml").write_text('[store]\ndir = "out/nextest"\n', encoding="utf-8")
+        self.assertEqual(dt.nextest_junit(), self.worktree / "out" / "nextest" / dt.NEXTEST_PROFILE / "junit.xml")
+
+    def test_a_clean_exit_with_a_test_unreported_still_fails(self):
+        junit = '<testsuites><testsuite name="replay"><testcase name="reads"/></testsuite></testsuites>'
+        with self.bounded(LISTING, junit):
+            self.assertEqual(dt.rust_tests(self.build, self.root / "rust.log"),
+                             (1, "failed (exit 0): 1 passed, 0 failed, 1 skipped, 1 missing"))
+        junit = ('<testsuites><testsuite name="replay"><testcase name="reads"/>'
+                 '<testcase name="writes"/></testsuite></testsuites>')
+        with self.bounded(LISTING, junit):
+            self.assertEqual(dt.rust_tests(self.build, self.root / "rust.log"),
+                             (0, "passed: 2 passed, 0 failed, 1 skipped, 0 missing"))
+
+    def boat_run(self, codes, output):
+        worktree = self.root / "worktree"
+        for name in ("replay", "viewer"):
+            (worktree / "crates" / name).mkdir(parents=True, exist_ok=True)
+            (worktree / "crates" / name / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n')
+        (worktree / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/*"]\n')
+        commands = []
+
+        def run(command, stdout, stderr, seconds, environment=None):
+            commands.append((command, stderr, seconds))
+            stdout.write(output.encode())
+            return codes.pop(0)
+        with mock.patch.object(dt, "WORKTREE", worktree), mock.patch.object(dt, "bounded", side_effect=run):
+            return dt.boat_rust_tests(self.build, self.root / "rust.log"), commands
+
+    ONE = ("running 1 test\ntest a ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured\n"
+           "Test program: replay lib replay: x: exit 0\nTests: 1 of 1 programs run\n")
+
+    def test_boat_builds_every_member_and_its_programs_are_counted(self):
+        output = ("running 2 tests\ntest a ... ok\ntest b ... ignored\n"
+                  "test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured\n"
+                  "Test program: replay lib replay: x: exit 0\nTests: 1 of 1 programs run\n")
+        (code, outcome), commands = self.boat_run([0], output)
+        self.assertEqual((code, outcome), (0, "passed: 1 passed, 0 failed, 1 skipped, 0 missing"))
+        command, stderr, seconds = commands[0]
+        self.assertEqual(command[1:4], ["tools/boat.py", "test", "--no-fail-fast"])
+        self.assertEqual(command[4:], ["-p", "replay", "-p", "viewer"])
+        self.assertEqual(stderr, subprocess.STDOUT)
+        self.assertLessEqual(seconds, dt.BOAT_RUST_LIMIT.total_seconds())
+        self.assertIsNone(self.build.units)
+
+    def test_boat_failing_itself_is_run_once_more_then_named(self):
+        (code, outcome), commands = self.boat_run([dt.BOAT_FAILED, 0], self.ONE)
+        self.assertEqual(len(commands), 2)
+        self.assertEqual((code, outcome), (0, "passed: 1 passed, 0 failed, 0 skipped, 0 missing"))
+        self.assertEqual((self.root / "rust.log").read_text(encoding="utf-8").count("test a ... ok"), 2)
+        (code, outcome), commands = self.boat_run([dt.BOAT_FAILED, dt.BOAT_FAILED], "BOAT UNAVAILABLE\n")
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(outcome, "failed: Boat itself failed twice (exit 75); passed not recorded, "
+                                  "failed not recorded, skipped not recorded, missing not recorded")
+
+    def test_the_rust_setting_chooses_boat_or_local_and_only_local_sweeps(self):
+        for setting, rust, sweep in (("boat", dt.boat_rust_tests, False), ("local", dt.rust_tests, True)):
+            with mock.patch.object(dt, "RUST_BUILD", setting):
+                plan = {slug: command for _, slug, command, _ in dt.steps()}
+            self.assertIs(plan["rust"], rust)
+            self.assertEqual("rust-sweep" in plan, sweep)
+        with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": "D:/elsewhere"}):
+            with mock.patch.object(dt, "RUST_BUILD", "boat"):
+                self.assertEqual(dt.rust_target(), self.worktree / ".cargo-target")
+            with mock.patch.object(dt, "RUST_BUILD", "local"):
+                self.assertEqual(dt.rust_target(), Path("D:/elsewhere"))
+
+    def test_a_build_that_fails_records_no_counts_and_runs_nothing(self):
+        with self.bounded(None, None) as bounded:
+            code, outcome = dt.rust_tests(self.build, self.root / "rust.log")
+        self.assertEqual(bounded.call_count, 1)
+        self.assertEqual(code, 1)
+        self.assertEqual(outcome, "failed (exit 101): passed not recorded, failed not recorded, "
+                                  "skipped not recorded, missing not recorded")
+        self.assertIsNone(self.build.units)
 
 
 if __name__ == "__main__":

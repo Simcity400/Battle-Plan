@@ -23,9 +23,9 @@ replay-columnar.workspace = true
 replay.workspace = true
 engine-intelligence.workspace = true
 engine-native.workspace = true
-installed-content-core.workspace = true
-installed-content-country-names.workspace = true
-installed-content-localisation.workspace = true
+content-reader-core.workspace = true
+content-reader-country-names.workspace = true
+content-reader-localisation.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 replay-derive.workspace = true
@@ -63,3 +63,6 @@ unify-wgpu = { workspace = true }
 unify-winapi-util = { workspace = true }
 unify-windows = { workspace = true }
 unify-windows-core = { workspace = true }
+
+[lints]
+workspace = true

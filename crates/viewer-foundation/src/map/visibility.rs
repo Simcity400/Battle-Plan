@@ -1,6 +1,6 @@
 
-use installed_content_core::{ResolvedLayers, map::MapData, map::ProvinceKind};
-use installed_content_save::naval_history::RailwayAdjacency;
+use content_reader_core::{ResolvedLayers, map::MapData, map::ProvinceKind};
+use content_reader_save::naval_history::RailwayAdjacency;
 use replay_data::rows::tables;
 #[cfg(test)]
 use replay_data::rows::{
@@ -39,7 +39,7 @@ impl FogContent {
     pub fn load(
         layers: &ResolvedLayers,
         map: &MapData,
-        defines: &installed_content_core::defines::Defines,
+        defines: &content_reader_core::defines::Defines,
     ) -> io::Result<Self> {
         Ok(Self {
             topology: Topology::read(layers, map)?,
@@ -99,7 +99,7 @@ pub struct Defines {
 }
 
 impl Defines {
-    pub fn load(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
         let four = |name: &str| -> io::Result<[i64; 4]> {
             defines
                 .fixed5_array("NIntel", name)?

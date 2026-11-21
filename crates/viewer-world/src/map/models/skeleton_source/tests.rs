@@ -1,7 +1,7 @@
 use super::*;
 use crate::map::models::{ModelLibrary, ModelMesh, tests::triangle_mesh};
-use installed_content_core::ResolvedLayers;
-use installed_content_image::native::Decode;
+use content_reader_core::ResolvedLayers;
+use content_reader_image::native::Decode;
 use std::sync::Arc;
 
 fn transform_bits(value: &mesh::Transform) -> [[u32; 3]; 4] {
@@ -517,7 +517,7 @@ fn libraries_equal(left: &ModelLibrary, right: &ModelLibrary) {
 #[test]
 fn merged_textures_keep_their_storage_and_first_seen_slots() {
     use crate::map::models::ModelMaterial;
-    use installed_content_image::dds::{MipLevel, Texture, TextureFormat};
+    use content_reader_image::dds::{MipLevel, Texture, TextureFormat};
     use viewer_foundation::map::textures::ColorSpace::{Linear, Srgb};
 
     let texture = |fill: u8| Texture {
@@ -594,7 +594,7 @@ fn merged_textures_keep_their_storage_and_first_seen_slots() {
 #[test]
 fn failed_compositions_keep_unique_resources_through_repeated_and_empty_merges() {
     use crate::map::models::{AssetKey, ModelMaterial, identity};
-    use installed_content_image::dds::{MipLevel, Texture, TextureFormat};
+    use content_reader_image::dds::{MipLevel, Texture, TextureFormat};
     use std::collections::BTreeMap;
     use viewer_foundation::map::textures::ColorSpace::{Linear, Srgb};
 
@@ -731,7 +731,7 @@ fn failed_compositions_keep_unique_resources_through_repeated_and_empty_merges()
             assert_eq!(
                 warnings,
                 [(
-                    installed_content_core::DiagnosticKind::Refused,
+                    content_reader_core::DiagnosticKind::Refused,
                     format!(
                         "No mesh resolved for cracked ({failure}); those objects are not drawn."
                     )
@@ -869,7 +869,7 @@ fn skeleton_only_bakes_keep_geometry_palette_rig_and_merge_bytes() {
     assert_eq!(
         warnings,
         vec![(
-            installed_content_core::DiagnosticKind::Refused,
+            content_reader_core::DiagnosticKind::Refused,
             "No mesh resolved for missing (no pdxmesh or entity declares it); those objects are not drawn.".into(),
         )]
     );

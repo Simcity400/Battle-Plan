@@ -24,15 +24,15 @@ replay.workspace = true
 replay-columnar.workspace = true
 playhead = { path = "../playhead" }
 engine-executable.workspace = true
-installed-content-core.workspace = true
-installed-content-country-names.workspace = true
-installed-content-gfx.workspace = true
-installed-content-image.workspace = true
-installed-content-localisation.workspace = true
-installed-content-regions.workspace = true
-installed-content-settings.workspace = true
-installed-content-state-categories.workspace = true
-installed-content-states.workspace = true
+content-reader-core.workspace = true
+content-reader-country-names.workspace = true
+content-reader-gfx.workspace = true
+content-reader-image.workspace = true
+content-reader-localisation.workspace = true
+content-reader-regions.workspace = true
+content-reader-settings.workspace = true
+content-reader-state-categories.workspace = true
+content-reader-states.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 viewer-counter-products = { path = "../viewer-counter-products" }
@@ -43,7 +43,7 @@ viewer-raids = { path = "../viewer-raids" }
 viewer-combat = { path = "../viewer-combat" }
 viewer-foundation = { path = "../viewer-foundation" }
 shader-pipeline = { path = "../shader-pipeline" }
-installed-content-sound.workspace = true
+content-reader-sound.workspace = true
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
 bytemuck = { workspace = true, features = ["derive"] }
 pollster.workspace = true
@@ -64,11 +64,11 @@ engine-heap.workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-naval-combat-defines = { workspace = true, features = ["test-support"] }
+content-reader-naval-path = { workspace = true, features = ["test-support"] }
+content-reader-weather = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["export-types", "test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-installed-content-naval-combat-defines = { workspace = true, features = ["test-support"] }
-installed-content-naval-path = { workspace = true, features = ["test-support"] }
-installed-content-weather = { workspace = true, features = ["test-support"] }
 map-content = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
@@ -84,3 +84,6 @@ unify-windows = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }
 uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }
+
+[lints]
+workspace = true

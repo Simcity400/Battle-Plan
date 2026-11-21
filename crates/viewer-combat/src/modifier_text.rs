@@ -1,4 +1,4 @@
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{rows::ModifierDefinitionRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::sync::Arc;
@@ -141,7 +141,7 @@ impl<'frame> Definitions<'frame> {
 
     pub(super) fn settle(
         definitions: Result<&Self, &Refusal>,
-        conditions: &[installed_content_core::unit_leader::Conditional],
+        conditions: &[content_reader_core::unit_leader::Conditional],
     ) -> Result<(), String> {
         for condition in conditions {
             let registered = definitions
@@ -212,7 +212,7 @@ pub(super) struct Block {
 impl Block {
     pub(super) fn build(
         definitions: &Definitions<'_>,
-        authored: &installed_content_core::modifiers::Modifiers,
+        authored: &content_reader_core::modifiers::Modifiers,
     ) -> Result<(Self, Vec<String>), Refusal> {
         let mut block = Self {
             added: !authored.children.is_empty(),

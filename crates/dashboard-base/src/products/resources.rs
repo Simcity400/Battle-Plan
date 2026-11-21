@@ -4,9 +4,9 @@ use crate::{
     Source,
     catalogue::{self, Catalogue},
 };
-use installed_content_core::ResolvedLayers;
-use installed_content_gfx::gfx::SpriteSet;
-use installed_content_localisation::localisation::Localisation;
+use content_reader_core::ResolvedLayers;
+use content_reader_gfx::gfx::SpriteSet;
+use content_reader_localisation::localisation::Localisation;
 use replay_data::{rows::LexicalTokenRow, rows::ResourceDefinitionRow};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -120,8 +120,8 @@ pub struct ContentView<'a> {
     pub layers: &'a ResolvedLayers,
     pub sprites: &'a SpriteSet,
     pub localisation: &'a Localisation,
-    pub guis: Result<&'a installed_content_core::gui::native::Guis, String>,
-    pub gui_decode: &'a Result<installed_content_image::native::Decode, String>,
+    pub guis: Result<&'a content_reader_core::gui::native::Guis, String>,
+    pub gui_decode: &'a Result<content_reader_image::native::Decode, String>,
 }
 
 impl<'a> ContentView<'a> {
@@ -137,7 +137,7 @@ impl<'a> ContentView<'a> {
 }
 
 struct Icons {
-    sprite: installed_content_gfx::gfx::SpriteType,
+    sprite: content_reader_gfx::gfx::SpriteType,
     frames: Frames,
 }
 
@@ -148,7 +148,7 @@ struct Frames {
 }
 
 impl Frames {
-    fn new(resources: &installed_content_core::resources::Resources) -> Self {
+    fn new(resources: &content_reader_core::resources::Resources) -> Self {
         let mut by_token: BTreeMap<String, Vec<Option<u32>>> = BTreeMap::new();
         for resource in resources.numbered() {
             by_token
@@ -178,14 +178,14 @@ impl Frames {
 
 fn icons(view: &ContentView) -> io::Result<(Icons, Vec<String>)> {
     let mut warnings = Vec::new();
-    let name = installed_content_core::gui::native::window_button_sprite(
+    let name = content_reader_core::gui::native::window_button_sprite(
         view.guis.as_ref().map_err(crate::invalid)?,
         RESOURCE_ROW,
         RESOURCE_ICON,
         &mut warnings,
     )?;
     let sprite = catalogue::created_gui_sprite(view.sprites, &name)?.clone();
-    let (resources, notes) = installed_content_core::resources::read(view.layers)?;
+    let (resources, notes) = content_reader_core::resources::read(view.layers)?;
     warnings.extend(notes.into_iter().map(|(_, message)| message));
     Ok((
         Icons {
@@ -202,7 +202,7 @@ fn resource_name(
     warnings: &mut Vec<String>,
     findings: &mut Vec<dashboard_core::findings::Finding>,
 ) -> Option<String> {
-    let upper = installed_content_localisation::localisation::crt_case_text(token, true, false);
+    let upper = content_reader_localisation::localisation::crt_case_text(token, true, false);
     let key = format!("PRODUCTION_MATERIALS_{upper}");
     let (name, notes) = catalogue::localised_details(
         localisation,
@@ -481,7 +481,7 @@ struct ResourceArt {
 }
 
 fn icon_frames(layers: &ResolvedLayers) -> io::Result<Frames> {
-    Ok(Frames::new(&installed_content_core::resources::read(layers)?.0))
+    Ok(Frames::new(&content_reader_core::resources::read(layers)?.0))
 }
 
 fn resource_icon(
@@ -491,7 +491,7 @@ fn resource_icon(
     ordinal: u32,
 ) -> Result<String, String> {
     let guis = catalogue.guis().map_err(|error| error.to_string())?;
-    let name = installed_content_core::gui::native::window_button_sprite(
+    let name = content_reader_core::gui::native::window_button_sprite(
         guis,
         RESOURCE_ROW,
         RESOURCE_ICON,

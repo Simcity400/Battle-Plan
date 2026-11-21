@@ -12,7 +12,7 @@ mod reply {
         fn none<T>() -> Result<T, String> {
             Err("no content in this test".to_owned())
         }
-        Content { catalogue: none(), laws: none(), equipment: none::<std::sync::Arc<installed_content_core::equipment::Database>>().into(), red: None, warnings: Vec::new(), names: Mutex::default(), world: Mutex::default(), eligible: Mutex::default() }
+        Content { catalogue: none(), laws: none(), equipment: none::<std::sync::Arc<content_reader_core::equipment::Database>>().into(), red: None, warnings: Vec::new(), names: Mutex::default(), world: Mutex::default(), eligible: Mutex::default() }
     }
 
     fn resistance(state: u32, country: u32, active: u8, level: i64) -> StateResistanceRow {

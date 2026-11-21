@@ -1,6 +1,6 @@
 
 use super::*;
-use installed_content_core::{gui::native::Element, gui::native::Kind};
+use content_reader_core::{gui::native::Element, gui::native::Kind};
 use viewer_foundation::map::{
     camera::Camera,
     free_icons::{IconAnchor, IconFamily},

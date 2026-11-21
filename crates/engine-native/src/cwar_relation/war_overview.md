@@ -72,7 +72,7 @@ to capture or infer from history.
 
 Naming uses plain localisation with substitution, including state display text;
 it does not evaluate bracketed scripted text. Resolve overrides, templates and
-country/state text through the recorded content stack and the shared installed-content
+country/state text through the recorded content stack and the shared `content-reader-*`
 resolvers. Preserve explicit refusals and the recording language of stored custom text.
 
 ## Acquisition and comparison

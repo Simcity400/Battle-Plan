@@ -10,7 +10,7 @@ use crate::{
 use dashboard_core::config::LoadContext;
 use dashboard_query::identity::{Holder, HolderRun, Holders};
 use dashboard_text::metadata::link_slot;
-use installed_content_division_names::division_names::Database;
+use content_reader_division_names::division_names::Database;
 use replay_data::rows::{CountryLinkRow, DivisionRow, DivisionStatusRow, DivisionTemplateIconRow, LexicalTokenRow, NameOperands, Recorded, TableId, VariantDefinitionRow, tables};
 use replay_frame::frame::DecodedFrame;
 use std::{
@@ -189,7 +189,7 @@ impl Content {
         let cat = self.cat("Division names")?;
         let once = Arc::clone(&self.cache_of(cat).groups);
         let (groups, notes) = once.get_or_init(|| {
-            match installed_content_division_names::division_names::read_directories::<installed_content_core::Diagnostic>(&cat.content.layers, &installed_content_division_names::division_names::DIRECTORIES) {
+            match content_reader_division_names::division_names::read_directories::<content_reader_core::Diagnostic>(&cat.content.layers, &content_reader_division_names::division_names::DIRECTORIES) {
                 Ok((database, notes)) => (Ok(Arc::new(database)), notes.into_iter().map(|(_, note)| note).collect()),
                 Err(error) => (Err(format!("Division name groups unavailable: {error}")), Vec::new()),
             }
@@ -300,7 +300,7 @@ fn icon_key(priority_unit: u32, custom: i32, unit: &[u8], exists: impl Fn(&str) 
 
 pub fn token_key(lexical: &[LexicalTokenRow], token: u32) -> Result<String, String> {
     let at = lexical.binary_search_by_key(&token, |row| row.token).map_err(|_| format!("Definition token {token} has no recorded spelling"))?;
-    std::str::from_utf8(installed_content_core::parser::c_string(&lexical[at].literal)).map(str::to_owned).map_err(|_| format!("Definition token {token} is not text"))
+    std::str::from_utf8(content_reader_core::parser::c_string(&lexical[at].literal)).map(str::to_owned).map_err(|_| format!("Definition token {token} is not text"))
 }
 
 pub fn design_handle(id: u32) -> u64 {

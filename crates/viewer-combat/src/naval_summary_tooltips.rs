@@ -1,6 +1,6 @@
 
-use installed_content_core::unit_leader::SubUnits;
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_core::unit_leader::SubUnits;
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{rows::NavalCombatSideDetails, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::io;
@@ -128,9 +128,9 @@ fn screening_description(
     carrier: bool,
     census: &Census,
     screening: &Screening,
-    defines: &installed_content_naval_combat_defines::naval_combat_defines::Defines,
+    defines: &content_reader_naval_combat_defines::naval_combat_defines::Defines,
     correction: &str,
-    static_modifier: Result<&installed_content_core::modifiers::Modifiers, String>,
+    static_modifier: Result<&content_reader_core::modifiers::Modifiers, String>,
     definitions: Result<&Definitions<'_>, String>,
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -253,7 +253,7 @@ fn screening_description(
 fn positioning_description(
     terms: super::naval_positioning::Terms,
     sources: impl FnOnce(&mut String) -> Result<(), String>,
-    defines: &installed_content_naval_combat_defines::naval_combat_defines::Defines,
+    defines: &content_reader_naval_combat_defines::naval_combat_defines::Defines,
     icons: &dyn TextIcons,
     loc: &Localisation,
 ) -> Result<String, String> {
@@ -415,9 +415,9 @@ pub(super) fn flag_description(
     by_type.sort_by_key(|source| source.damage);
     for source in by_type {
         let token = if source.token == 0 {
-            installed_content_core::tokens::Token::Rejected
+            content_reader_core::tokens::Token::Rejected
         } else {
-            installed_content_core::tokens::Token::register(
+            content_reader_core::tokens::Token::register(
                 tokens
                     .name(source.token)
                     .map_err(|error| error.to_string())?
@@ -449,7 +449,7 @@ fn weapon_description(
     side: &NavalCombatSideDetails,
     opponent: &NavalCombatSideDetails,
     weapon: usize,
-    piercing: Option<&installed_content_naval_combat_defines::naval_combat_defines::Defines>,
+    piercing: Option<&content_reader_naval_combat_defines::naval_combat_defines::Defines>,
     icons: &dyn TextIcons,
     loc: &Localisation,
 ) -> Result<String, String> {
@@ -561,7 +561,7 @@ fn side_hovers(
     side: &str,
     value: &NavalCombatSideDetails,
     opponent: &NavalCombatSideDetails,
-    defines: Option<&installed_content_naval_combat_defines::naval_combat_defines::Defines>,
+    defines: Option<&content_reader_naval_combat_defines::naval_combat_defines::Defines>,
 ) {
     let path = format!("header_container/{side}_wnd");
     for (index, (widget, key)) in WEAPON_HOVERS.into_iter().enumerate() {
@@ -600,12 +600,12 @@ fn screening_inputs<'a>(
     detail: &NavalCombatSideDetails,
     ships: Option<&[replay_data::rows::NavalCombatShipRow]>,
     models: &Available<'_, tables::ShipModels>,
-    defines: Option<&'a installed_content_naval_combat_defines::naval_combat_defines::Defines>,
+    defines: Option<&'a content_reader_naval_combat_defines::naval_combat_defines::Defines>,
 ) -> Result<
     (
         Census,
         Screening,
-        &'a installed_content_naval_combat_defines::naval_combat_defines::Defines,
+        &'a content_reader_naval_combat_defines::naval_combat_defines::Defines,
     ),
     String,
 > {
@@ -650,7 +650,7 @@ fn positioning_hover(
     detail: &replay_data::rows::NavalCombatDetailsRow,
     terms: Option<super::naval_positioning::Terms>,
     trees: &super::naval_trees::Sources<'_>,
-    defines: Option<&installed_content_naval_combat_defines::naval_combat_defines::Defines>,
+    defines: Option<&content_reader_naval_combat_defines::naval_combat_defines::Defines>,
     icons: &dyn TextIcons,
     loc: &Localisation,
 ) {

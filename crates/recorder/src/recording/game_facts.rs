@@ -1,5 +1,5 @@
 
-use installed_content_core::{
+use content_reader_core::{
     LayerRole,
     content::{GatheredContent, facts},
 };
@@ -134,7 +134,7 @@ fn changed_layers(
 }
 
 fn pack(
-    layers: &installed_content_core::ResolvedLayers,
+    layers: &content_reader_core::ResolvedLayers,
     withheld: BTreeMap<usize, String>,
     identity: &Identity,
     cache: &Path,
@@ -166,7 +166,7 @@ fn pack(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_core::{GatherOptions, gather};
+    use content_reader_core::{GatherOptions, gather};
     use std::{fs, sync::Arc};
 
     #[test]

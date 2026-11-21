@@ -1088,9 +1088,9 @@ fn predicate_world_keeps_country_facts_when_map_content_or_provinces_are_missing
     let text = ScriptedText::new(&frame, &cat.localisation, content, 1);
     assert!(text.world().is_err());
     let world = text.trigger_world().unwrap();
-    let parsed = installed_content_core::triggers::read(
+    let parsed = content_reader_core::triggers::read(
         b"has_government=mod_group has_country_flag=occupation_flag has_completed_focus=occupation_focus has_country_leader_ideology=FIRST_SUBTYPE",
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     );
     assert_eq!(
         world.evaluate(

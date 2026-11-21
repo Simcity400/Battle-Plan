@@ -7,7 +7,7 @@ use super::{
     Arg, Context, Tooltip, clock, localise,
     selection::{line, refuse},
 };
-use installed_content_unit_path::{unit_path::Fact, unit_path::SelectedNeighbour, unit_path::StraitFleet};
+use content_reader_unit_path::{unit_path::Fact, unit_path::SelectedNeighbour, unit_path::StraitFleet};
 use replay_data::{rows, rows::TableSchema, rows::tables};
 use replay_derive::{
     attack_derive, attack_derive::FrameInputs, attack_derive::Preview, attack_derive::Row,
@@ -205,12 +205,12 @@ impl attack_derive::Context for Content<'_> {
 }
 
 fn fallback_key(bytes: &[u8]) -> Fact<&str> {
-    std::str::from_utf8(installed_content_core::parser::c_string(bytes))
+    std::str::from_utf8(content_reader_core::parser::c_string(bytes))
         .map_err(|_| "template fallback localisation key is not UTF-8".to_owned())
 }
 
 fn localise_template_fallback(
-    localisation: &installed_content_localisation::localisation::Localisation,
+    localisation: &content_reader_localisation::localisation::Localisation,
     tag: &[u8],
     bytes: &[u8],
 ) -> Fact<String> {
@@ -263,7 +263,7 @@ fn heading(context: &Context<'_>, template: u64) -> Fact<String> {
 }
 
 pub fn template_display_name(
-    localisation: &installed_content_localisation::localisation::Localisation,
+    localisation: &content_reader_localisation::localisation::Localisation,
     frame: &DecodedFrame,
     template: u64,
 ) -> Fact<String> {
@@ -300,7 +300,7 @@ pub fn template_display_name(
 }
 
 fn modifier_text(name: &str, value: i64) -> String {
-    let percent = installed_content_core::fixed5::fixed5_percent(value, 2, true);
+    let percent = content_reader_core::fixed5::fixed5_percent(value, 2, true);
     if value > 0 {
         format!("{name}: \u{11}G+{percent}\u{11}!")
     } else {

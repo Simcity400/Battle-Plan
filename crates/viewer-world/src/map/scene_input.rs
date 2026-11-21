@@ -15,8 +15,8 @@ pub enum SceneInput<'a> {
     WarmWeather(Arc<crate::map::weather_effects::Assets>),
     WarmPipelines,
     WarmPolitical {
-        map: &'a installed_content_core::map::MapData,
-        strategic_regions: &'a BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
+        map: &'a content_reader_core::map::MapData,
+        strategic_regions: &'a BTreeMap<u32, content_reader_regions::regions::StrategicRegion>,
         field: &'a viewer_foundation::map::gradient_math::FieldDefines,
         cache: &'a crate::map::political_gpu::Cache,
     },
@@ -71,7 +71,7 @@ pub enum SceneInput<'a> {
         selected: &'a BTreeSet<viewer_foundation::unit_handle::Unit>,
     },
     PrepareArrowBounds {
-        map: &'a installed_content_core::map::MapData,
+        map: &'a content_reader_core::map::MapData,
         known: &'a Arc<BTreeMap<u32, [f32; 4]>>,
     },
     SetUnitSelection(&'a BTreeSet<viewer_foundation::unit_handle::Unit>),

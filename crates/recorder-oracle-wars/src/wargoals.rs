@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_save::{Save, SavedDate};
+use content_reader_save::{Save, SavedDate};
 use replay_data::rows::WargoalTargetRow;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
@@ -274,7 +274,7 @@ pub fn compare(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_save::{
+    use content_reader_save::{
         Decimal,
         war_goals::{CountryInventory, Justification, WarGoal},
     };

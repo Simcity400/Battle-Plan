@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_save::faction_goals::{Goal, Status};
+use content_reader_save::faction_goals::{Goal, Status};
 use replay_data::rows::{FactionGoalEntryRow, FactionGoalStatusRow};
 
 pub fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
@@ -52,7 +52,7 @@ fn project<'a>(
     let spelling = |token| {
         tokens
             .get(&token)
-            .map(|bytes| installed_content_core::parser::c_string(bytes).to_vec())
+            .map(|bytes| content_reader_core::parser::c_string(bytes).to_vec())
             .ok_or_else(|| {
                 invalid(format!(
                     "faction goal token {token} is absent from LexicalTokens"
@@ -138,21 +138,21 @@ mod tests {
         ];
         goals[0].token = Some(7);
         goals[0].status = 4;
-        goals[0].date = installed_content_save::SavedDate::INVALID_HOUR;
+        goals[0].date = content_reader_save::SavedDate::INVALID_HOUR;
         goals[2].token = Some(7);
         goals[3].token = Some(7);
         goals[6].slots = -2;
-        goals[7].date = installed_content_save::SavedDate::INVALID_HOUR;
+        goals[7].date = content_reader_save::SavedDate::INVALID_HOUR;
         let value = project(&header, goals.iter(), &tokens).unwrap();
         assert_eq!(value.manifest.as_deref(), Some(b"manifest".as_slice()));
         assert_eq!(value.goals[0].status, b"canceled");
-        assert_eq!(value.goals[0].date, installed_content_save::SavedDate::INVALID_HOUR);
+        assert_eq!(value.goals[0].date, content_reader_save::SavedDate::INVALID_HOUR);
         assert_eq!(value.completed, [b"mod_goal".to_vec()]);
         assert_eq!(value.cancelled, [b"mod_goal".to_vec()]);
         assert_eq!(
             value.extra_slots,
             BTreeMap::from([(b"long_term".to_vec(), -2)])
         );
-        assert_eq!(value.term_dates, [installed_content_save::SavedDate::INVALID_HOUR]);
+        assert_eq!(value.term_dates, [content_reader_save::SavedDate::INVALID_HOUR]);
     }
 }

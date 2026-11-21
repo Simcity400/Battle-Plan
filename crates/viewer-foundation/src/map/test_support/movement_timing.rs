@@ -1,9 +1,9 @@
 use crate::{movement_timing::TerrainSpeedContent, table_access::TokenKeys};
-use installed_content_regions::regions::StrategicRegion;
+use content_reader_regions::regions::StrategicRegion;
 use std::{collections::BTreeMap, sync::Arc};
 
 pub fn terrain(source: &str) -> TerrainSpeedContent {
-    let terrain = Arc::new(installed_content_core::terrain::parse_definitions(source.as_bytes()).unwrap());
+    let terrain = Arc::new(content_reader_core::terrain::parse_definitions(source.as_bytes()).unwrap());
     let regions = BTreeMap::from([
         (
             9,

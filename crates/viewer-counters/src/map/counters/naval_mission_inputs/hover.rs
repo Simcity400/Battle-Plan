@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use viewer_foundation::tooltip_text::{self, Tooltip};
 
 pub(super) mod convoy;
@@ -144,7 +144,7 @@ impl Value {
 }
 
 fn percent(raw: i64) -> String {
-    let text = installed_content_core::fixed5::fixed5_percent(raw.clamp(0, 100_000), 0, true);
+    let text = content_reader_core::fixed5::fixed5_percent(raw.clamp(0, 100_000), 0, true);
     if raw < 75_000 {
         format!("\u{11}R{text}\u{11}!")
     } else if raw < 100_000 {

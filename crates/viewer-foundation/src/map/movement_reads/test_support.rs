@@ -1,7 +1,7 @@
 use super::*;
 use crate::trigger_content::TriggerContent;
 use dashboard_text::triggers::LeaderRoles;
-use installed_content_core::{buildings::BuildingType, province_geometry::ProvinceGeometry};
+use content_reader_core::{buildings::BuildingType, province_geometry::ProvinceGeometry};
 use replay_data::{
     rows::CountryLinkRow, rows::CountryRow, rows::ProvinceRow, rows::StateRow, rows::TableId,
     rows::TableRows,
@@ -12,7 +12,7 @@ use replay_frame::{frame::Metrics, frame::TableView};
 pub struct MovementFixture {
     pub trigger_content: crate::trigger_content::TriggerContent,
     pub geometry: ProvinceGeometry,
-    pub moves: Result<installed_content_unit_path::unit_path::MoveGraph, String>,
+    pub moves: Result<content_reader_unit_path::unit_path::MoveGraph, String>,
     pub regions: BTreeMap<u32, u32>,
     pub day_night: Result<replay_data::day_night::Defines, String>,
     pub combat_minimum_time: i32,
@@ -40,7 +40,7 @@ pub fn assets() -> MovementFixture {
     let facts = &mut assets.trigger_content;
     let ideologies = facts.ideologies.get_or_insert_with(Default::default);
     let mut triggers = (*facts.triggers).clone();
-    triggers.counts = Some(installed_content_core::trigger_keys::CountTriggerNames::new(
+    triggers.counts = Some(content_reader_core::trigger_keys::CountTriggerNames::new(
         &facts.buildings,
         ideologies,
         &Default::default(),
@@ -64,7 +64,7 @@ pub fn unnamed_assets() -> MovementFixture {
             triggers: Default::default(),
             character_traits: None,
             tag_aliases: Default::default(),
-            buildings: installed_content_core::buildings::Buildings {
+            buildings: content_reader_core::buildings::Buildings {
                 types: BTreeMap::from([(
                     "dam".into(),
                     BuildingType {
@@ -218,7 +218,7 @@ pub fn positive_frame() -> DecodedFrame {
     frame
 }
 pub fn path_assets() -> MovementFixture {
-    let mut graph = installed_content_core::province_graph::ProvinceGraph::default();
+    let mut graph = content_reader_core::province_graph::ProvinceGraph::default();
     for id in 1..=4_u32 {
         let next: Vec<_> = [id.wrapping_sub(1), id + 1]
             .into_iter()
@@ -229,7 +229,7 @@ pub fn path_assets() -> MovementFixture {
     }
     let mut assets = assets();
     assets.geometry.land = BTreeSet::from([3, 4]);
-    assets.moves = Ok(installed_content_unit_path::unit_path::MoveGraph::new(
+    assets.moves = Ok(content_reader_unit_path::unit_path::MoveGraph::new(
         &graph,
         &assets.geometry,
     ));

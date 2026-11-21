@@ -6,7 +6,7 @@ mod research_identity;
 fn gap_research_grants_oracle_compares_counter_unused_uses_and_restrictions() {
     use replay_data::rows::ResearchModifierRow as R;
     let (mut frame, _, country) = fixture();
-    let pack = saved::parse(&installed_content_core::parser::parse(br"countries={AAA={technology={next_bonus_id=8 limited_use_bonus={id=7 name=mod_bonus uses=3 claim=1 bonus=0.25 category=mod_category}}}}").unwrap().items).unwrap();
+    let pack = saved::parse(&content_reader_core::parser::parse(br"countries={AAA={technology={next_bonus_id=8 limited_use_bonus={id=7 name=mod_bonus uses=3 claim=1 bonus=0.25 category=mod_category}}}}").unwrap().items).unwrap();
     let mut rows = vec![
         R {
             kind: R::GRANT_COUNTER,
@@ -204,9 +204,9 @@ fn active_ideas_use_recorded_canonical_spelling_across_mod_files() {
         std::fs::write(file, input).unwrap();
     }
     let layers =
-        installed_content_core::ResolvedLayers::from_folders(&[(&roots[0], &[]), (&roots[1], &[])])
+        content_reader_core::ResolvedLayers::from_folders(&[(&roots[0], &[]), (&roots[1], &[])])
             .unwrap();
-    let (ideas, _, diagnostics) = installed_content_core::ideas::read(&layers, &[]).unwrap();
+    let (ideas, _, diagnostics) = content_reader_core::ideas::read(&layers, &[]).unwrap();
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let (tokens, gap) = ideas.tokens();
     assert!(gap.is_none());
@@ -303,7 +303,7 @@ fn active_ideas_refuse_missing_and_ambiguous_recorded_spellings() {
 fn active_ideas_compare_lexer_case_identity_without_losing_order_or_other_bytes() {
     let (mut frame, _, country) = fixture();
     let parsed =
-        installed_content_core::parser::parse(b"countries={AAA={politics={ideas={MiXeD other}}}}").unwrap();
+        content_reader_core::parser::parse(b"countries={AAA={politics={ideas={MiXeD other}}}}").unwrap();
     let pack = saved::parse(&parsed.items).unwrap();
     let links = BTreeMap::from([(country.id, &country)]);
     let idea = |ordinal, token: &[u8]| ActiveIdeaRow {
@@ -373,7 +373,7 @@ fn format99_rosters_compare_order_and_exact_values() {
     }
     input.push('}');
     let pack = saved::parse(
-        &installed_content_core::parser::parse(input.as_bytes())
+        &content_reader_core::parser::parse(input.as_bytes())
             .unwrap()
             .items,
     )
@@ -495,7 +495,7 @@ fn tactic_unlocks_cover_the_canonical_census() {
 fn unavailable_siblings_retain_independent_comparisons_and_aggregate_failure() {
     let (mut frame, _, country) = fixture();
     let links = BTreeMap::from([(11, &country)]);
-    let document = installed_content_core::parser::parse(
+    let document = content_reader_core::parser::parse(
         br#"countries={AAA={
         politics={ideas={idea}} focus={completed=focus}
         preferred_tactic=7 technology={technologies={technology={research_points=0.00002}}}
@@ -616,7 +616,7 @@ fn unavailable_siblings_retain_independent_comparisons_and_aggregate_failure() {
 fn party_names_and_tags_compare_by_the_writer_default_rule() {
     let (mut frame, _, country) = fixture();
     let links = BTreeMap::from([(11, &country)]);
-    let document = installed_content_core::parser::parse(
+    let document = content_reader_core::parser::parse(
         br#"countries={AAA={politics={parties={
         communism={default=no name="AAA_red" long_name="AAA_red_long" popularity=1}
         democratic={default=yes popularity=1}
@@ -663,7 +663,7 @@ fn party_names_and_tags_compare_by_the_writer_default_rule() {
 fn idle_research_slot_is_not_equivalent_to_a_new_assignment() {
     let (mut frame, _, country) = fixture();
     let links = BTreeMap::from([(11, &country)]);
-    let document = installed_content_core::parser::parse(
+    let document = content_reader_core::parser::parse(
         br#"countries={AAA={technology={
         slots={selected_technology={points_factor=1.35}}
     }}}"#,
@@ -719,7 +719,7 @@ fn idle_research_slot_is_not_equivalent_to_a_new_assignment() {
 fn shared_idle_handle_matches_saved_empty_without_a_technology_definition() {
     let (mut frame, _, country) = fixture();
     let links = BTreeMap::from([(11, &country)]);
-    let document = installed_content_core::parser::parse(
+    let document = content_reader_core::parser::parse(
         br#"countries={AAA={technology={slots={empty={points=3}}}}}"#,
     )
     .unwrap();
@@ -750,7 +750,7 @@ fn sharing_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
             token: token.to_vec(),
             countries: vec![b"AAA".to_vec()],
             bonuses: vec![
-                installed_content_save::Decimal::parse(if index == 0 { b"0.00001" } else { b"0.00002" })
+                content_reader_save::Decimal::parse(if index == 0 { b"0.00001" } else { b"0.00002" })
                     .unwrap(),
             ],
         })
@@ -796,7 +796,7 @@ fn sharing_complete_names_preserve_order_exact_bonuses_and_empty_groups() {
         ..country.clone()
     };
     let links = BTreeMap::from([(11, &country), (12, &second)]);
-    let document = installed_content_core::parser::parse(
+    let document = content_reader_core::parser::parse(
         br#"countries={AAA={} BBB={}}
         tech_sharing_group={id=first countries={AAA BBB} bonuses={-21474.83649 0}}
         tech_sharing_group={id=second}
@@ -1212,7 +1212,7 @@ fn modifier_omissions_check_predicates_without_fabricating_negative_defaults() {
         scope_state: None,
         days: None,
         enabled: false,
-        values: vec![installed_content_save::Decimal::parse(b"-21474.83649").unwrap()],
+        values: vec![content_reader_save::Decimal::parse(b"-21474.83649").unwrap()],
     };
     pack.countries
         .get_mut(b"AAA".as_slice())
@@ -1418,7 +1418,7 @@ fn technology_occurrence_dictionary_accepts_shared_tokens_and_refuses_lexer_alia
 fn research_serializer_keeps_repeated_occurrences_order_and_exact_active_filter() {
     let (mut frame, _, country) = fixture();
     let links = BTreeMap::from([(11, &country)]);
-    let pack = saved::parse(&installed_content_core::parser::parse(b"countries={AAA={technology={technologies={repeat={level=1} repeat={research_points=0.5} repeat={ahead_reduction=0.00023}}}}}").unwrap().items).unwrap();
+    let pack = saved::parse(&content_reader_core::parser::parse(b"countries={AAA={technology={technologies={repeat={level=1} repeat={research_points=0.5} repeat={ahead_reduction=0.00023}}}}}").unwrap().items).unwrap();
     *frame.tables[TableId::TechnologyDefinitions.index()] =
         TableView::Complete(TableRows::TechnologyDefinitions(
             (1..=5)

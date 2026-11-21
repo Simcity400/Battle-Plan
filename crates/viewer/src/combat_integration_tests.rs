@@ -1,5 +1,5 @@
-use installed_content_core::{ResolvedLayers, defines::Defines, gui::native::resources::Registry};
-use installed_content_image::native::Decode;
+use content_reader_core::{ResolvedLayers, defines::Defines, gui::native::resources::Registry};
+use content_reader_image::native::Decode;
 use std::time::Duration;
 use std::time::Instant;
 use std::{collections::BTreeMap, sync::Arc};
@@ -103,7 +103,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
     let windows = NativeWindows::load_at(&shared, [640, 480]).unwrap();
     let registry = Registry::load(&shared).unwrap();
     let interface = Interface {
-        sprites: installed_content_gfx::gfx::SpriteSet::new(&registry.files),
+        sprites: content_reader_gfx::gfx::SpriteSet::new(&registry.files),
         registry,
         decode: Decode::default(),
     };
@@ -111,7 +111,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
     lazy.set_background(false);
     let flags = flag_set(
         &shared,
-        installed_content_core::flags::FlagSet::Normal,
+        content_reader_core::flags::FlagSet::Normal,
         [1, 1],
         |_| {},
         &lazy,
@@ -136,7 +136,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         assert_eq!(combat.sprite_size(name), Some([2.0, 4.0]), "{name}");
         assert!(combat.gui.sheet(name.as_bytes()).is_some(), "{name}");
     }
-    let localisation = installed_content_localisation::localisation::read(&shared, "english").unwrap();
+    let localisation = content_reader_localisation::localisation::read(&shared, "english").unwrap();
     let (extra, _) = combat.localisation_assets(&localisation);
     let warnings = combat
         .load_gui(&shared, &localisation, &extra, &mut images)

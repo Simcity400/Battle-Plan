@@ -1,7 +1,7 @@
 
 use std::collections::BTreeMap;
 
-use installed_content_core::movement::MovementMap;
+use content_reader_core::movement::MovementMap;
 use replay_data::{rows::DivisionRow, rows::Recorded, rows::tables};
 use replay_derive::{
     eta_derive, eta_derive::Defines, eta_derive::OrganisationDefines, eta_derive::RailDefines,
@@ -15,15 +15,15 @@ pub struct Content {
     pub defines: Defines,
     pub terrain_movement: Vec<i64>,
     pub regions: BTreeMap<u32, u32>,
-    pub sub_units: Result<installed_content_core::unit_leader::SubUnits, String>,
+    pub sub_units: Result<content_reader_core::unit_leader::SubUnits, String>,
 }
 
 impl Content {
-    pub fn read(layers: &installed_content_core::ResolvedLayers) -> std::io::Result<Self> {
-        let defines = installed_content_core::defines::read(layers)?;
-        let movement = installed_content_core::movement::MovementDefines::read(&defines)?;
-        let terrain = installed_content_core::terrain::read_definitions(layers)?;
-        let regions = installed_content_regions::regions::read(layers)?;
+    pub fn read(layers: &content_reader_core::ResolvedLayers) -> std::io::Result<Self> {
+        let defines = content_reader_core::defines::read(layers)?;
+        let movement = content_reader_core::movement::MovementDefines::read(&defines)?;
+        let terrain = content_reader_core::terrain::read_definitions(layers)?;
+        let regions = content_reader_regions::regions::read(layers)?;
         Ok(Self {
             map: MovementMap::read(layers, &defines)?,
             defines: Defines {
@@ -57,7 +57,7 @@ impl Content {
                 .iter()
                 .flat_map(|(&id, region)| region.provinces.iter().map(move |&p| (p, id)))
                 .collect(),
-            sub_units: installed_content_core::unit_leader::sub_units(layers)
+            sub_units: content_reader_core::unit_leader::sub_units(layers)
                 .map_err(|error| error.to_string()),
         })
     }

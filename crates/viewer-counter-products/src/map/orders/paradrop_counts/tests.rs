@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_core::province_geometry::ProvinceGeometry;
+use content_reader_core::province_geometry::ProvinceGeometry;
 use std::collections::BTreeMap;
 
 use replay_data::{
@@ -15,7 +15,7 @@ pub(in crate::map::orders) struct Fixture {
     states: BTreeMap<u32, Vec<u32>>,
     region_by_province: BTreeMap<u32, u32>,
     regions: BTreeMap<u32, Vec<u32>>,
-    units: installed_content_core::unit_leader::SubUnits,
+    units: content_reader_core::unit_leader::SubUnits,
 }
 
 impl Fixture {

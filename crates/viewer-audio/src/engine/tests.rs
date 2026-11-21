@@ -1,7 +1,7 @@
 use super::*;
 use crate::{Emitter, Frame, Group, Listener, Mix};
-use installed_content_core::test_support::Stack;
-use installed_content_sound::wav::{decode, encode_pcm16};
+use content_reader_core::test_support::Stack;
+use content_reader_sound::wav::{decode, encode_pcm16};
 
 fn tone(frames: usize) -> Vec<u8> {
     encode_pcm16(RATE, 2, &vec![16_384; frames * 2])
@@ -9,7 +9,7 @@ fn tone(frames: usize) -> Vec<u8> {
 
 struct Fixture {
     _stack: Stack,
-    layers: installed_content_core::ResolvedLayers,
+    layers: content_reader_core::ResolvedLayers,
     engine: Engine,
 }
 
@@ -21,9 +21,9 @@ impl Fixture {
         std::fs::write(base.join("sound/tone.wav"), tone(RATE as usize)).unwrap();
         std::fs::write(base.join("sound/blip.wav"), tone(100)).unwrap();
         let layers = stack.layers(&[]);
-        let catalog = installed_content_sound::sound::Catalog::read(&layers).unwrap();
+        let catalog = content_reader_sound::sound::Catalog::read(&layers).unwrap();
         assert!(catalog.notes.is_empty(), "{:?}", catalog.notes.lines());
-        let defines = installed_content_sound::sound::Defines {
+        let defines = content_reader_sound::sound::Defines {
             height_category: "Air".into(),
             height_min_altitude: 100.0,
             height_max_altitude: 2000.0,
@@ -219,7 +219,7 @@ fn falloff_attenuates_pans_and_stops_beyond_twice_the_maximum() {
     fixture.frame(frame(vec![emitter(1, "near_shot", [61.0, 0.0, 0.0], 0.01)]));
     fixture.render(1);
     assert!(!fixture.engine.active());
-    let near = installed_content_sound::sound::Falloff {
+    let near = content_reader_sound::sound::Falloff {
         min_distance: 0.0,
         max_distance: 100.0,
         ..Default::default()
@@ -228,7 +228,7 @@ fn falloff_attenuates_pans_and_stops_beyond_twice_the_maximum() {
     assert!(gain.abs() < 1e-6 && !beyond);
     let (gain, _) = falloff_gain(&near, [0.0; 3], [50.0, 0.0, 0.0]);
     assert!((gain - -(0.55f32).log10()).abs() < 1e-6);
-    let flat = installed_content_sound::sound::Falloff {
+    let flat = content_reader_sound::sound::Falloff {
         height_scale: 0.5,
         ..near
     };
@@ -476,14 +476,14 @@ fn music_mixes_first_through_the_master_compressor_and_survives_a_reset() {
     "#;
     let mut fixture = Fixture::new("audio_music", assets);
     let content = fixture.engine.content().unwrap();
-    let mut music = installed_content_sound::music::Music::default();
-    music.tracks.push(installed_content_sound::music::Track {
+    let mut music = content_reader_sound::music::Music::default();
+    music.tracks.push(content_reader_sound::music::Track {
         name: "march".into(),
         path: "music/march.ogg".into(),
         volume: 0.5,
         source: String::new(),
     });
-    music.songs.push(installed_content_sound::music::Song {
+    music.songs.push(content_reader_sound::music::Song {
         track: 0,
         station: "base_music".into(),
         chance: Vec::new(),
@@ -664,15 +664,15 @@ fn a_voice_past_the_32_leaves_its_category_compressor_holding() {
 fn a_track_that_ends_draws_the_next_song_in_its_callback() {
     let mut fixture = Fixture::new("audio_music_handoff", ASSETS);
     let content = fixture.engine.content().unwrap();
-    let mut music = installed_content_sound::music::Music::default();
+    let mut music = content_reader_sound::music::Music::default();
     for (index, name) in ["march", "hymn"].into_iter().enumerate() {
-        music.tracks.push(installed_content_sound::music::Track {
+        music.tracks.push(content_reader_sound::music::Track {
             name: name.into(),
             path: format!("music/{name}.ogg"),
             volume: 1.0,
             source: String::new(),
         });
-        music.songs.push(installed_content_sound::music::Song {
+        music.songs.push(content_reader_sound::music::Song {
             track: index,
             station: "base_music".into(),
             chance: Vec::new(),

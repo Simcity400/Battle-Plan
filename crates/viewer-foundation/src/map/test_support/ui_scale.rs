@@ -1,4 +1,4 @@
-use installed_content_settings::{
+use content_reader_settings::{
     settings::Clamp, settings::Desktop, settings::Display, settings::DisplayMode,
 };
 

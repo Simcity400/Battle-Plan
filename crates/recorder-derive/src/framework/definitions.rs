@@ -1,5 +1,5 @@
 
-use installed_content_core::{
+use content_reader_core::{
     content::{
         ResolveOptions,
         facts::{Pack, PackSource},
@@ -8,8 +8,8 @@ use installed_content_core::{
     defines,
     unit_leader::needs::SubUnitNeeds,
 };
-use installed_content_province_area::province_area::ProvinceAreas;
-use installed_content_regions::regions as strategic_regions;
+use content_reader_province_area::province_area::ProvinceAreas;
+use content_reader_regions::regions as strategic_regions;
 use replay_data::identity::Identity;
 use std::{
     fmt,

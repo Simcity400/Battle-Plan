@@ -3,8 +3,8 @@ use super::super::{LoadContext, Product, army::ArmySpan, country_ids};
 use crate::Source;
 use dashboard_base::catalogue::{self, Catalogue, CachedResult, Refusals, View};
 use dashboard_query::{Query, read};
-use installed_content_core::unit_leader::{SubUnits, sub_units};
-use installed_content_localisation::localisation::display_text;
+use content_reader_core::unit_leader::{SubUnits, sub_units};
+use content_reader_localisation::localisation::display_text;
 use replay::{at::Seeker, columnar_frames::Recording};
 use replay_data::rows::{SunkShipEntry, TableId, tables};
 use serde::{Deserialize, Serialize};
@@ -169,7 +169,7 @@ fn sinkings_in(frame: &replay_frame::frame::DecodedFrame) -> io::Result<Option<(
 pub struct Content {
     catalogue: Result<Arc<Catalogue>, String>,
     units: Result<Arc<SubUnits>, String>,
-    regions: Result<(Arc<installed_content_regions::regions::StrategicRegions>, BTreeMap<u32, Vec<u32>>), String>,
+    regions: Result<(Arc<content_reader_regions::regions::StrategicRegions>, BTreeMap<u32, Vec<u32>>), String>,
 }
 
 impl Content {
@@ -252,7 +252,7 @@ fn class_info(token: u32, literal: Option<String>, content: &Content, refused: &
         }
         return info;
     };
-    match units.token_name(&installed_content_core::tokens::Token::c_str(literal.as_bytes())) {
+    match units.token_name(&content_reader_core::tokens::Token::c_str(literal.as_bytes())) {
         Ok(spelling) if !spelling.is_empty() => {
             let spelling = spelling.to_owned();
             if cat.localisation.get(&spelling).is_some() {

@@ -64,14 +64,14 @@ impl LabelTables {
                 let slot = *links.get(&row.country)?;
                 Some((
                     slot,
-                    installed_content_country_names::country_names::original_tag(by_slot.get(&slot)?, row)
+                    content_reader_country_names::country_names::original_tag(by_slot.get(&slot)?, row)
                         .map(str::to_owned),
                 ))
             })
             .collect();
         original_tags.insert(
             0,
-            installed_content_country_names::country_names::reserved_zero_original_tag(frame)
+            content_reader_country_names::country_names::reserved_zero_original_tag(frame)
                 .map(str::to_owned),
         );
         let mut tables = Self {

@@ -9,7 +9,7 @@ pub struct Defines {
 }
 
 impl Defines {
-    pub fn load(content: &installed_content_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(content: &content_reader_core::defines::Defines) -> io::Result<Self> {
         let maximum = content.fixed5_array("NIntel", "COUNTRY_LEVEL_INTEL_MAXIMUMS")?;
         if maximum.len() != 4 {
             return Err(invalid(
@@ -127,7 +127,7 @@ fn resolve(
     links: &BTreeMap<u32, u32>,
     template: u64,
     target: u32,
-    loc: &installed_content_localisation::localisation::Localisation,
+    loc: &content_reader_localisation::localisation::Localisation,
 ) -> Result<u64, String> {
     let icons = complete::<tables::DivisionTemplateIcons>(frame, "DivisionTemplateIcons")?;
     let source = icons
@@ -178,7 +178,7 @@ pub fn entries(
     raw_target: u32,
     fog: bool,
     defines: &Defines,
-    loc: &installed_content_localisation::localisation::Localisation,
+    loc: &content_reader_localisation::localisation::Localisation,
 ) -> Result<Vec<Entry>, String> {
     let disclosure = Disclosure::read(frame, links, raw_viewer, raw_target, fog, defines)?;
     if !disclosure.basic {
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn display_name_collisions_resolve_in_native_roster_order_and_country_fallback_order() {
         let (mut frame, links, _) = super::super::tests::fixture();
-        let loc: installed_content_localisation::localisation::Localisation = [
+        let loc: content_reader_localisation::localisation::Localisation = [
             ("KEY_A".to_owned(), "Same name".to_owned()),
             ("KEY_B".to_owned(), "Same name".to_owned()),
         ]
@@ -490,7 +490,7 @@ mod tests {
                 ((9 << 32) | 52, 102, 102, -1, 2, b"Decoy", b""),
             ],
         );
-        let loc = installed_content_localisation::localisation::Localisation::default();
+        let loc = content_reader_localisation::localisation::Localisation::default();
         let values = entries(&frame, &links, 101, 202, true, &defines(), &loc).unwrap();
         assert_eq!(values.len(), 1);
         assert_eq!(values[0].template, (9 << 32) | 52);

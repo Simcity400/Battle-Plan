@@ -6,7 +6,7 @@ use super::{Emitter, Simulation};
 use eframe::wgpu;
 #[cfg(test)]
 use eframe::wgpu::util::DeviceExt;
-use installed_content_core::{mesh::Transform, particles::RenderDescriptor, pdxshader::program::Stage};
+use content_reader_core::{mesh::Transform, particles::RenderDescriptor, pdxshader::program::Stage};
 use shader_pipeline::{binding, gpu, library::Effect};
 #[cfg(test)]
 use std::collections::BTreeSet;
@@ -782,7 +782,7 @@ struct Program {
     selection: shader_pipeline::library::Selection,
     layouts: Vec<gpu::VertexLayout>,
     state: gpu::State,
-    raster: installed_content_core::pdxshader::RasterizerState,
+    raster: content_reader_core::pdxshader::RasterizerState,
 }
 
 impl Program {
@@ -1416,7 +1416,7 @@ mod tests {
     #[test]
     fn a_depth_sorted_runtime_submits_its_storage_after_one_pass_and_an_unsorted_one_as_held() {
         use crate::map::{entity_animation, models};
-        use installed_content_core::particles::Sort;
+        use content_reader_core::particles::Sort;
         use viewer_foundation::map::camera::{Camera, MapDefines, MapSize, Pose};
         let rig = entity_animation::pose_tests::rig(1., false, true);
         let mut player = entity_animation::Player::new(&rig);
@@ -1671,7 +1671,7 @@ mod tests {
         rig.nodes[0].clips[0]
             .state
             .events
-            .push(installed_content_core::mesh::EntityEvent {
+            .push(content_reader_core::mesh::EntityEvent {
                 particle: Some("wake".into()),
                 keep_particle: true,
                 ..Default::default()
@@ -2012,8 +2012,8 @@ mod tests {
 #[path = "native/draw_tests.rs"]
 mod draw_tests;
 
-fn particle_depth() -> installed_content_core::pdxshader::DepthStencilState {
-    installed_content_core::pdxshader::DepthStencilState {
+fn particle_depth() -> content_reader_core::pdxshader::DepthStencilState {
+    content_reader_core::pdxshader::DepthStencilState {
         depth_enable: true,
         depth_write_mask: 0,
         depth_function: 3,

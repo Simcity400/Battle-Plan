@@ -1,4 +1,4 @@
-use installed_content_localisation::localisation::Argument;
+use content_reader_localisation::localisation::Argument;
 use replay_data::{
     rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::land_combat_members,
     rows::tables,

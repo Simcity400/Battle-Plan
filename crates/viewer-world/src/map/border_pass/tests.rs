@@ -1,9 +1,9 @@
 use super::*;
-use installed_content_core::{adjacencies::SEA_CROSSING, map::CountryColors, map::ProvinceDefinition};
+use content_reader_core::{adjacencies::SEA_CROSSING, map::CountryColors, map::ProvinceDefinition};
 
 #[test]
 fn faction_hover_color_uses_the_content_index_and_refuses_missing_quads() {
-    let defines = installed_content_core::defines::Defines::new().unwrap();
+    let defines = content_reader_core::defines::Defines::new().unwrap();
     defines
         .load(
             "fixture",

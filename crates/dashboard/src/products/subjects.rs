@@ -9,7 +9,7 @@ use crate::{
     span::HourSpan,
 };
 use dashboard_query::{read, timeline::Stretch};
-use installed_content_core::autonomy::AutonomyStates;
+use content_reader_core::autonomy::AutonomyStates;
 use replay::{columnar_frames::Recording, lanes};
 use replay_columnar::summary::{Cells, Source as Column};
 use replay_data::rows::TableId;
@@ -281,7 +281,7 @@ fn subject_content(source: &Source, options: &crate::products::ContentOptions) -
     {
         return Ok(Arc::clone(cached));
     }
-    let (states, warnings) = installed_content_core::autonomy::read(&catalogue.content.layers)?;
+    let (states, warnings) = content_reader_core::autonomy::read(&catalogue.content.layers)?;
     let loaded = Arc::new(SubjectContent { catalogue, states, warnings: warnings.into_iter().map(|(_, message)| message).collect() });
     *state = Some(Arc::clone(&loaded));
     Ok(loaded)

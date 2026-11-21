@@ -1,7 +1,7 @@
 
 use std::{collections::BTreeMap, io};
 
-use installed_content_save::Save;
+use content_reader_save::Save;
 use replay_data::{rows::FactionTheatreRow, rows::Recorded, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
@@ -189,7 +189,7 @@ mod tests {
     fn fixture() -> (DecodedFrame, Save) {
         let (mut frame, mut save, _, _) = super::super::fixtures::fixture();
         super::super::fixtures::add_country(&mut frame, &mut save, ENG, 8, b"ENG");
-        let faction = |id, icon: &[u8], theatres| installed_content_save::Faction {
+        let faction = |id, icon: &[u8], theatres| content_reader_save::Faction {
             goals: Default::default(),
             companions: Default::default(),
             advisor_slots: Vec::new(),
@@ -210,7 +210,7 @@ mod tests {
                 ALLIES,
                 b"GFX_allies",
                 vec![
-                    installed_content_save::FactionTheatre {
+                    content_reader_save::FactionTheatre {
                         name: Some(b"Western Front".to_vec()),
                         tag: Some(b"ENG".to_vec()),
                         commander: Some(COMMANDER),
@@ -218,7 +218,7 @@ mod tests {
                         countries: vec![b"GER".to_vec(), b"ENG".to_vec()],
                         hidden: Vec::new(),
                     },
-                    installed_content_save::FactionTheatre {
+                    content_reader_save::FactionTheatre {
                         name: Some(Vec::new()),
                         tag: Some(b"GER".to_vec()),
                         commander: None,

@@ -71,7 +71,7 @@ impl Source {
 
     fn line(line: &CountryStabilityLineRow, character: &mut dyn FnMut(u32) -> Naming) -> Self {
         match line.kind {
-            CountryStabilityLineRow::UNPAIRED => match installed_content_localisation::localisation::display_text(&line.text) {
+            CountryStabilityLineRow::UNPAIRED => match content_reader_localisation::localisation::display_text(&line.text) {
                 Ok(text) => Self::plain(CountryStabilityLineRow::UNPAIRED, text.as_bytes()),
                 Err(_) => Self::plain(StabilityPartKeyRow::REFUSED_LABEL, &line.text),
             },

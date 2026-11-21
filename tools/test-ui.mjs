@@ -32,19 +32,19 @@ export const browserTests = [
   'ui/src/widgets/special-projects/specialProjects.dom.test.ts',
   tabFullTest,
 ];
-const toolTests = ['tools/canvas-page.test.ts', 'tools/cargo-target.test.mjs', 'tools/test-ui.test.mjs', 'tools/e2e/verdicts.test.mjs', 'tools/e2e/playbackVerdicts.test.mjs', 'tools/e2e/allWidgets.test.mjs'];
 const pureBrowserSupportTests = new Set(['tools/canvas-page.test.ts']);
 
 export async function discoverTests(root = repositoryRoot) {
-  async function visit(directory) {
+  async function visit(directory, pattern) {
     const entries = await readdir(resolve(root, directory), { withFileTypes: true });
     const nested = await Promise.all(entries.map(entry => {
       const path = `${directory}/${entry.name}`;
-      return entry.isDirectory() ? visit(path) : path.endsWith('.test.ts') ? [path] : [];
+      if (entry.isDirectory()) return entry.name === 'node_modules' ? [] : visit(path, pattern);
+      return pattern.test(entry.name) ? [path] : [];
     }));
     return nested.flat();
   }
-  return [...await visit('ui/src'), ...toolTests].sort();
+  return [...await visit('ui/src', /\.test\.ts$/), ...await visit('tools', /\.test\.(?:ts|mjs)$/)].sort();
 }
 
 function namespaceHasValues(node) {

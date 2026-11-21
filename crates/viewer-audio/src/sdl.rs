@@ -5,7 +5,7 @@
 //! 16-bit output conversion follows SDL's SSE2 path, which converts aligned
 //! blocks of eight samples rounding to nearest and the rest truncating.
 
-use installed_content_sound::wav::{DIVBY32768, Format, Pcm};
+use content_reader_sound::wav::{DIVBY32768, Format, Pcm};
 use std::{collections::VecDeque, sync::OnceLock};
 
 pub const MIXER_RATE: i32 = 44_100;

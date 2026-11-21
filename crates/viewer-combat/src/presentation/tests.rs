@@ -22,9 +22,9 @@ fn a_refused_portrait_or_tactic_picture_hides_the_earlier_sprite() {
     portrait(&mut out, &has, "leader", &value, 2);
     assert_eq!(out.values["leader"].sprite.as_deref(), Some("GFX_earlier"));
     let tactics =
-        super::super::tactics::Content::from_database(installed_content_core::combat_tactics::parse(
+        super::super::tactics::Content::from_database(content_reader_core::combat_tactics::parse(
             b"a = { picture = tactic_a } b = { picture = tactic_b }",
-            &installed_content_core::key_names::KeyNames::default(),
+            &content_reader_core::key_names::KeyNames::default(),
         ));
     tactic(&mut out, &has, &tactics, "tactic", 2, b"b");
     assert_eq!(out.values["tactic"].sprite, None);
@@ -118,9 +118,9 @@ fn null_tactic_keeps_authored_art_and_counters_the_real_defender() {
         );
     }
     let content =
-        super::super::tactics::Content::from_database(installed_content_core::combat_tactics::parse(
+        super::super::tactics::Content::from_database(content_reader_core::combat_tactics::parse(
             b"defend = { picture = mod_defense }",
-            &installed_content_core::key_names::KeyNames::default(),
+            &content_reader_core::key_names::KeyNames::default(),
         ));
     let mut sides = [
         LandCombatSideDetails {

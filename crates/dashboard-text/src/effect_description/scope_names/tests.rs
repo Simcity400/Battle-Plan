@@ -118,8 +118,8 @@ fn fixture() -> (Fixture, Folder) {
                 ..Default::default()
             },
         ]));
-    let mut raids = installed_content_raids::raids::Catalog::default();
-    let mut kind = installed_content_raids::raids::RaidType {
+    let mut raids = content_reader_raids::raids::Catalog::default();
+    let mut kind = content_reader_raids::raids::RaidType {
         name: "synthetic_raid".into(),
         ..Default::default()
     };
@@ -248,7 +248,7 @@ fn carried_saved_targets_do_not_invent_country_or_state_members() {
     f.with_renderer(&mut graph, Content::default(), |renderer| {
         for name in ["raid", "unit", "project"] {
             let operand =
-                installed_content_core::parser::parse(format!("target=event_target:{name}").as_bytes())
+                content_reader_core::parser::parse(format!("target=event_target:{name}").as_bytes())
                     .unwrap();
             let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
             assert_eq!(renderer.country_target(&operand.items[0], scopes), Ok(None));
@@ -261,7 +261,7 @@ fn carried_saved_targets_do_not_invent_country_or_state_members() {
 fn unit_name_programmatic_overrides_follow_recorded_group_and_language() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let names = installed_content_division_names::division_names::parse(
+    let names = content_reader_division_names::division_names::parse(
         br#"G={ordered={2={"Generated %d"}}}"#,
         &Default::default(),
     )

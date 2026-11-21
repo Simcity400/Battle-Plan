@@ -1,6 +1,6 @@
 
 use crate::invalid;
-use installed_content_core::ResolveOptions;
+use content_reader_core::ResolveOptions;
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,

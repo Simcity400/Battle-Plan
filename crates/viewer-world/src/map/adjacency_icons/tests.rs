@@ -14,7 +14,7 @@ const RULES: &[u8] = b"adjacency_rule = { name = A icon = 7 offset = { 1 0 -2 } 
 
 fn fixture(cutoff: Result<f32, String>) -> AdjacencyIcons {
     AdjacencyIcons::of(
-        &installed_content_core::adjacency_rules::parse(RULES).unwrap(),
+        &content_reader_core::adjacency_rules::parse(RULES).unwrap(),
         cutoff,
     )
 }
@@ -108,7 +108,7 @@ fn icons_show_in_the_navy_supply_and_resources_modes_below_the_cutoff() {
 #[test]
 fn the_icon_stands_at_the_province_position_plus_its_offset() {
     let icons = AdjacencyIcons::of(
-        &installed_content_core::adjacency_rules::parse(
+        &content_reader_core::adjacency_rules::parse(
             b"adjacency_rule = { name = A icon = 7 offset = { 1 0 -2 } }",
         )
         .unwrap(),
@@ -138,7 +138,7 @@ fn the_icon_stands_at_the_province_position_plus_its_offset() {
 #[test]
 fn a_free_eye_shows_each_icon_by_its_own_distance() {
     let icons = AdjacencyIcons::of(
-        &installed_content_core::adjacency_rules::parse(
+        &content_reader_core::adjacency_rules::parse(
             b"adjacency_rule = { name = A icon = 7 offset = { 1 0 -2 } }",
         )
         .unwrap(),
@@ -222,7 +222,7 @@ fn an_icon_s_quads_stand_at_its_anchor() {
 #[test]
 fn a_province_without_a_position_is_counted() {
     let icons = AdjacencyIcons::of(
-        &installed_content_core::adjacency_rules::parse(b"adjacency_rule = { name = A icon = 99 }")
+        &content_reader_core::adjacency_rules::parse(b"adjacency_rule = { name = A icon = 99 }")
             .unwrap(),
         Ok(1700.),
     );

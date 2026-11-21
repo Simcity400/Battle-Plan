@@ -6,7 +6,7 @@ use std::sync::{
 };
 
 use dashboard_core::protocol::MAP_UI_SCALE_RANGE;
-use installed_content_settings::{settings::Desktop, settings::Display};
+use content_reader_settings::{settings::Desktop, settings::Display};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Setting {
@@ -137,7 +137,7 @@ pub fn refresh_monitors(wake: impl Fn() + Send + 'static) {
             loop {
                 while state.again.swap(false, Ordering::AcqRel) {
                     let read =
-                        installed_content_settings::settings::desktops().map_err(|error| error.to_string());
+                        content_reader_settings::settings::desktops().map_err(|error| error.to_string());
                     *state
                         .monitors
                         .lock()

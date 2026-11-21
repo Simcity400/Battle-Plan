@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
-use installed_content_core::ResolvedLayers;
-use installed_content_image::native::Decode;
+use content_reader_core::ResolvedLayers;
+use content_reader_image::native::Decode;
 use shader_pipeline::{ScalarKind, VertexInput, gpu, library::Effect};
 use std::{io, sync::Arc};
 #[path = "particle_shader/trail.rs"]

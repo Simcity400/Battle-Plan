@@ -38,3 +38,6 @@ unify-simd-adler32 = { workspace = true }
 unify-smallvec = { workspace = true }
 unify-uuid = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }
+
+[lints]
+workspace = true

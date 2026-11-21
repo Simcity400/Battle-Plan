@@ -1,5 +1,5 @@
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
-use installed_content_save::Save;
+use content_reader_save::Save;
 use replay_data::rows::*;
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};

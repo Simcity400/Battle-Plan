@@ -743,7 +743,7 @@ fn prepare(assets: &UnitModelAssets, frame: &DecodedFrame) -> ModelReport {
                     region: &|_| None,
                     scale: &|_, _| 1.0,
                 },
-                localisation: &installed_content_localisation::localisation::Localisation::default(),
+                localisation: &content_reader_localisation::localisation::Localisation::default(),
             })
             .unwrap()
             .report
@@ -799,7 +799,7 @@ fn a_stack_chosen_alone_takes_what_the_whole_hour_takes() {
                         limits,
                         ours: Vision::default().ours(),
                         terrain: &BTreeMap::new(),
-                        localisation: &installed_content_localisation::localisation::Localisation::default(),
+                        localisation: &content_reader_localisation::localisation::Localisation::default(),
                         divisions: None,
                         lap: None,
                     },
@@ -868,7 +868,7 @@ fn told_sessions(
                             ours: Vision::default().ours(),
                             terrain: &BTreeMap::new(),
                             localisation:
-                                &installed_content_localisation::localisation::Localisation::default(),
+                                &content_reader_localisation::localisation::Localisation::default(),
                             divisions: None,
                         lap: None,
                         },
@@ -1166,7 +1166,7 @@ fn a_content_failure_turns_off_only_the_model_layer_and_says_so() {
 #[test]
 fn unit_graphics_defines_a_mod_breaks_load_with_the_recorded_ones() {
     let defines = |cutoff: &str| {
-        let defines = installed_content_core::defines::Defines::new().unwrap();
+        let defines = content_reader_core::defines::Defines::new().unwrap();
         defines
             .load(
                 "common/defines/00_defines.lua",
@@ -1180,8 +1180,8 @@ fn unit_graphics_defines_a_mod_breaks_load_with_the_recorded_ones() {
     };
     let (shown, recorded) = (defines("\"far\""), defines("200"));
     let load = |_: LoadStack,
-                defines: &installed_content_core::defines::Defines,
-                _: &mut Vec<installed_content_core::Diagnostic>| {
+                defines: &content_reader_core::defines::Defines,
+                _: &mut Vec<content_reader_core::Diagnostic>| {
         Ok(UnitModelAssets {
             gates: Gates::read(defines)?,
             disabled: None,
@@ -1216,11 +1216,11 @@ fn unit_graphics_defines_a_mod_breaks_load_with_the_recorded_ones() {
 
 #[test]
 fn a_unit_model_layer_the_mods_break_loads_from_the_recording() {
-    let defines = installed_content_core::defines::Defines::new().unwrap();
+    let defines = content_reader_core::defines::Defines::new().unwrap();
     let mut stacks = Vec::new();
     let load = |stack: LoadStack,
-                _: &installed_content_core::defines::Defines,
-                _: &mut Vec<installed_content_core::Diagnostic>| {
+                _: &content_reader_core::defines::Defines,
+                _: &mut Vec<content_reader_core::Diagnostic>| {
         stacks.push(stack);
         match stack {
             LoadStack::Shown => Err(io::Error::new(
@@ -1400,7 +1400,7 @@ fn a_keyed_lookup_takes_what_the_whole_join_took() {
         ));
     let assets = camouflaged_assets();
     let terrain = BTreeMap::new();
-    let localisation = installed_content_localisation::localisation::Localisation::default();
+    let localisation = content_reader_localisation::localisation::Localisation::default();
     equipment_graphics::test_support::with_world(&frame, &[], |limits| {
         let hour = Hour::read(&assets, &frame, &terrain, limits, &localisation).unwrap();
         for template in 0..=80 {
@@ -1894,7 +1894,7 @@ fn prepared(assets: &UnitModelAssets, frame: &DecodedFrame, naval: bool) -> Prep
             terrain: &BTreeMap::new(),
             routes: None,
             ships: &places,
-            localisation: &installed_content_localisation::localisation::Localisation::default(),
+            localisation: &content_reader_localisation::localisation::Localisation::default(),
         };
         assets.prepare_naval_or_not(inputs, naval, &mut |_| {}, &mut BuilderSpans::new(false)).unwrap()
     })

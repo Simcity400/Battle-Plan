@@ -4,8 +4,8 @@ use std::{
     io,
 };
 
-use installed_content_save::{Decimal, Save};
-use installed_content_weather::{
+use content_reader_save::{Decimal, Save};
+use content_reader_weather::{
     weather::GROUND_SNOW_MODIFIERS, weather::MUD_MODIFIER, weather::ProvinceModifierRules,
     weather::TEMPERATURE_MODIFIERS,
 };
@@ -21,13 +21,13 @@ use super::{Report, complete, invalid};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProvinceModifierContent {
     pub rules: ProvinceModifierRules,
-    pub statics: BTreeMap<String, Result<installed_content_core::modifiers::Modifiers, String>>,
+    pub statics: BTreeMap<String, Result<content_reader_core::modifiers::Modifiers, String>>,
     pub notes: Vec<String>,
 }
 
 impl ProvinceModifierContent {
-    pub fn read(layers: &installed_content_core::ResolvedLayers, saved: &Save) -> io::Result<Self> {
-        let rules = installed_content_weather::weather::province_modifier_rules(layers)?;
+    pub fn read(layers: &content_reader_core::ResolvedLayers, saved: &Save) -> io::Result<Self> {
+        let rules = content_reader_weather::weather::province_modifier_rules(layers)?;
         let mut names: BTreeSet<&str> = TEMPERATURE_MODIFIERS
             .into_iter()
             .chain(GROUND_SNOW_MODIFIERS)
@@ -43,7 +43,7 @@ impl ProvinceModifierContent {
             );
         }
         let names: Vec<&str> = names.into_iter().collect();
-        let blocks = installed_content_core::static_modifiers::read_blocks(layers, &names)?;
+        let blocks = content_reader_core::static_modifiers::read_blocks(layers, &names)?;
         let statics = names
             .iter()
             .zip(blocks.blocks)
@@ -445,7 +445,7 @@ impl<'a> ModifierRebuild<'a> {
     fn added(
         registry: &Registry<'_>,
         name: &str,
-        block: &'a installed_content_core::modifiers::Modifiers,
+        block: &'a content_reader_core::modifiers::Modifiers,
         names: &mut BTreeMap<u32, &'a str>,
     ) -> Result<Vec<(u32, i64)>, String> {
         let mut entries = Vec::new();
@@ -468,7 +468,7 @@ impl<'a> ModifierRebuild<'a> {
 
     fn with(
         &self,
-        saved: &installed_content_save::weather::Province,
+        saved: &content_reader_save::weather::Province,
         mud: bool,
         thermal: Option<&str>,
         snow: Option<&str>,
@@ -503,7 +503,7 @@ impl<'a> ModifierRebuild<'a> {
 
     fn expected(
         &self,
-        saved: &installed_content_save::weather::Province,
+        saved: &content_reader_save::weather::Province,
         permanent_snow: i64,
     ) -> Result<BTreeMap<u32, i64>, String> {
         let temperature = saved
@@ -522,12 +522,12 @@ impl<'a> ModifierRebuild<'a> {
 
     fn saved_part_holds(
         &self,
-        saved: &installed_content_save::weather::Province,
+        saved: &content_reader_save::weather::Province,
         recorded: &BTreeMap<u32, i64>,
     ) -> Result<Fit, String> {
         let thermals = self.rules.reachable_temperature_modifiers();
         let snows = self.rules.reachable_ground_snow_modifiers();
-        let empty = installed_content_save::weather::Province {
+        let empty = content_reader_save::weather::Province {
             custom_modifiers: None,
             ..saved.clone()
         };

@@ -1,7 +1,7 @@
 use std::{cell::OnceCell, collections::BTreeMap};
 
-use installed_content_core::buildings::Buildings;
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_core::buildings::Buildings;
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     BranchId, rows::MapEvent, rows::MapEventBuildingReason, rows::MapEventFamily,
     rows::MapEventFault, rows::MapEventPayload, rows::MapEventUnitIntel, rows::MapEventsRow,

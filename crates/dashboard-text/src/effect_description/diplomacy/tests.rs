@@ -231,9 +231,9 @@ fn create_wargoal_refuses_without_complete_inventory_tables() {
         .scripted_content()
         .unwrap()
         .set_synthetic_environment(Default::default());
-    let names = installed_content_core::key_names::KeyNames::default();
+    let names = content_reader_core::key_names::KeyNames::default();
     let database =
-        installed_content_wargoals::wargoals::parse(b"wargoal_types={SynGoal={}}", &names).unwrap();
+        content_reader_wargoals::wargoals::parse(b"wargoal_types={SynGoal={}}", &names).unwrap();
     let content = Content {
         key_names: Some(&names),
         wargoals: Some(&database),
@@ -303,7 +303,7 @@ fn purchase_contract_uses_seller_roster_and_quantity_pool() {
         .scripted_content()
         .unwrap()
         .set_synthetic_environment(Default::default());
-    let equipment = installed_content_core::equipment::fixture::load(&[(
+    let equipment = content_reader_core::equipment::fixture::load(&[(
         "common/units/equipment/synthetic.txt",
         "equipments={syn_a={is_archetype=yes type=infantry} syn_one={archetype=syn_a} syn_two={parent=syn_one archetype=syn_a} syn_b={is_archetype=yes type=artillery} syn_other={archetype=syn_b}}",
     )])
@@ -588,7 +588,7 @@ fn civil_war_heading_and_selected_party_follow_separate_operands() {
     fixture.catalogue = catalogue;
     let scripted = fixture.catalogue.scripted_content().unwrap();
     scripted.set_synthetic_environment(Default::default());
-    let mut names = installed_content_core::key_names::KeyNames::default();
+    let mut names = content_reader_core::key_names::KeyNames::default();
     names
         .counts
         .ideologies
@@ -916,10 +916,10 @@ fn diplomacy_output_branches() {
         .scripted_content()
         .unwrap()
         .set_synthetic_environment(Default::default());
-    let mut autonomy_states = installed_content_core::autonomy::AutonomyStates::new(
+    let mut autonomy_states = content_reader_core::autonomy::AutonomyStates::new(
         ["synthetic", "synthetic_other"]
             .into_iter()
-            .map(|id| installed_content_core::autonomy::AutonomyState {
+            .map(|id| content_reader_core::autonomy::AutonomyState {
                 id: id.into(),
                 min_freedom_level: None,
             })
@@ -2081,7 +2081,7 @@ fn diplomacy_output_branches() {
     }
     autonomy_states
         .states
-        .push(installed_content_core::autonomy::AutonomyState {
+        .push(content_reader_core::autonomy::AutonomyState {
             id: "autonomy_free".into(),
             min_freedom_level: None,
         });
@@ -2289,9 +2289,9 @@ fn create_wargoal_hover_reads_complete_unused_goal_membership() {
         .scripted_content()
         .unwrap()
         .set_synthetic_environment(Default::default());
-    let names = installed_content_core::key_names::KeyNames::default();
+    let names = content_reader_core::key_names::KeyNames::default();
     let database =
-        installed_content_wargoals::wargoals::parse(b"wargoal_types={SynGoal={}}", &names).unwrap();
+        content_reader_wargoals::wargoals::parse(b"wargoal_types={SynGoal={}}", &names).unwrap();
     let content = Content {
         key_names: Some(&names),
         wargoals: Some(&database),
@@ -2350,7 +2350,7 @@ fn create_wargoal_hover_reads_complete_unused_goal_membership() {
     assert!(consumed.refusals.is_empty(), "{:?}", consumed.refusals);
     assert!(consumed.text.contains("Custom goal"));
     let duplicate =
-        installed_content_wargoals::wargoals::parse(b"wargoal_types={SynGoal={} SynGoal={}}", &names)
+        content_reader_wargoals::wargoals::parse(b"wargoal_types={SynGoal={} SynGoal={}}", &names)
             .unwrap();
     let duplicate_content = Content {
         wargoals: Some(&duplicate),

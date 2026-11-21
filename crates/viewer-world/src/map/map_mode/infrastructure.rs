@@ -2,7 +2,7 @@
 use super::{
     Inputs, LEVEL_GRADIENT, ModeDefines, ModeLayer, complete, finish, region_table_len, style,
 };
-use installed_content_core::buildings::Buildings;
+use content_reader_core::buildings::Buildings;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};

@@ -1,10 +1,10 @@
 use crate::invalid;
-use installed_content_core::{ResolvedLayers, parser};
+use content_reader_core::{ResolvedLayers, parser};
 use std::{collections::BTreeSet, io};
 
 pub fn subunit_keys(layers: &ResolvedLayers) -> io::Result<BTreeSet<String>> {
     let mut keys = BTreeSet::new();
-    for path in installed_content_core::unit_leader::sub_unit_files(layers)? {
+    for path in content_reader_core::unit_leader::sub_unit_files(layers)? {
         let document = parser::parse(&path.read(layers)?)
             .map_err(|error| invalid(format!("{}: {error}", path.text())))?;
         for root in document

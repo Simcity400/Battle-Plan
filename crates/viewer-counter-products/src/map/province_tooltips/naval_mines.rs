@@ -268,7 +268,7 @@ impl Inputs<'_> {
                 "{}{} {}",
                 viewer_foundation::map::native_text::FLAG,
                 tag,
-                installed_content_localisation::localisation::crt_case_text(&name, true, true)
+                content_reader_localisation::localisation::crt_case_text(&name, true, true)
             );
             text.push_str(&self.loc(
                 "NAVAL_MINES_IN_REGION_BY_NEUTRAL",

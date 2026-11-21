@@ -8,4 +8,4 @@ Rail counter movement requires a directed rail connection on the rail path. A fo
 
 The cost and admission readers distinguish raw positive ownership or controller operands from their resolved country links. A raw nonpositive operand can skip a relation read, even when an alternate country link exists. Required-province conflict reasons use the first matching relation along each overlord chain. A subject tie participates in disclosure and a cycle withholds the answer. A contested rule can close an army crossing. Combat separately governs when a unit can disengage and whether its commander bars retreat. A whole unit's worth of enemy strength blocks retreat, and a defender cannot retreat into its attackers.
 
-[Movement and route search](../../crates/installed-content-unit-path/src/unit_path.rs) · [Parity and reach tests](../../crates/installed-content-unit-path/src/unit_path/tests.rs)
+[Movement and route search](../../crates/content-reader-unit-path/src/unit_path.rs) · [Parity and reach tests](../../crates/content-reader-unit-path/src/unit_path/tests.rs)

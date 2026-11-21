@@ -1,6 +1,6 @@
 
 use super::models::{ModelInstance, PaletteJoint};
-use installed_content_core::{mesh, mesh::EntityState, mesh::JointPose, mesh::Transform};
+use content_reader_core::{mesh, mesh::EntityState, mesh::JointPose, mesh::Transform};
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::{collections::BTreeMap, sync::Arc};

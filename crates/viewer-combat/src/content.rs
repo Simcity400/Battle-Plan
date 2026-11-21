@@ -1,7 +1,7 @@
 use super::{Assets, modifier_text::NameIndexCache};
-use installed_content_core::map::MapData;
-use installed_content_localisation::localisation::Localisation;
-use installed_content_regions::regions::StrategicRegion;
+use content_reader_core::map::MapData;
+use content_reader_localisation::localisation::Localisation;
+use content_reader_regions::regions::StrategicRegion;
 use std::{collections::BTreeMap, sync::Arc};
 use viewer_foundation::{
     land_combat_math::ScoreDefines,
@@ -23,7 +23,7 @@ pub struct Content {
     pub attrition: std::sync::OnceLock<
         Result<viewer_foundation::map::counter_attrition::PanelContent, String>,
     >,
-    pub medals: std::sync::OnceLock<Result<installed_content_core::unit_medals::Medals, String>>,
+    pub medals: std::sync::OnceLock<Result<content_reader_core::unit_medals::Medals, String>>,
     pub assets: Arc<Assets>,
     pub localisation: Arc<Localisation>,
     pub recorded_language: String,
@@ -51,15 +51,15 @@ pub struct Content {
 }
 
 pub struct Occupation {
-    pub laws: installed_content_core::occupation_laws::Laws,
-    pub modifiers: installed_content_core::occupation_modifiers::Definitions,
+    pub laws: content_reader_core::occupation_laws::Laws,
+    pub modifiers: content_reader_core::occupation_modifiers::Definitions,
 }
 
 impl Occupation {
-    pub fn load(layers: &installed_content_core::ResolvedLayers) -> Result<Self, String> {
+    pub fn load(layers: &content_reader_core::ResolvedLayers) -> Result<Self, String> {
         Ok(Self {
-            laws: installed_content_core::occupation_laws::read(layers).map_err(|why| why.to_string())?,
-            modifiers: installed_content_core::occupation_modifiers::read(layers).map_err(|why| why.to_string())?,
+            laws: content_reader_core::occupation_laws::read(layers).map_err(|why| why.to_string())?,
+            modifiers: content_reader_core::occupation_modifiers::read(layers).map_err(|why| why.to_string())?,
         })
     }
 }

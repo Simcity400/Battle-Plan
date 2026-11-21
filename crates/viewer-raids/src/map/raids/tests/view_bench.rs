@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use viewer_foundation::parallel::Workers;
 use viewer_foundation::parallel::usable_processors;
 
-use installed_content_raids::{
+use content_reader_raids::{
     raids::BattalionRequirement, raids::SourceKind, raids::StartingPoint, raids::UnitRequirement,
 };
 use replay_data::{
@@ -43,7 +43,7 @@ fn kinds() -> Vec<RaidType> {
             "supply_node"
         };
         vec![TargetType::Building(
-            installed_content_raids::raids::BuildingSelector {
+            content_reader_raids::raids::BuildingSelector {
                 types: vec![building.into()],
                 ..Default::default()
             },
@@ -58,7 +58,7 @@ fn kinds() -> Vec<RaidType> {
         ..Default::default()
     }];
     let bombers = vec![UnitRequirement {
-        equipment: vec![installed_content_raids::raids::EquipmentRequirement {
+        equipment: vec![content_reader_raids::raids::EquipmentRequirement {
             types: vec!["strategic_bomber".into()],
             min: Some(10),
             ..Default::default()
@@ -117,7 +117,7 @@ fn kinds() -> Vec<RaidType> {
 fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
     let (graph, geometry) = grid();
     let mut assets = assets();
-    assets.moves = Ok(installed_content_unit_path::unit_path::MoveGraph::new(
+    assets.moves = Ok(content_reader_unit_path::unit_path::MoveGraph::new(
         &graph, &geometry,
     ));
     assets.geometry = geometry;
@@ -127,7 +127,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         types: kinds(),
         ..Default::default()
     };
-    assets.trigger_content.buildings = installed_content_core::buildings::Buildings {
+    assets.trigger_content.buildings = content_reader_core::buildings::Buildings {
         types: ["naval_base", "supply_node"]
             .map(|name| {
                 (
@@ -143,7 +143,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         ..Default::default()
     };
     super::set_counts(&mut assets);
-    assets.equipment = installed_content_core::equipment::fixture::load(&[(
+    assets.equipment = content_reader_core::equipment::fixture::load(&[(
         "common/units/equipment/a.txt",
         "equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } }",
     )])
@@ -775,7 +775,7 @@ fn churn_world_keeping(keep: usize) -> (RaidAssets, DecodedFrame) {
     kinds[8].available = parse("num_of_nukes > 0");
     kinds[4].show_target = parse("var:target_state = { is_controlled_by = FROM }");
     kinds[7].target_types = vec![TargetType::Building(
-        installed_content_raids::raids::BuildingSelector {
+        content_reader_raids::raids::BuildingSelector {
             types: vec!["naval_base".into()],
             minimum_level: Some(2),
             ..Default::default()
@@ -1206,7 +1206,7 @@ fn stopped_and_full_army_searches_answer_alike() {
     let cells = reach::Cells::default();
     let moves = reach::Moves::new(&world, assets.movement_reads(), &cells);
     let graph = assets.moves.as_ref().unwrap();
-    let mover = installed_content_unit_path::unit_path::Mover {
+    let mover = content_reader_unit_path::unit_path::Mover {
         graph,
         world: &moves,
     };

@@ -7,7 +7,7 @@ use crate::{
 };
 use dashboard_query::{Index, read};
 use dashboard_text::{air_wing_names, metadata::link_slot, variant_names};
-use installed_content_localisation::localisation::Argument;
+use content_reader_localisation::localisation::Argument;
 use replay::campaign::Replay;
 use replay_columnar::summary;
 use replay_data::rows::{AirAceRow, CountryLinkRow, TableId, tables};

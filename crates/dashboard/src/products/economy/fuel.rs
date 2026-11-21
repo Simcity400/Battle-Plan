@@ -61,7 +61,7 @@ pub struct Content {
 }
 
 fn label(catalogue: &Result<Arc<Catalogue>, String>, key: &str, oil: bool) -> FuelLabel {
-    use installed_content_localisation::localisation::Argument;
+    use content_reader_localisation::localisation::Argument;
     let arguments: Vec<String> = if oil { vec!["NUM".into(), "OIL".into()] } else { vec!["NUM".into()] };
     let (template, mut notes) = match catalogue {
         Err(why) => (None, vec![format!("Fuel labels cannot be read: {why}")]),

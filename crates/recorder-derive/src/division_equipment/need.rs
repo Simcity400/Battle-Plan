@@ -2,7 +2,7 @@
 use super::inputs::{self, LocalSubunit, TemplateFacts};
 use crate::forces::Owners;
 use crate::framework::Hour;
-use installed_content_core::unit_leader::needs::SubUnitNeeds;
+use content_reader_core::unit_leader::needs::SubUnitNeeds;
 use std::collections::{HashMap, HashSet};
 
 type Override = Result<Vec<(u32, i64)>, String>;

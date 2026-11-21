@@ -62,7 +62,7 @@ fn the_native_windows_load_and_lay_out_without_the_legacy_readers() {
     let layouts = Layouts::read(&windows);
     assert!(layouts.land.as_ref().unwrap_err().contains(LAND_WINDOW));
     assert!(layouts.columns.as_ref().unwrap_err().contains(STACK_WINDOW));
-    let localisation = installed_content_localisation::localisation::Localisation::default();
+    let localisation = content_reader_localisation::localisation::Localisation::default();
     let registry = native::resources::Registry::load(&layers).unwrap();
     let mut gui = GuiResources::new(registry, b"l_english", [5632, 2048], Default::default());
     let assets = window_assets(&windows, gui.registry(), &localisation);

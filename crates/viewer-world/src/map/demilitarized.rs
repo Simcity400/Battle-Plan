@@ -2,7 +2,7 @@ use viewer_foundation::map::gpu_contract::Targets;
 use std::{collections::BTreeSet, io};
 
 use eframe::wgpu;
-use installed_content_core::{map::MapData, map::ProvinceKind};
+use content_reader_core::{map::MapData, map::ProvinceKind};
 use replay_data::rows::tables;
 
 use {
@@ -487,7 +487,7 @@ pub fn parse_states(value: &str) -> io::Result<BTreeSet<u32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_core::{map::CountryColors, map::ProvinceDefinition};
+    use content_reader_core::{map::CountryColors, map::ProvinceDefinition};
 
     #[test]
     fn hidden_zones_draw_their_edges_as_ordinary_borders_or_not_at_all() {

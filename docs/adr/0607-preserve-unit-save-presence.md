@@ -17,4 +17,4 @@ Retain the stored-length and writer-mode rules for text. Names generally appear 
 
 Keep the division's ordered career and medal lists from their actual serializer. Read no additional template, hint or membership from an omitted occurrence.
 
-[Unit save reader and tests](../../crates/installed-content-save/src/units.rs)
+[Unit save reader and tests](../../crates/content-reader-save/src/units.rs)

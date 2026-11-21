@@ -1,7 +1,7 @@
 
 use std::{collections::BTreeMap, io};
 
-use installed_content_save::Save;
+use content_reader_save::Save;
 use replay_data::{rows::CountryRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
@@ -266,7 +266,7 @@ threat={
 
     #[test]
     fn saved_speed_and_ordered_sources_compare_exactly_with_named_limitations() {
-        let saved = installed_content_save::parse(SAVE).unwrap();
+        let saved = content_reader_save::parse(SAVE).unwrap();
         let frame = frame(saved.date.engine_hour().unwrap());
         let countries = roster();
         let links: BTreeMap<u32, &CountryRow> = countries.iter().map(|row| (row.id, row)).collect();
@@ -289,7 +289,7 @@ threat={
         let source = String::from_utf8(SAVE.to_vec())
             .unwrap()
             .replace("tag=\"ENG\"", "tag=\"ENG\" target=\"ENG\"");
-        let saved = installed_content_save::parse(source.as_bytes()).unwrap();
+        let saved = content_reader_save::parse(source.as_bytes()).unwrap();
         let mut frame = frame(saved.date.engine_hour().unwrap());
         let countries = roster();
         let links = countries.iter().map(|row| (row.id, row)).collect();
@@ -317,7 +317,7 @@ threat={
 
     #[test]
     fn every_changed_word_speed_and_missing_label_is_a_difference() {
-        let saved = installed_content_save::parse(SAVE).unwrap();
+        let saved = content_reader_save::parse(SAVE).unwrap();
         let hour = saved.date.engine_hour().unwrap();
         let countries = roster();
         let links: BTreeMap<u32, &CountryRow> = countries.iter().map(|row| (row.id, row)).collect();
@@ -345,7 +345,7 @@ threat={
 
     #[test]
     fn absent_saves_broken_ordinals_and_unavailable_tables_never_pass_silently() {
-        let saved = installed_content_save::parse(
+        let saved = content_reader_save::parse(
             br#"HOI4txt
 date=1936.1.2.13 game_unique_id=campaign game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 version=build
 countries={} states={} provinces={}"#,

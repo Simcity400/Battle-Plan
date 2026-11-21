@@ -164,7 +164,7 @@ impl Renderer<'_, '_, '_> {
             let database = cache
                 .raids
                 .get_or_init(|| {
-                    installed_content_raids::raids::read(&self.context.text.content().layers.layers)
+                    content_reader_raids::raids::read(&self.context.text.content().layers.layers)
                         .map_err(|why| why.to_string())
                 })
                 .as_ref()
@@ -212,7 +212,7 @@ impl Renderer<'_, '_, '_> {
     fn raid_target_name(
         &self,
         scope: &RaidScope,
-        kind: Option<&installed_content_raids::raids::RaidType>,
+        kind: Option<&content_reader_raids::raids::RaidType>,
     ) -> Result<String, String> {
         let province = if scope.province != 0 {
             scope.province

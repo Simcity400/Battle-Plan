@@ -35,3 +35,6 @@ serde_json.workspace = true
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-rows = { workspace = true, features = ["capture", "test-support"] }
 test-unify = { workspace = true }
+
+[lints]
+workspace = true

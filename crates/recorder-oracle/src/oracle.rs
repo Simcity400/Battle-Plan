@@ -6,10 +6,10 @@ use std::{
     time::Instant,
 };
 
-use installed_content_core::ResolveOptions;
+use content_reader_core::ResolveOptions;
 #[cfg(test)]
-use installed_content_save::Decimal;
-use installed_content_save::{self as save, Save};
+use content_reader_save::Decimal;
+use content_reader_save::{self as save, Save};
 use replay::{campaign::Replay, campaign::SeekResult};
 #[cfg(test)]
 use replay_data::rows::TableRows;
@@ -208,7 +208,7 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         options.game_dir.display(),
         options.user_dir.display()
     );
-    let content = installed_content_core::resolve(&session.identity, &options)?.exact()?;
+    let content = content_reader_core::resolve(&session.identity, &options)?.exact()?;
     engine_executable::executable_tables::initialize(&options.game_dir)?;
     let uncovered_reads = content.layers.report_uncovered_reads();
     println!(
@@ -228,23 +228,23 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         .map_err(ToString::to_string)
         .and_then(|(_, resources)| content_read(resources));
     let railway_adjacency = save::naval_history::RailwayAdjacency::read(&content.layers);
-    let buildings = installed_content_core::buildings::read(&content.layers);
-    let defines = installed_content_core::defines::read(&content.layers);
-    let raid_graph = installed_content_core::province_graph::ProvinceGraph::read(&content.layers);
-    let equipment = installed_content_core::equipment::Database::load_complete(&content.layers);
-    let essential_caps = installed_content_raids::raids::read(&content.layers)
+    let buildings = content_reader_core::buildings::read(&content.layers);
+    let defines = content_reader_core::defines::read(&content.layers);
+    let raid_graph = content_reader_core::province_graph::ProvinceGraph::read(&content.layers);
+    let equipment = content_reader_core::equipment::Database::load_complete(&content.layers);
+    let essential_caps = content_reader_raids::raids::read(&content.layers)
         .map_err(|error| error.to_string())
         .and_then(|raids| raids.essential_caps(equipment.as_ref().map_err(ToString::to_string)?));
     let leader_traits =
-        installed_content_core::leader_traits::read(&content.layers).map(|(traits, _)| traits);
-    let sub_units = installed_content_core::unit_leader::sub_units(&content.layers);
-    let regions = installed_content_regions::regions::read(&content.layers);
-    let intelligence = installed_content_core::intelligence::read_agency_upgrades(&content.layers);
+        content_reader_core::leader_traits::read(&content.layers).map(|(traits, _)| traits);
+    let sub_units = content_reader_core::unit_leader::sub_units(&content.layers);
+    let regions = content_reader_regions::regions::read(&content.layers);
+    let intelligence = content_reader_core::intelligence::read_agency_upgrades(&content.layers);
     let temperature = raid_graph
         .as_ref()
         .map_err(|error| io::Error::other(error.to_string()))
         .and_then(|(graph, geometry)| {
-            installed_content_weather::weather::temperature::read_with(&content.layers, graph, geometry)
+            content_reader_weather::weather::temperature::read_with(&content.layers, graph, geometry)
         });
     let province_modifiers = weather::ProvinceModifierContent::read(&content.layers, &save);
     let read_hours = last_read_hours(&replay, frame.branch, hour)?;
@@ -498,7 +498,7 @@ fn compare_core(
     boundary: SampleBoundary,
     save: &Save,
     membership: ContentRead<'_, save::PartialMapMembership>,
-    equipment: ContentRead<'_, installed_content_core::equipment::Database>,
+    equipment: ContentRead<'_, content_reader_core::equipment::Database>,
     read_hours: Option<BTreeMap<TableId, Hour>>,
 ) -> io::Result<Report> {
     validate_identity(frame, save)?;
@@ -677,7 +677,7 @@ fn compare_core(
     Ok(report)
 }
 
-fn port_types(buildings: &installed_content_core::buildings::Buildings) -> BTreeSet<Vec<u8>> {
+fn port_types(buildings: &content_reader_core::buildings::Buildings) -> BTreeSet<Vec<u8>> {
     buildings
         .types
         .values()
@@ -690,14 +690,14 @@ struct ExtendedContent<'a> {
     membership: ContentRead<'a, save::PartialMapMembership>,
     base_resources: ContentRead<'a, save::construction::PartialBaseResources>,
     railway_adjacency: ContentRead<'a, save::naval_history::RailwayAdjacency>,
-    buildings: ContentRead<'a, installed_content_core::buildings::Buildings>,
-    defines: ContentRead<'a, installed_content_core::defines::Defines>,
+    buildings: ContentRead<'a, content_reader_core::buildings::Buildings>,
+    defines: ContentRead<'a, content_reader_core::defines::Defines>,
     raid_graph: ContentRead<'a, projects::RaidGraph>,
-    equipment: ContentRead<'a, installed_content_core::equipment::Database>,
+    equipment: ContentRead<'a, content_reader_core::equipment::Database>,
     essential_caps: ContentRead<'a, BTreeMap<Vec<u8>, i32>>,
-    leader_traits: ContentRead<'a, installed_content_core::leader_traits::LeaderTraits>,
-    sub_units: ContentRead<'a, installed_content_core::unit_leader::SubUnits>,
-    intelligence: ContentRead<'a, installed_content_core::intelligence::AgencyUpgrades>,
+    leader_traits: ContentRead<'a, content_reader_core::leader_traits::LeaderTraits>,
+    sub_units: ContentRead<'a, content_reader_core::unit_leader::SubUnits>,
+    intelligence: ContentRead<'a, content_reader_core::intelligence::AgencyUpgrades>,
     temperature: ContentRead<'a, replay_data::temperature::Content>,
     province_modifiers: ContentRead<'a, weather::ProvinceModifierContent>,
 }

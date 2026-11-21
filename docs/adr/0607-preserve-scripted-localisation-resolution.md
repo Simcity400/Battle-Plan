@@ -10,4 +10,4 @@ A random list preserves authored member order and the ordered seed assignments b
 
 Lookup of the final bracket segment after built-in properties uses the authored name's exact bytes. Later definitions replace earlier ones. An unread suffix can define an otherwise absent name or redefine an existing one. A later readable definition supersedes uncertainty from earlier files. The evaluator can report an undefined name as empty only when the remaining files cannot supply it. The inventory reports where each unsettled read began and why.
 
-[Scripted localisation reader and tests](../../crates/installed-content-scripted-localisation/src/scripted_localisation.rs)
+[Scripted localisation reader and tests](../../crates/content-reader-scripted-localisation/src/scripted_localisation.rs)

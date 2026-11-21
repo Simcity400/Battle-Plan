@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_core::buildings;
+use content_reader_core::buildings;
 use replay_data::rows::{
     CountryLinkRow, FloatingHarborDeploymentRow, LexicalTokenRow, LocalPlayerRow, NavalBaseRow,
     ProvinceRow, ProvinceSupplyRow, RaidScope, RaidTargetStatusRow, StateRow, TABLE_COUNT,
@@ -138,7 +138,7 @@ const SEA: u32 = 14;
 fn assets() -> MapBuildingAssets {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let types = buildings::parse(TYPES, &installed_content_core::key_names::KeyNames::default()).unwrap();
+    let types = buildings::parse(TYPES, &content_reader_core::key_names::KeyNames::default()).unwrap();
     let site = |state, province: u32| BuildingPosition {
         state,
         kind: String::new(),

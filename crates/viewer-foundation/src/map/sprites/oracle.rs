@@ -7,7 +7,7 @@ pub fn render_batch(
     queue: &wgpu::Queue,
     batch: &Batch,
 ) -> (Vec<u8>, BTreeMap<String, u64>, usize) {
-    let page = dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
+    let page = dds::Texture::from_rgba8(content_reader_image::Rgba8Image {
         width: 1,
         height: 1,
         pixels: vec![255; 4],

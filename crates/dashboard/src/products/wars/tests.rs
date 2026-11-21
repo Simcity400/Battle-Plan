@@ -227,7 +227,7 @@ fn a_names_goal_its_type_tokens_text_and_its_states_name_are_read_as_they_stood_
 
 #[test]
 fn a_countrys_naming_operands_at_an_hour_are_its_holders_look_with_every_overlord_it_reaches() {
-    use installed_content_country_names::country_names::Operands;
+    use content_reader_country_names::country_names::Operands;
     use recorder_derive::looks::Look;
     let ops = |tag: &str, overlord: Option<u32>| Ok(Operands::from_parts(overlord, [tag, "", "", "", "", ""].map(str::to_owned)));
     let look = |slot: u32, chain: Vec<(u32, Result<Operands, String>)>| Look { slot, id: slot, chain, ..Default::default() };

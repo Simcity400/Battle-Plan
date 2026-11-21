@@ -4,13 +4,13 @@ use dashboard_core::{
     findings::{Finding, Kind},
     presentation::Presentation,
 };
-use installed_content_core::content::diagnostics::{self, Diagnostics, Once};
-use installed_content_core::{
+use content_reader_core::content::diagnostics::{self, Diagnostics, Once};
+use content_reader_core::{
     ResolvedLayers, content::ResolvedContent, gui::native::resources, gui::native::sprites::Plain,
 };
-use installed_content_gfx::gfx::SpriteSet;
-use installed_content_image::{Rgba8Image, native::Decode};
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_gfx::gfx::SpriteSet;
+use content_reader_image::{Rgba8Image, native::Decode};
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -175,11 +175,11 @@ impl<T> Drawn<T> {
 pub fn created_gui_sprite<'a>(
     sprites: &'a SpriteSet,
     name: &str,
-) -> io::Result<&'a installed_content_gfx::gfx::SpriteType> {
+) -> io::Result<&'a content_reader_gfx::gfx::SpriteType> {
     if let Some(sprite) = sprites.find(name).map_err(invalid)? {
         return Ok(sprite);
     }
-    let fallback = std::str::from_utf8(installed_content_core::gui::native::resources::FALLBACK_SPRITE)
+    let fallback = std::str::from_utf8(content_reader_core::gui::native::resources::FALLBACK_SPRITE)
         .expect("the executable's fallback sprite literal is ASCII");
     sprites
         .lookup(fallback)
@@ -189,7 +189,7 @@ pub fn created_gui_sprite<'a>(
 pub fn text_icon_sprite<'a>(
     sprites: &'a SpriteSet,
     alias: &str,
-) -> io::Result<&'a installed_content_gfx::gfx::SpriteType> {
+) -> io::Result<&'a content_reader_gfx::gfx::SpriteType> {
     let prefixed = format!("GFX_{alias}");
     if let Some(sprite) = sprites.find(&prefixed).map_err(invalid)? {
         return Ok(sprite);
@@ -365,7 +365,7 @@ pub fn localised_in_details(
     })
 }
 
-pub use installed_content_localisation::localisation::{display_text, plain_text};
+pub use content_reader_localisation::localisation::{display_text, plain_text};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -478,7 +478,7 @@ impl OwnRefusals {
     }
 
     pub fn fallback_line(&self) -> Option<String> {
-        installed_content_core::content::overlay_refusal_line(&self.fallbacks)
+        content_reader_core::content::overlay_refusal_line(&self.fallbacks)
     }
 
     pub fn fallbacks(&self) -> &BTreeSet<String> {
@@ -546,9 +546,9 @@ fn scope<T>(own: &mut OwnRefusals, reports: bool, isolated: bool, run: impl FnOn
         });
         let _exit = Exit(own);
         let (value, fallbacks) = if isolated {
-            installed_content_core::content::observe_overlay_refusals_isolated(run)
+            content_reader_core::content::observe_overlay_refusals_isolated(run)
         } else {
-            installed_content_core::content::observe_overlay_refusals(run)
+            content_reader_core::content::observe_overlay_refusals(run)
         };
         SCOPES.with(|scopes| {
             if let Some(active) = scopes.borrow_mut().last_mut() {
@@ -597,7 +597,7 @@ pub fn credit(noted: &OwnRefusals) {
             active.own.merge(noted);
         }
     });
-    installed_content_core::content::credit_overlay_refusals(&noted.fallbacks);
+    content_reader_core::content::credit_overlay_refusals(&noted.fallbacks);
 }
 
 pub fn used(reader: Reader) {
@@ -721,22 +721,22 @@ pub struct Catalogue {
     pub presentation: Presentation,
     pub localisation: Arc<Localisation>,
     pub sprites: SpriteSet,
-    guis: installed_content_core::content::ByMode<
+    guis: content_reader_core::content::ByMode<
         Once<(
-            Result<installed_content_core::gui::native::Guis, String>,
+            Result<content_reader_core::gui::native::Guis, String>,
             BTreeSet<String>,
         )>,
     >,
     presentation_localisation:
-        installed_content_core::content::ByMode<Once<(Result<Arc<Localisation>, String>, BTreeSet<String>)>>,
-    pub gui_decode: Result<installed_content_image::native::Decode, String>,
+        content_reader_core::content::ByMode<Once<(Result<Arc<Localisation>, String>, BTreeSet<String>)>>,
+    pub gui_decode: Result<content_reader_image::native::Decode, String>,
     pub verification: Vec<String>,
     pub warnings: Vec<String>,
     pub recorded_language: String,
     refused: Mutex<Refusals>,
     findings: Option<Mutex<BTreeSet<Finding>>>,
     scripted: Once<Result<crate::scripted_text::ScriptedContent, String>>,
-    war_names: Once<Result<installed_content_wargoals::wargoals::Names, String>>,
+    war_names: Once<Result<content_reader_wargoals::wargoals::Names, String>>,
     pub state_content: Arc<Once<Result<crate::scripted_text::StateContent, String>>>,
     recorded: Once<Arc<Catalogue>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -752,20 +752,20 @@ impl Catalogue {
         let _ = self.recorded.set(recorded);
     }
 
-    pub fn guis(&self) -> io::Result<&installed_content_core::gui::native::Guis> {
+    pub fn guis(&self) -> io::Result<&content_reader_core::gui::native::Guis> {
         let (guis, fallbacks) = self.guis.current().get_or_init(|| {
             #[cfg(any(test, feature = "test-support"))]
             self.content_loads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let (guis, fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+            let (guis, fallbacks) = content_reader_core::content::observe_overlay_refusals(|| {
                 self.content.layers.artwork(
                     "interface windows",
-                    installed_content_core::gui::native::read_layers,
+                    content_reader_core::gui::native::read_layers,
                 )
             });
             (guis.map_err(|error| error.to_string()), fallbacks)
         });
-        installed_content_core::content::credit_overlay_refusals(fallbacks);
+        content_reader_core::content::credit_overlay_refusals(fallbacks);
         guis.as_ref().map_err(invalid)
     }
 
@@ -776,9 +776,9 @@ impl Catalogue {
         }
         let (localisation, fallbacks) = self.presentation_localisation.current().get_or_init(|| {
             let (localisation, fallbacks) =
-                installed_content_core::content::observe_overlay_refusals(|| {
+                content_reader_core::content::observe_overlay_refusals(|| {
                     layers.artwork("localisation", |stack| {
-                        installed_content_localisation::localisation::read(
+                        content_reader_localisation::localisation::read(
                             stack,
                             &self.localisation.language,
                         )
@@ -791,7 +791,7 @@ impl Catalogue {
                 fallbacks,
             )
         });
-        installed_content_core::content::credit_overlay_refusals(fallbacks);
+        content_reader_core::content::credit_overlay_refusals(fallbacks);
         localisation.clone().map_err(invalid)
     }
 
@@ -800,13 +800,13 @@ impl Catalogue {
         self.guis.ordinary().get().is_some()
     }
 
-    pub fn war_names(&self) -> Result<&installed_content_wargoals::wargoals::Names, String> {
+    pub fn war_names(&self) -> Result<&content_reader_wargoals::wargoals::Names, String> {
         self.war_names
             .get_or_init(|| {
                 #[cfg(any(test, feature = "test-support"))]
                 self.content_loads
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                installed_content_wargoals::wargoals::read_names(&self.content.layers)
+                content_reader_wargoals::wargoals::read_names(&self.content.layers)
                     .map_err(|e| e.to_string())
             })
             .as_ref()
@@ -819,11 +819,11 @@ impl Catalogue {
         verification: Vec<String>,
         warnings: Vec<String>,
         recorded_language: String,
-        gui_decode: Result<installed_content_image::native::Decode, String>,
+        gui_decode: Result<content_reader_image::native::Decode, String>,
     ) -> io::Result<Self> {
         let sprites = content
             .layers
-            .artwork("interface sprites", installed_content_gfx::gfx::read)?;
+            .artwork("interface sprites", content_reader_gfx::gfx::read)?;
         Ok(Self::from_parts(
             content,
             presentation,
@@ -845,7 +845,7 @@ impl Catalogue {
         verification: Vec<String>,
         mut warnings: Vec<String>,
         recorded_language: String,
-        gui_decode: Result<installed_content_image::native::Decode, String>,
+        gui_decode: Result<content_reader_image::native::Decode, String>,
     ) -> Self {
         for (label, count) in [
             ("logged localisation diagnostics", localisation.logged.len()),
@@ -886,7 +886,7 @@ impl Catalogue {
     }
 
     pub fn of_layers(layers: ResolvedLayers, language: &str) -> io::Result<Self> {
-        let localisation = Arc::new(installed_content_localisation::localisation::read(
+        let localisation = Arc::new(content_reader_localisation::localisation::read(
             &layers, language,
         )?);
         let content = Arc::new(ResolvedContent {
@@ -1037,7 +1037,7 @@ impl Catalogue {
             .map_err(Clone::clone)
     }
 
-    pub fn defines(&self) -> Result<&installed_content_core::defines::Defines, String> {
+    pub fn defines(&self) -> Result<&content_reader_core::defines::Defines, String> {
         Ok(self.scripted_content()?.environment()?.defines())
     }
 
@@ -1287,7 +1287,7 @@ fn stack_gui_texture(
             String::from_utf8_lossy(name)
         ))
     })?;
-    installed_content_image::rgba::dds_base(texture.image)
+    content_reader_image::rgba::dds_base(texture.image)
 }
 
 pub fn gui_texture_frame_png(
@@ -1321,7 +1321,7 @@ fn image_frame_png(
 
 pub fn sprite_frame_png(
     layers: &ResolvedLayers,
-    sprite: &installed_content_gfx::gfx::SpriteType,
+    sprite: &content_reader_gfx::gfx::SpriteType,
     decode: Decode,
     frame: u32,
     max_edge: u32,
@@ -1338,8 +1338,8 @@ pub fn sprite_frame_png(
     cache.get(sprite_image_key(sprite, decode, frame, max_edge), render)
 }
 
-fn strip_frame(sprite: &installed_content_gfx::gfx::SpriteType, frame: u32) -> bool {
-    use installed_content_core::gui::native::sprites::SpriteKind;
+fn strip_frame(sprite: &content_reader_gfx::gfx::SpriteType, frame: u32) -> bool {
+    use content_reader_core::gui::native::sprites::SpriteKind;
     match &sprite.facts.kind {
         SpriteKind::Plain(plain) | SpriteKind::FrameAnimated { plain, .. } => {
             frame < plain.frames.max(0) as u32
@@ -1350,8 +1350,8 @@ fn strip_frame(sprite: &installed_content_gfx::gfx::SpriteType, frame: u32) -> b
 
 pub fn sprite_artwork<T>(
     layers: &ResolvedLayers,
-    sprite: &installed_content_gfx::gfx::SpriteType,
-    mut render: impl FnMut(&ResolvedLayers, &installed_content_gfx::gfx::SpriteType) -> io::Result<T>,
+    sprite: &content_reader_gfx::gfx::SpriteType,
+    mut render: impl FnMut(&ResolvedLayers, &content_reader_gfx::gfx::SpriteType) -> io::Result<T>,
 ) -> io::Result<T> {
     let shown = layers.presentation().shows_visual_mods();
     layers.artwork(&format!("sprite {}", sprite.name), |stack| {
@@ -1373,12 +1373,12 @@ pub fn recorded_sprites(layers: &ResolvedLayers) -> Arc<Result<SpriteSet, String
     #[derive(Default)]
     struct Recorded(Once<Arc<Result<SpriteSet, String>>>);
     Arc::clone(layers.derived::<Recorded>().0.get_or_init(|| {
-        Arc::new(installed_content_gfx::gfx::read(layers).map_err(|error| error.to_string()))
+        Arc::new(content_reader_gfx::gfx::read(layers).map_err(|error| error.to_string()))
     }))
 }
 
 pub fn sprite_image_key(
-    sprite: &installed_content_gfx::gfx::SpriteType,
+    sprite: &content_reader_gfx::gfx::SpriteType,
     decode: Decode,
     frame: u32,
     max_edge: u32,
@@ -1388,7 +1388,7 @@ pub fn sprite_image_key(
         sprite.name,
         sprite.facts,
         decode,
-        installed_content_core::content::artwork_mode()
+        content_reader_core::content::artwork_mode()
     )
 }
 
@@ -1398,11 +1398,11 @@ pub fn authored_frame(frame: i32) -> u32 {
 
 pub fn sprite_frames_png(
     layers: &ResolvedLayers,
-    requests: &[(&installed_content_gfx::gfx::SpriteType, u32)],
+    requests: &[(&content_reader_gfx::gfx::SpriteType, u32)],
     decode: Decode,
     max_edge: u32,
 ) -> io::Result<()> {
-    use installed_content_core::gui::native::sprites::SpriteKind;
+    use content_reader_core::gui::native::sprites::SpriteKind;
     let layers = layers.presentation();
     let cache = layers.derived::<SpriteImages>();
     let mut keys = BTreeSet::new();
@@ -1480,28 +1480,28 @@ impl SpriteImages {
                 .or_default(),
         );
         let (result, fallbacks) = slot.get_or_init(|| {
-            let (result, fallbacks) = installed_content_core::content::observe_overlay_refusals(render);
+            let (result, fallbacks) = content_reader_core::content::observe_overlay_refusals(render);
             (result.map_err(|error| error.to_string()), fallbacks)
         });
-        installed_content_core::content::credit_overlay_refusals(fallbacks);
+        content_reader_core::content::credit_overlay_refusals(fallbacks);
         result.clone().map_err(invalid)
     }
 
     fn unkept(render: impl FnOnce() -> io::Result<String>) -> io::Result<String> {
-        let (result, fallbacks) = installed_content_core::content::observe_overlay_refusals(render);
-        installed_content_core::content::credit_overlay_refusals(&fallbacks);
+        let (result, fallbacks) = content_reader_core::content::observe_overlay_refusals(render);
+        content_reader_core::content::credit_overlay_refusals(&fallbacks);
         result.map_err(|error| invalid(error.to_string()))
     }
 }
 
 fn render_sprite_frame_png(
     layers: &ResolvedLayers,
-    sprite: &installed_content_gfx::gfx::SpriteType,
+    sprite: &content_reader_gfx::gfx::SpriteType,
     decode: Decode,
     frame: u32,
     max_edge: u32,
 ) -> io::Result<String> {
-    use installed_content_core::gui::native::sprites::SpriteKind;
+    use content_reader_core::gui::native::sprites::SpriteKind;
     let (plain, animated) = match &sprite.facts.kind {
         SpriteKind::Plain(plain) => (plain, None),
         SpriteKind::FrameAnimated { plain, animation } => (plain, Some(animation)),
@@ -1909,7 +1909,7 @@ pub mod tests {
     fn gui_sprite_binding_uses_native_inheritance_and_kind_local_names() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use installed_content_core::gui::native;
+        use content_reader_core::gui::native;
         let gui = native::read(
             br#"guiTypes = { containerWindowType = {
             name = topbar
@@ -1923,7 +1923,7 @@ pub mod tests {
         let guis = native::Guis::new(vec![("interface/topbar.gui".into(), gui)]);
         let mut warnings = Vec::new();
         assert_eq!(
-            installed_content_core::gui::native::window_button_sprite(
+            content_reader_core::gui::native::window_button_sprite(
                 &guis,
                 "TOPBAR",
                 "PLAYER_FLAG",
@@ -1939,7 +1939,7 @@ pub mod tests {
     fn a_missing_gui_sprite_uses_the_native_fallback_but_a_refused_one_does_not() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let facts = installed_content_core::gui::native::sprites::read_sprites(
+        let facts = content_reader_core::gui::native::sprites::read_sprites(
             br#"spriteTypes = {
             spriteType = { name = GFX_default_fallback_texture texturefile = fallback.dds }
             spriteType = { name = refused noOfFrames = -1 }
@@ -1969,7 +1969,7 @@ pub mod tests {
     fn text_icon_sprite_selects_native_prefix_then_bare_and_keeps_named_refusal() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let facts = installed_content_core::gui::native::sprites::read_sprites(
+        let facts = content_reader_core::gui::native::sprites::read_sprites(
             br#"spriteTypes = {
                 spriteType = { name = GFX_mod_alias texturefile = prefixed.dds }
                 spriteType = { name = mod_alias texturefile = bare.dds }
@@ -2013,7 +2013,7 @@ pub mod tests {
         let image = gui_texture(
             &layers,
             b"gfx/interface/icon.png",
-            installed_content_image::native::Decode {
+            content_reader_image::native::Decode {
                 force_pow2_textures: true,
             },
         )
@@ -2056,10 +2056,10 @@ pub mod tests {
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, format!("\u{feff}{yml}")).unwrap();
         let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        installed_content_localisation::localisation::read(&layers, "english").unwrap()
+        content_reader_localisation::localisation::read(&layers, "english").unwrap()
     }
 
-    pub fn loaded_templates(text: &str) -> Arc<installed_content_core::faction_templates::Catalog> {
+    pub fn loaded_templates(text: &str) -> Arc<content_reader_core::faction_templates::Catalog> {
         let (catalogue, _folder) =
             folder_catalogue(&[("common/factions/templates/test.txt", text)]);
         catalogue.content.layers.faction_templates().unwrap()
@@ -2099,8 +2099,8 @@ pub mod tests {
     pub fn layers_catalogue(layers: ResolvedLayers) -> Catalogue {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let localisation = installed_content_localisation::localisation::read(&layers, "english").unwrap();
-        let sprites = installed_content_gfx::gfx::read(&layers).unwrap();
+        let localisation = content_reader_localisation::localisation::read(&layers, "english").unwrap();
+        let sprites = content_reader_gfx::gfx::read(&layers).unwrap();
         Catalogue {
             content: Arc::new(ResolvedContent {
                 layers,
@@ -2437,7 +2437,7 @@ pub mod tests {
         let (catalogue, _folder) =
             folder_catalogue(&[("outside_policy/synthetic.txt", "independent fixture")]);
         let reads = catalogue.content.layers.report_uncovered_reads();
-        let ((entries, lines, warnings), _) = installed_content_core::content::diagnostics::capture(|| {
+        let ((entries, lines, warnings), _) = content_reader_core::content::diagnostics::capture(|| {
             catalogue
                 .content
                 .layers

@@ -1,7 +1,7 @@
 
 #[cfg(test)]
 use crate::subunit_files::subunit_keys;
-pub use installed_content_equipment_graphics::equipment_graphics::authored_fixed5;
+pub use content_reader_equipment_graphics::equipment_graphics::authored_fixed5;
 use std::sync::Arc;
 use std::{
     borrow::Cow,
@@ -9,7 +9,7 @@ use std::{
     io,
 };
 
-use installed_content_core::{
+use content_reader_core::{
     ResolvedLayers, equipment::Database, equipment::Equipment, parser, parser::Item, parser::Value,
     unit_leader::{SubUnits, needs},
 };
@@ -119,7 +119,7 @@ impl Content {
                 .get_or_init(|| Database::load_complete(layers))?,
             ..Self::default()
         };
-        for path in installed_content_core::unit_leader::sub_unit_files(layers)? {
+        for path in content_reader_core::unit_leader::sub_unit_files(layers)? {
             let shown = path.text();
             let document = parser::parse(&path.read(layers)?)
                 .map_err(|error| invalid(format!("{shown}: {error}")))?;
@@ -129,7 +129,7 @@ impl Content {
         }
         let units = layers
             .derived::<crate::catalogue::CachedResult<SubUnits>>()
-            .get_or_init(|| installed_content_core::unit_leader::sub_units(layers))?;
+            .get_or_init(|| content_reader_core::unit_leader::sub_units(layers))?;
         content.take_database(&units)?;
         content.canonicalize_requirements()?;
         Ok(content)
@@ -206,7 +206,7 @@ impl Content {
             .zip(documents)
             .map(|(path, text)| (path.as_str(), std::str::from_utf8(text).unwrap()))
             .collect();
-        let (equipment, _) = installed_content_core::equipment::fixture::load(&files);
+        let (equipment, _) = content_reader_core::equipment::fixture::load(&files);
         assert!(equipment.lost.is_none(), "{:?}", equipment.lost);
         let mut content = Self {
             equipment: Arc::new(equipment),
@@ -248,7 +248,7 @@ impl Content {
     pub fn equipment_model(&self, key: &str) -> io::Result<EquipmentModel<'_>> {
         let equipment = self.equipment(key)?;
         let archetype = self.archetype_of(key, equipment)?;
-        let model = installed_content_core::parser::text(&equipment.model).map_err(|refused| {
+        let model = content_reader_core::parser::text(&equipment.model).map_err(|refused| {
             invalid(format!("equipment {key} model cannot be read: {refused}"))
         })?;
         Ok(EquipmentModel {

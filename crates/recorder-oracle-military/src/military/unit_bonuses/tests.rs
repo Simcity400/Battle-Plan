@@ -67,15 +67,15 @@ fn rows() -> Vec<CountryUnitBonusRow> {
 }
 
 fn saved(list: &str) -> Vec<UnitBonus> {
-    let name = |selector: usize| installed_content_core::equipment::stat_metadata()[selector].0;
+    let name = |selector: usize| content_reader_core::equipment::stat_metadata()[selector].0;
     let text = format!(
         "countries={{GER={{deployment={{unit_modifiers={{{}}}}}}}}}",
         list.replace("STAT0", name(0))
             .replace("STAT3", name(3))
             .replace("STAT5", name(5))
     );
-    let document = installed_content_core::parser::parse(text.as_bytes()).unwrap();
-    installed_content_save::production::parse(&document.items)
+    let document = content_reader_core::parser::parse(text.as_bytes()).unwrap();
+    content_reader_save::production::parse(&document.items)
         .unwrap()
         .unit_bonuses
         .remove(b"GER".as_slice())

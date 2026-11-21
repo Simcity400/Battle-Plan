@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use installed_content_core::parser;
+use content_reader_core::parser;
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -191,7 +191,7 @@ pub fn user_folder(
 }
 
 pub fn language(user: &Path) -> io::Result<String> {
-    installed_content_settings::settings::read_keys(user)?
+    content_reader_settings::settings::read_keys(user)?
         .language()
         .ok_or_else(|| io::Error::other("settings.txt names no game language"))
 }

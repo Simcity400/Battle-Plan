@@ -10,3 +10,6 @@ license.workspace = true
 doctest = false
 test = false
 bench = false
+
+[lints]
+workspace = true

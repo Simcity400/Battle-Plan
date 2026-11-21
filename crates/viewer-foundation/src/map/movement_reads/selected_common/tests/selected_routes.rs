@@ -197,8 +197,8 @@ fn selected_army_route_takes_the_owner_area_early_accept_before_later_operands()
     }
     let mut assets = assets();
     assets.geometry.land.extend([1, 2, 3]);
-    assets.moves = Ok(installed_content_unit_path::unit_path::MoveGraph::new(
-        &installed_content_core::province_graph::ProvinceGraph::default(),
+    assets.moves = Ok(content_reader_unit_path::unit_path::MoveGraph::new(
+        &content_reader_core::province_graph::ProvinceGraph::default(),
         &assets.geometry,
     ));
     let world = World::read(&frame, assets.trigger_content.facts());
@@ -209,7 +209,7 @@ fn selected_army_route_takes_the_owner_area_early_accept_before_later_operands()
         location: 1,
         ..Default::default()
     };
-    let mover = installed_content_unit_path::unit_path::Mover {
+    let mover = content_reader_unit_path::unit_path::Mover {
         graph: assets.moves.as_ref().unwrap(),
         world: &moves,
     };

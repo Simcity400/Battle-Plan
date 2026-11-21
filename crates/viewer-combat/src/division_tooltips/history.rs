@@ -118,7 +118,7 @@ fn medal_effects(
     let medals = content
         .medals
         .get_or_init(|| {
-            installed_content_core::unit_medals::Medals::load(&scripted.layers.layers, &|name| {
+            content_reader_core::unit_medals::Medals::load(&scripted.layers.layers, &|name| {
                 std::str::from_utf8(name)
                     .ok()
                     .and_then(|name| definitions.index(name).ok().map(|index| index.is_some()))

@@ -968,7 +968,7 @@ b"
 
     #[test]
     fn visual_mod_selections_refuse_only_empty_and_repeated_ids() {
-        let choice = |id: &str| installed_content_core::content::visual::Choice {
+        let choice = |id: &str| content_reader_core::content::visual::Choice {
             id: id.into(),
             name: "Art".into(),
         };

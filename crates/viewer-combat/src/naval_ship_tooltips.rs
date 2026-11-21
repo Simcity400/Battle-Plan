@@ -1,4 +1,4 @@
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     rows::NavalCombatDetailsRow, rows::NavalCombatShipRow, rows::VariantDefinitionRow, rows::tables,
 };
@@ -668,7 +668,7 @@ fn evacuation_names(
     let links = rows::<tables::CountryLinks>(frame).map_err(|error| error.to_string())?;
     let owner = country_slot(&links, row.owner)?
         .ok_or_else(|| format!("evacuation state {id} has null country owner"))?;
-    let names = installed_content_country_names::country_names::CountryNames::read(frame, loc);
+    let names = content_reader_country_names::country_names::CountryNames::read(frame, loc);
     let country = names.name(owner)?;
     Ok((displayable(icons, state)?, displayable(icons, country)?))
 }

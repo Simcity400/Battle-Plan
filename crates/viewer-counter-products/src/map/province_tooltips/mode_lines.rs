@@ -1,5 +1,5 @@
 use super::{Context, ModeHover, line};
-use installed_content_localisation::localisation::Argument as Arg;
+use content_reader_localisation::localisation::Argument as Arg;
 use replay_data::{rows::Recorded, rows::tables};
 use viewer_foundation::map::native_text::FLAG;
 use viewer_foundation::tooltip_text::Tooltip;
@@ -577,7 +577,7 @@ pub(super) struct OccupationDefines {
 }
 
 impl OccupationDefines {
-    pub(super) fn load(defines: &installed_content_core::defines::Defines) -> std::io::Result<Self> {
+    pub(super) fn load(defines: &content_reader_core::defines::Defines) -> std::io::Result<Self> {
         let value = |name: &str| defines.fixed5("NResistance", name);
         let pairs = defines.fixed5_array("NResistance", "RESISTANCE_TARGET_MODIFIER_STATE_VP")?;
         if pairs.len() % 2 != 0 {
@@ -668,7 +668,7 @@ mod tests {
 
     #[test]
     fn occupation_defines_use_the_resistance_section_and_keep_inclusive_population_cutoffs() {
-        let defines = installed_content_core::defines::Defines::new().unwrap();
+        let defines = content_reader_core::defines::Defines::new().unwrap();
         let names = [
             "RESISTANCE_TARGET_BASE",
             "RESISTANCE_TARGET_MODIFIER_HAS_CLAIM",

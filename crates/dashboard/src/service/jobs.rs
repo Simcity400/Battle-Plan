@@ -215,7 +215,7 @@ impl Inner {
             return;
         };
         let warming = Arc::clone(source);
-        job_priority::spawn(installed_content_core::content::carry_generation(move || {
+        job_priority::spawn(content_reader_core::content::carry_generation(move || {
             warming.in_scope(|| dashboard_base::content::warm(&warming, &content));
         }));
     }
@@ -495,7 +495,7 @@ impl Inner {
         self.content.update(|_| ());
         self.catch_up()?;
         reply.presentation_generation = self.presentation_generation();
-        match installed_content_core::content::visual::plan(
+        match content_reader_core::content::visual::plan(
             &options,
             &selected,
             &recorded,
@@ -830,7 +830,7 @@ pub(super) struct MapSettingsJob {
     pub(super) source: Option<Arc<Source>>,
     pub(super) settings: Option<CampaignMapSettings>,
     pub(super) flip: Option<crate::protocol::MapSetting>,
-    pub(super) options: installed_content_core::ResolveOptions,
+    pub(super) options: content_reader_core::ResolveOptions,
 }
 
 pub(super) struct OpenJob {

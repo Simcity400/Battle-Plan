@@ -119,7 +119,7 @@ pub const TABLES: &[TableId] = &[
 
 fn read_tables() -> Vec<TableId> {
     let mut tables = TABLES.to_vec();
-    tables.extend(installed_content_country_names::country_names::TABLES);
+    tables.extend(content_reader_country_names::country_names::TABLES);
     tables.sort_unstable();
     tables.dedup();
     tables
@@ -186,11 +186,11 @@ fn reply(frame: &DecodedFrame, p: &WargoalsAsk, slot: u32, catalogue: &Result<Ar
     let held = catalogue.as_ref().ok().map(|cat| {
         cat.content
             .layers
-            .derived::<installed_content_core::content::diagnostics::Once<Result<installed_content_wargoals::wargoals::Database, String>>>()
+            .derived::<content_reader_core::content::diagnostics::Once<Result<content_reader_wargoals::wargoals::Database, String>>>()
     });
     let definitions = match (catalogue.as_ref(), held.as_ref()) {
         (Ok(cat), Some(held)) => held
-            .get_or_init(|| installed_content_wargoals::wargoals::read(&cat.content.layers).map_err(|why| why.to_string()))
+            .get_or_init(|| content_reader_wargoals::wargoals::read(&cat.content.layers).map_err(|why| why.to_string()))
             .as_ref()
             .map_err(Clone::clone),
         (Err(why), _) => Err(why.clone()),
@@ -269,12 +269,12 @@ fn selected_country<'a>(
 }
 fn localised_goal_name(
     frame: &DecodedFrame,
-    localisation: &installed_content_localisation::localisation::Localisation,
+    localisation: &content_reader_localisation::localisation::Localisation,
     definition: &[u8],
     actor: u32,
     recipient: u32,
 ) -> Result<String, String> {
-    let names = installed_content_country_names::country_names::CountryNames::read_selected(
+    let names = content_reader_country_names::country_names::CountryNames::read_selected(
         frame,
         localisation,
         [actor, recipient],
@@ -287,11 +287,11 @@ fn localised_goal_name(
         &[
             (
                 "ACTOR",
-                installed_content_localisation::localisation::Argument::Text(&actor),
+                content_reader_localisation::localisation::Argument::Text(&actor),
             ),
             (
                 "TARGET",
-                installed_content_localisation::localisation::Argument::Text(&target),
+                content_reader_localisation::localisation::Argument::Text(&target),
             ),
         ],
         View::Plain,

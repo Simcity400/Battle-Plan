@@ -12,4 +12,4 @@ For this request, keep same-medium edges. Embarkation needs the origin's corresp
 
 Share reach for the same army key and world. The engine search has no node limit, closes per province and uses admission independent of accumulated cost. Its only cost admission gate is a raw zero checked before scaling. This permits a flood fill for reach-only queries. Search proven edges first, then paths a missing operand could permit. A known admitted path proves reach, and absence even after uncertain edges proves refusal. Otherwise report the missing fact. A missing neighbour table leaves unreached destinations open. The search can pause on an edge and resume without changing its final answers. Use undirected components of edges without a proved refusal to eliminate searches only when the component cannot reach the destination or encounter a missing neighbour table.
 
-[Reach and access rules](../../crates/installed-content-unit-path/src/unit_path.rs)
+[Reach and access rules](../../crates/content-reader-unit-path/src/unit_path.rs)

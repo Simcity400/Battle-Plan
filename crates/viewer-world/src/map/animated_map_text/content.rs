@@ -1,10 +1,10 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use installed_content_core::{
+use content_reader_core::{
     ResolvedLayers, defines::Defines, gui::native::sprites,
     gui::native::sprites::AnimatedMapTextDefinition, gui::native::sprites::ObjectKind,
 };
-use installed_content_image::native::Decode;
+use content_reader_image::native::Decode;
 use shader_pipeline::library::Effect;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

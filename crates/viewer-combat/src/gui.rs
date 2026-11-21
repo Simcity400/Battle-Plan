@@ -1,5 +1,5 @@
 use super::{Drawn, ScrollTarget, Selection, TooltipHit, Values, binding::Bindings};
-use installed_content_core::{crt::truncate_f32, gui::native::Element, gui::native::Kind};
+use content_reader_core::{crt::truncate_f32, gui::native::Element, gui::native::Kind};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -20,8 +20,8 @@ pub trait CombatResources: Resources + native_gui::Sheets {
     fn flag_texture(&self, key: &str, small: bool) -> Option<native_gui::Texture>;
     fn button_sounds(
         &self,
-        button: &installed_content_core::gui::native::Button,
-    ) -> installed_content_core::gui::native::ButtonSounds;
+        button: &content_reader_core::gui::native::Button,
+    ) -> content_reader_core::gui::native::ButtonSounds;
     fn line_chart(
         &self,
         _sprite: &[u8],

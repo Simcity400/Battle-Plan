@@ -2,6 +2,7 @@
 
     python tools/boat.py check -p <crate>... --all-targets
     python tools/boat.py check --workspace --all-targets
+    python tools/boat.py clippy -p <crate>... --all-targets
     python tools/boat.py ui
     python tools/boat.py build --out <dir> --release -p viewer --bin viewer
     python tools/boat.py build --out <dir> --profile release-lto -p collector --lib
@@ -1429,8 +1430,8 @@ def parse_test(rest):
 
 def parse(argv):
     """Returns (mode, cargo arguments, output directory, the test run)."""
-    if not argv or argv[0] not in {"check", "build", "test", "ui", "reconcile", "snapshot"}:
-        raise Failure("Usage: boat.py check <cargo args> | build --out <dir> --release|--profile <name> <cargo args> | test [--out <dir>] [--pdb] [--no-fail-fast] -p <crate> <cargo test args> [-- <test args>] | ui | reconcile | snapshot | wake <arguments of the run that follows>")
+    if not argv or argv[0] not in {"check", "clippy", "build", "test", "ui", "reconcile", "snapshot"}:
+        raise Failure("Usage: boat.py check|clippy <cargo args> | build --out <dir> --release|--profile <name> <cargo args> | test [--out <dir>] [--pdb] [--no-fail-fast] -p <crate> <cargo test args> [-- <test args>] | ui | reconcile | snapshot | wake <arguments of the run that follows>")
     mode, rest = argv[0], list(argv[1:])
     outdir, run = None, None
     if mode in {"ui", "reconcile", "snapshot"}:
@@ -1461,7 +1462,7 @@ def machine_size(mode, cargo):
             raise Failure("BOAT_MACHINE_TYPE must be default or large")
         return os.environ["BOAT_MACHINE_TYPE"]
     packages = sum(arg in {"-p", "--package"} or arg.startswith("--package=") or (arg.startswith("-p") and len(arg) > 2) for arg in cargo)
-    return "default" if mode == "ui" or (mode == "check" and packages == 1 and "--workspace" not in cargo) else "large"
+    return "default" if mode == "ui" or (mode in {"check", "clippy"} and packages == 1 and "--workspace" not in cargo) else "large"
 
 
 def wake_command(argv):
@@ -1553,7 +1554,7 @@ def run(argv):
         running = True
         if plan:
             changed[plan.key] = None
-        status, job = remote(vmid, "ui" if mode == "ui" else mode, token, "--sync", source, *([] if mode == "ui" else [*runner, *cargo]))
+        status, job = remote(vmid, "check" if mode == "clippy" else mode, token, "--sync", source, *([] if mode == "ui" else [*runner, *cargo]))
         claimed = False
         if status == SYNC_FAILED:
             raise Failure("Remote source synchronization failed; see the remote output above")

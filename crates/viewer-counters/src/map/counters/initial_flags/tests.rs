@@ -124,7 +124,7 @@ fn reference(frame: &DecodedFrame) -> io::Result<Countries> {
                         std::str::from_utf8(&row.cosmetic_tag)
                             .map(str::to_owned)
                             .map_err(|_| "country cosmetic tag is not UTF-8".into()),
-                        installed_content_country_names::country_names::original_tag(country, row)
+                        content_reader_country_names::country_names::original_tag(country, row)
                             .map(str::to_owned),
                     ),
                 ))
@@ -157,7 +157,7 @@ impl Stores {
                     return None;
                 }
                 let shade = key.bytes().fold(0u8, u8::wrapping_add);
-                Some(installed_content_image::Rgba8Image {
+                Some(content_reader_image::Rgba8Image {
                     width: cell[0],
                     height: cell[1],
                     pixels: vec![shade; (cell[0] * cell[1] * 4) as usize],

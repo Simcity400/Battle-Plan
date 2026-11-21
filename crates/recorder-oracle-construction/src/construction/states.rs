@@ -20,7 +20,7 @@ fn earlier_states(
 
 pub fn state_pools(
     rows: &[replay_data::rows::StateResourceRow],
-    saved: &BTreeMap<(u32, Vec<u8>), installed_content_save::Decimal>,
+    saved: &BTreeMap<(u32, Vec<u8>), content_reader_save::Decimal>,
     names: &BTreeMap<u32, &[u8]>,
     sampled: &dyn Fn(u32) -> bool,
     report: &mut Report,
@@ -385,7 +385,7 @@ pub fn building_overrides(
 
 pub fn state_cores(
     rows: &[replay_data::rows::StateCoreRow],
-    countries: &BTreeMap<Vec<u8>, installed_content_save::Country>,
+    countries: &BTreeMap<Vec<u8>, content_reader_save::Country>,
     links: &BTreeMap<u32, &CountryRow>,
     reads: &[replay_data::rows::SliceReadRow],
     hour: i32,
@@ -432,8 +432,8 @@ pub fn state_cores(
 #[allow(clippy::too_many_arguments)]
 pub fn state_strategic_locations(
     rows: &[replay_data::rows::StateCoreRow],
-    states: &BTreeMap<u32, installed_content_save::State>,
-    provinces: &BTreeMap<u32, installed_content_save::ProvinceOverride>,
+    states: &BTreeMap<u32, content_reader_save::State>,
+    provinces: &BTreeMap<u32, content_reader_save::ProvinceOverride>,
     state_of: &BTreeMap<u32, u32>,
     names: &BTreeMap<u32, &[u8]>,
     reads: &[replay_data::rows::SliceReadRow],
@@ -556,7 +556,7 @@ fn membership<'a>(
 
 pub fn state_modifiers(
     rows: &[replay_data::rows::StateDynamicModifierRow],
-    saved: &BTreeMap<u32, Vec<installed_content_save::governance::DynamicModifier>>,
+    saved: &BTreeMap<u32, Vec<content_reader_save::governance::DynamicModifier>>,
     links: &BTreeMap<u32, &CountryRow>,
     sampled: &dyn Fn(u32) -> bool,
     report: &mut Report,

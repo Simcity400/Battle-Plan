@@ -90,7 +90,7 @@ impl<'a> Operands<'a> {
 
     pub fn chain(self) -> Chain {
         let candidates = match (&self.cosmetic, &self.group) {
-            (Ok(cosmetic), Ok(group)) => installed_content_country_names::country_names::flag_keys(
+            (Ok(cosmetic), Ok(group)) => content_reader_country_names::country_names::flag_keys(
                 self.original.as_ref().ok().copied(),
                 cosmetic,
                 *group,

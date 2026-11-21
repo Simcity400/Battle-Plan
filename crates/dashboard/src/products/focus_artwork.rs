@@ -451,7 +451,7 @@ mod tests {
         )
         .unwrap();
         let content = super::super::ContentOptions {
-            options: installed_content_core::ResolveOptions {
+            options: content_reader_core::ResolveOptions {
                 game_dir: root.to_owned(),
                 user_dir: root.join("user"),
                 cache_dir: root.join("cache"),
@@ -472,7 +472,7 @@ mod tests {
         replay: Replay,
     ) -> (Source, LoadContext, [crate::catalogue::tests::Folder; 2]) {
         use crate::catalogue::texture_tests::{png_bytes, texture_catalogue};
-        use installed_content_image::Rgba8Image;
+        use content_reader_image::Rgba8Image;
         let image = |value| {
             png_bytes(&Rgba8Image {
                 width: 1,

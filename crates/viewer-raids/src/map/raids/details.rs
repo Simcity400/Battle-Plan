@@ -1,5 +1,5 @@
 use super::tooltips::Details;
-use installed_content_core::gui::native;
+use content_reader_core::gui::native;
 use std::collections::BTreeMap;
 use viewer_foundation::map::{
     gui_resources::hit_rectangle,

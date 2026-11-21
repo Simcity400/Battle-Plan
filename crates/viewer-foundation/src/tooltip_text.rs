@@ -1,5 +1,5 @@
 use dashboard_text::scripted_text::stored_text;
-use installed_content_localisation::{
+use content_reader_localisation::{
     localisation::Argument, localisation::Argument as Arg, localisation::Localisation,
     localisation::Piece, localisation::pieces,
 };
@@ -122,7 +122,7 @@ pub fn token_with(
     displayable(icons, text).map_err(|reason| {
         format!(
             "localisation {} holds {reason}",
-            String::from_utf8_lossy(installed_content_core::parser::c_string(token))
+            String::from_utf8_lossy(content_reader_core::parser::c_string(token))
         )
     })
 }

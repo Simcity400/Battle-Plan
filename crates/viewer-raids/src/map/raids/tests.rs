@@ -1,7 +1,7 @@
 use super::test_support::*;
 use super::*;
-use installed_content_core::buildings::BuildingType;
-use installed_content_raids::{raids::RaidType as Kind, raids::TargetType};
+use content_reader_core::buildings::BuildingType;
+use content_reader_raids::{raids::RaidType as Kind, raids::TargetType};
 use replay_data::{
     rows::BuildingRow, rows::CountryBuildingResourceRow, rows::CountryLinkRow, rows::CountryRow,
     rows::FactionMemberRow, rows::LexicalTokenRow, rows::ProvinceRow, rows::RaidCooldownRow,
@@ -27,9 +27,9 @@ use viewer_foundation::table_access::Refusals;
 
 fn scripted(assets: &mut RaidAssets, text: &str) {
     let mut triggers = (*assets.trigger_content.triggers).clone();
-    triggers.scripted = installed_content_core::scripted_triggers::ScriptedTriggers::parse(
+    triggers.scripted = content_reader_core::scripted_triggers::ScriptedTriggers::parse(
         &[("common/scripted_triggers/test.txt", text.as_bytes())],
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     );
     assets.trigger_content.triggers = Arc::new(triggers);
 }
@@ -46,7 +46,7 @@ fn the_raid_priority_is_the_define_as_a_signed_byte() {
 #[test]
 fn the_target_batch_is_at_least_one() {
     let batch = |source: &str| {
-        let defines = installed_content_core::defines::Defines::new().unwrap();
+        let defines = content_reader_core::defines::Defines::new().unwrap();
         defines
             .load("common/defines/00_defines.lua", source.as_bytes())
             .unwrap();
@@ -255,7 +255,7 @@ fn used_up_types_locked_categories_and_undetected_buildings_offer_nothing() {
     assets.catalog.types[0]
         .target_types
         .push(TargetType::Building(
-            installed_content_raids::raids::BuildingSelector {
+            content_reader_raids::raids::BuildingSelector {
                 types: vec!["dam".into()],
                 ..Default::default()
             },
@@ -487,7 +487,7 @@ fn a_kept_state_building_icon_follows_its_states_order() {
     set_counts(&mut assets);
     assets.sites.insert((20, Site::AirBase), vec![4, 3]);
     assets.catalog.types[0].target_types = vec![TargetType::Building(
-        installed_content_raids::raids::BuildingSelector {
+        content_reader_raids::raids::BuildingSelector {
             types: vec!["airfield".into()],
             ..Default::default()
         },
@@ -695,9 +695,9 @@ fn a_type_the_port_cannot_use_leaves_its_targets_undecided_by_name() {
     assets.catalog.types[0].target_types = vec![TargetType::Provinces(vec![3])];
     assets.catalog.types.truncate(1);
     let declaration = kind("mine", TargetType::Provinces(vec![4]));
-    assets.catalog.uncertain = vec![installed_content_raids::raids::UncertainType {
+    assets.catalog.uncertain = vec![content_reader_raids::raids::UncertainType {
         name: "mine".into(),
-        kind: installed_content_core::DiagnosticKind::Refused,
+        kind: content_reader_core::DiagnosticKind::Refused,
         reason: "it is declared more than once".into(),
         declarations: vec![declaration.clone(), declaration],
     }];
@@ -932,7 +932,7 @@ fn missing_trigger_inputs_are_unknown_rather_than_false() {
 
 #[test]
 fn military_access_reads_only_the_owner_asked() {
-    use installed_content_unit_path::unit_path::MoveWorld;
+    use content_reader_unit_path::unit_path::MoveWorld;
     use replay_data::rows::RelationLinkRow;
     let assets = assets();
     let mut frame = frame();
@@ -1061,7 +1061,7 @@ fn unlinked_focus_project_and_party_rows_leave_their_triggers_unknown() {
     );
 }
 
-fn raid_ideologies() -> installed_content_core::ideologies::Ideologies {
+fn raid_ideologies() -> content_reader_core::ideologies::Ideologies {
     let root = std::env::temp_dir().join(format!(
         "raid-ideologies-{}-{:?}",
         std::process::id(),
@@ -1070,8 +1070,8 @@ fn raid_ideologies() -> installed_content_core::ideologies::Ideologies {
     let file = root.join("common/ideologies/synthetic.txt");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, "ideologies = { mod_party = { types = { mod_type = {} } } mod_other = { types = { other_type = {} } } }").unwrap();
-    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let ideologies = installed_content_core::ideologies::read(&layers).unwrap().0;
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let ideologies = content_reader_core::ideologies::read(&layers).unwrap().0;
     std::fs::remove_dir_all(root).unwrap();
     ideologies
 }
@@ -1830,7 +1830,7 @@ fn a_refused_used_type_leaves_fire_only_once_types_undecided() {
 fn building_template_tokens_match_under_the_fold_or_are_refused() {
     let mut assets = assets();
     assets.catalog.types[0].target_types = vec![TargetType::Building(
-        installed_content_raids::raids::BuildingSelector {
+        content_reader_raids::raids::BuildingSelector {
             types: vec!["dam".into()],
             ..Default::default()
         },
@@ -1869,7 +1869,7 @@ fn building_template_tokens_match_under_the_fold_or_are_refused() {
 
 mod launch_gate {
     use super::*;
-    use installed_content_raids::{
+    use content_reader_raids::{
         raids::EquipmentRequirement, raids::SourceKind, raids::StartingPoint,
         raids::UnitRequirement,
     };
@@ -1890,7 +1890,7 @@ mod launch_gate {
 
     fn launch_assets() -> RaidAssets {
         let mut assets = assets();
-        assets.equipment = installed_content_core::equipment::fixture::load(&[(
+        assets.equipment = content_reader_core::equipment::fixture::load(&[(
             "common/units/equipment/a.txt",
             "equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } convoy = { is_archetype = yes type = convoy } }",
         )])
@@ -2077,7 +2077,7 @@ mod launch_gate {
         const TRANSPORT: u32 = 311;
         const TRANSPORT_VARIANT: u64 = 0x0000_0008_0000_0046;
         let mut assets = launch_assets();
-        assets.equipment = installed_content_core::equipment::fixture::load(&[(
+        assets.equipment = content_reader_core::equipment::fixture::load(&[(
             "common/units/equipment/a.txt",
             "equipments = { transport_plane = { is_archetype = yes type = air_transport } }",
         )])
@@ -2086,7 +2086,7 @@ mod launch_gate {
             command_power_raw: 20 * 100_000,
             essential_equipment: vec![("transport_plane".into(), 1)],
             unit_requirements: vec![UnitRequirement {
-                battalions: vec![installed_content_raids::raids::BattalionRequirement {
+                battalions: vec![content_reader_raids::raids::BattalionRequirement {
                     name: "paratrooper".into(),
                     min: Some(1),
                     max: None,
@@ -2253,7 +2253,7 @@ mod launch_gate {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut assets = launch_assets();
-        let (_, groups) = installed_content_core::equipment::fixture::load(&[(
+        let (_, groups) = content_reader_core::equipment::fixture::load(&[(
             "common/equipment_groups/raids.txt",
             "heavy = { equipment_type = { Large_Plane_Airframe } }
              by_category = { equipment_type = { STRATEGIC_BOMBER } }
@@ -2483,7 +2483,7 @@ mod launch_gate {
                 allow_faction_buildings: true,
             },
             unit_requirements: vec![UnitRequirement {
-                battalions: vec![installed_content_raids::raids::BattalionRequirement {
+                battalions: vec![content_reader_raids::raids::BattalionRequirement {
                     name: "marine".into(),
                     min: Some(2),
                     max: None,
@@ -3406,7 +3406,7 @@ mod launch_gate {
         naval.starting_point.types = vec![SourceKind::NavalBase];
         assert_eq!(gate(&assets, &frame, &naval, 3), Eval::False);
         naval.unit_requirements = vec![UnitRequirement {
-            battalions: vec![installed_content_raids::raids::BattalionRequirement {
+            battalions: vec![content_reader_raids::raids::BattalionRequirement {
                 name: "marine".into(),
                 min: Some(2),
                 max: None,
@@ -3519,7 +3519,7 @@ mod launch_gate {
 
 #[test]
 fn path_cost_reads_the_owners_native_cache_and_independent_zero_war() {
-    use installed_content_unit_path::unit_path::MoveWorld;
+    use content_reader_unit_path::unit_path::MoveWorld;
     use replay_data::{rows::CountryCounterInputRow, rows::Recorded};
     let assets = assets();
     for (present, retired, flag, mut targets, expected) in [
@@ -3810,8 +3810,8 @@ fn war_frame() -> DecodedFrame {
 fn enemies_of(
     frame: &DecodedFrame,
     slot: u32,
-) -> installed_content_unit_path::unit_path::Fact<BTreeSet<u32>> {
-    use installed_content_unit_path::unit_path::MoveWorld;
+) -> content_reader_unit_path::unit_path::Fact<BTreeSet<u32>> {
+    use content_reader_unit_path::unit_path::MoveWorld;
     let assets = assets();
     let world = World::new(frame, assets.trigger_content.facts()).unwrap();
     let cells = reach::Cells::default();
@@ -3850,7 +3850,7 @@ fn enemy_sets_derive_from_war_relations_unless_the_vector_was_read() {
 
 mod reach_bench;
 fn strait_assets() -> RaidAssets {
-    let mut graph = installed_content_core::province_graph::ProvinceGraph::default();
+    let mut graph = content_reader_core::province_graph::ProvinceGraph::default();
     for (id, next) in [(1, vec![2]), (2, vec![1, 3]), (3, vec![2])] {
         graph
             .edges
@@ -3892,7 +3892,7 @@ fn earlier_queries_never_mix_dispatchers_for_the_same_pair() {
 
 mod recorded_paths {
     use super::*;
-    use installed_content_raids::{
+    use content_reader_raids::{
         raids::BattalionRequirement, raids::SourceKind, raids::StartingPoint,
         raids::UnitRequirement,
     };
@@ -4727,7 +4727,7 @@ fn leader_visibility_evaluates_the_recorded_template_role() {
     let path = "common/characters/X.txt";
     let mut assets = assets();
     assets.trigger_content.leader_roles = Ok(Arc::new(LeaderRoles::new(
-        installed_content_core::characters::parse_leader_templates(
+        content_reader_core::characters::parse_leader_templates(
             &path.into(),
             br#"characters = {
     GER_rommel = { field_marshal = { visible = { tag = GER } } }
@@ -5012,7 +5012,7 @@ fn character_scope_global_flag_overlord_and_cosmetic_triggers() {
     );
 }
 
-fn country_leader_traits() -> installed_content_core::leader_traits::LeaderTraits {
+fn country_leader_traits() -> content_reader_core::leader_traits::LeaderTraits {
     let root = std::env::temp_dir().join(format!(
         "raid-ruling-trait-{}-{:?}",
         std::process::id(),
@@ -5021,8 +5021,8 @@ fn country_leader_traits() -> installed_content_core::leader_traits::LeaderTrait
     let file = root.join("common/country_leader/traits.txt");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, "leader_traits = { dictator = {} }").unwrap();
-    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let traits = installed_content_core::leader_traits::read(&layers).unwrap().0;
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let traits = content_reader_core::leader_traits::read(&layers).unwrap().0;
     std::fs::remove_dir_all(root).unwrap();
     traits
 }
@@ -5810,7 +5810,7 @@ fn selector_names_match_as_case_folded_tokens() {
         tags: vec!["Coastal_Guns".into()],
         ..Default::default()
     };
-    let selector = |types: &[&str], tags: &[&str]| installed_content_raids::raids::BuildingSelector {
+    let selector = |types: &[&str], tags: &[&str]| content_reader_raids::raids::BuildingSelector {
         types: types.iter().map(|name| (*name).to_owned()).collect(),
         tags: tags.iter().map(|name| (*name).to_owned()).collect(),
         ..Default::default()

@@ -5,7 +5,7 @@ use crate::map::test_support::gpu;
 use crate::map::test_support::gui::*;
 #[cfg(test)]
 use crate::map::test_support::serial;
-use installed_content_core::gui::native::read;
+use content_reader_core::gui::native::read;
 use lifecycle::{
     Admission, Call, Calls, Held, Instance, MapIconPool, Pool, Rewrote, Tick, Unknown, Withheld,
 };
@@ -3119,7 +3119,7 @@ PixelShader = { MainCode P [[ float4 main(Out v) : PDX_COLOR { return v.color; }
 Effect Text { VertexShader = V PixelShader = P }
 "#;
     let program =
-        installed_content_core::gui::native::shader::program::read_with(b"custom-text.shader", &|path| {
+        content_reader_core::gui::native::shader::program::read_with(b"custom-text.shader", &|path| {
             Some(if path == b"custom-text.shader" {
                 source.to_vec()
             } else {
@@ -3196,7 +3196,7 @@ fn compiled_gui_samples_sixteen_bit_texels_at_full_precision() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_shader::{self as shader, library};
-    use installed_content_image::dds;
+    use content_reader_image::dds;
     use std::sync::Arc;
     let source = br#"
 VertexStruct In {
@@ -3221,7 +3221,7 @@ return float4(c.r > 0.0322575, c.g > 0.01587, c.b > 0.0322575, 1);
 Effect Up { VertexShader = V PixelShader = P }
 "#;
     let program =
-        installed_content_core::gui::native::shader::program::read_with(b"sixteen.shader", &|path| {
+        content_reader_core::gui::native::shader::program::read_with(b"sixteen.shader", &|path| {
             Some(if path == b"sixteen.shader" {
                 source.to_vec()
             } else {
@@ -3261,7 +3261,7 @@ Effect Up { VertexShader = V PixelShader = P }
             data: ([0x0821_u16; 2].map(u16::to_le_bytes).concat()).into(),
         }]],
     };
-    let filler = dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
+    let filler = dds::Texture::from_rgba8(content_reader_image::Rgba8Image {
         width: 1,
         height: 1,
         pixels: vec![0; 4],
@@ -3330,7 +3330,7 @@ Effect Up {{ VertexShader = V PixelShader = P }}
 "#
     );
     let program =
-        installed_content_core::gui::native::shader::program::read_with(b"blocks.shader", &|path| {
+        content_reader_core::gui::native::shader::program::read_with(b"blocks.shader", &|path| {
             Some(if path == b"blocks.shader" {
                 source.as_bytes().to_vec()
             } else {
@@ -3408,7 +3408,7 @@ Effect Up {{ VertexShader = V PixelShader = P }}
 "#
         );
         let program =
-            installed_content_core::gui::native::shader::program::read_with(b"tail.shader", &|path| {
+            content_reader_core::gui::native::shader::program::read_with(b"tail.shader", &|path| {
                 Some(if path == b"tail.shader" {
                     source.as_bytes().to_vec()
                 } else {
@@ -3541,7 +3541,7 @@ fn compiled_effect(file: &str, source: &str) -> Arc<crate::map::native_shader::l
     use crate::map::native_shader::{self as shader, library};
     use std::sync::Arc;
     let program =
-        installed_content_core::gui::native::shader::program::read_with(file.as_bytes(), &|path| {
+        content_reader_core::gui::native::shader::program::read_with(file.as_bytes(), &|path| {
             Some(if path == file.as_bytes() {
                 source.as_bytes().to_vec()
             } else {
@@ -3834,7 +3834,7 @@ v.local.z == 1 && clock == 10 && changed == 7 && frame.x > 0.3 && nextFrame.x > 
 Effect Up { VertexShader = V PixelShader = P }
 "#;
     let program =
-        installed_content_core::gui::native::shader::program::read_with(b"mod-owned.shader", &|path| {
+        content_reader_core::gui::native::shader::program::read_with(b"mod-owned.shader", &|path| {
             Some(if path == b"mod-owned.shader" {
                 source.to_vec()
             } else {
@@ -3899,7 +3899,7 @@ Effect Up { VertexShader = V PixelShader = P }
     );
     let mut absent = batch.quads[0].clone();
     let payload = Arc::make_mut(absent.exact.as_mut().unwrap().native.as_mut().unwrap());
-    let empty = installed_content_core::pdxshader::program::read_with::<Vec<u8>>(b"absent.lua", &|_| None).unwrap();
+    let empty = content_reader_core::pdxshader::program::read_with::<Vec<u8>>(b"absent.lua", &|_| None).unwrap();
     payload.effect.asset = library::Effect::from_compiled(Arc::new(empty), vec![], vec![]);
     payload.effect.technique = "Up".into();
     absent.layer = 3;
@@ -5394,7 +5394,7 @@ fn animation_records_run_on_the_instance_clock() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let record = |kind: i32, looping: bool| AnimationRecord {
-        data: installed_content_core::gui::native::sprites::AnimationData {
+        data: content_reader_core::gui::native::sprites::AnimationData {
             kind,
             looping,
             ..Default::default()
@@ -5713,7 +5713,7 @@ fn a_code_check_restarts_the_drawables_clock() {
     resources.animations.insert(
         "GFX_four",
         vec![AnimationRecord {
-            data: installed_content_core::gui::native::sprites::AnimationData {
+            data: content_reader_core::gui::native::sprites::AnimationData {
                 kind: 4,
                 looping: true,
                 trigger_frames: 1 << 2,
@@ -6603,7 +6603,7 @@ fn compiled_programs_reading_time_keep_their_instance_active() {
              PixelShader = {{ MainCode P [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ return {pixel}; }} ]] }}\n\
              Effect Up {{ VertexShader = V PixelShader = P }}\n"
         );
-        let program = installed_content_core::pdxshader::program::read_with(b"gfx/FX/mod.lua", &|path| {
+        let program = content_reader_core::pdxshader::program::read_with(b"gfx/FX/mod.lua", &|path| {
             Some(if path.ends_with(b".shader") {
                 source.as_bytes().to_vec()
             } else {
@@ -6692,7 +6692,7 @@ fn clocked_effect(techniques: &str, clock: crate::map::native_shader::clock::Clo
         .split(' ')
         .map(|name| format!("Effect {name} {{ VertexShader = V PixelShader = P }}\n"))
         .collect();
-    let program = installed_content_core::pdxshader::program::read_with(b"gfx/FX/mod.lua", &|path| {
+    let program = content_reader_core::pdxshader::program::read_with(b"gfx/FX/mod.lua", &|path| {
         Some(if path.ends_with(b".shader") {
             source.as_bytes().to_vec()
         } else {
@@ -7057,7 +7057,7 @@ fn a_replaced_drawable_starts_its_own_history() {
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = fixture();
     let record = |trigger_frames: u32| AnimationRecord {
-        data: installed_content_core::gui::native::sprites::AnimationData {
+        data: content_reader_core::gui::native::sprites::AnimationData {
             kind: 4,
             looping: true,
             trigger_frames,

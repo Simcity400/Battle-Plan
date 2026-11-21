@@ -1209,7 +1209,7 @@ pub(crate) fn measure(
         "vertical_sync": false,
         "present_mode": schedule.windowed.then(|| format!("{:?}", state.surface_config.present_mode)),
         "desired_maximum_frame_latency": schedule.windowed.then_some(state.surface_config.desired_maximum_frame_latency),
-        "attached_display_hz": installed_content_settings::settings::display_refresh_hz(
+        "attached_display_hz": content_reader_settings::settings::display_refresh_hz(
             window.as_ref().map(|window| window.hwnd()),
         ),
         "frame_limit_hz": viewer_foundation::map::frame_limit::limit(),

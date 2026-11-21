@@ -101,7 +101,7 @@ fn a_drawn_map_names_an_undeclared_distant_battle_effect() -> std::io::Result<()
     viewer_audio::System::silent();
     let mut fixture = Fixture::load("viewer-battle-silence")?;
     let content = viewer_audio::Content::new(Default::default(), None).with_battles(
-        Some(installed_content_sound::combat_sounds::BattleDefines {
+        Some(content_reader_sound::combat_sounds::BattleDefines {
             effect: "undeclared_battle_effect".into(),
             falloff_default: 50.0,
             min_unit_count: 1,

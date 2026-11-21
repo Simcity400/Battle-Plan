@@ -6,4 +6,4 @@ Keep ability construction state per declaration. The ability token also supplies
 
 Share adjusters across an ability's `unit_modifiers` blocks and keep their first encounter order. The parser can create an adjuster for a built-in key or a registered terrain. A repeated nondefault key consumes a token and can close the surrounding block before a following icon. A default-token adjuster reads again, which can also consume tokens a tree parser would assign to the enclosing ability. Keep these boundaries because they change which icon the declaration actually selects.
 
-[Ability reader](../../crates/installed-content-abilities/src/abilities.rs)
+[Ability reader](../../crates/content-reader-abilities/src/abilities.rs)

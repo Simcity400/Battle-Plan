@@ -1204,7 +1204,7 @@ mod tests {
             known.checked = Instant::now() - NAME_RETRY;
         }
         refresh(&settings, Some("Repaired country"));
-        *response.lock().unwrap() = Some("Changed installed content".into());
+        *response.lock().unwrap() = Some("Changed game installation".into());
         for known in library.names.lock().unwrap().known.values_mut() {
             known.checked = Instant::now() - NAME_RETRY_MAX;
         }
@@ -1214,7 +1214,7 @@ mod tests {
         assert_eq!(*asked.lock().unwrap(), 8);
         let _ = library.view("panel", visit.get(), false);
         visit.set(visit.get() + 1);
-        refresh(&settings, Some("Changed installed content"));
+        refresh(&settings, Some("Changed game installation"));
         assert_eq!(*asked.lock().unwrap(), 9);
         fs::write(
             session.join("completed.json"),

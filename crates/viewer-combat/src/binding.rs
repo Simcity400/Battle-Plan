@@ -1,5 +1,5 @@
 use super::{Assets, Selection, Values, Widget};
-use installed_content_localisation::localisation::Argument;
+use content_reader_localisation::localisation::Argument;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
@@ -554,12 +554,12 @@ impl Bindings {
             text(
                 &mut self.values,
                 &format!("{prefix}/{wnd}_wnd/stat_positioning"),
-                installed_content_core::fixed5::fixed5_percent(positioning, 0, true),
+                content_reader_core::fixed5::fixed5_percent(positioning, 0, true),
             );
             text(
                 &mut self.values,
                 &format!("{prefix}/{wnd}_wnd/stat_anti_air"),
-                installed_content_core::fixed5::fixed5_to_string(anti_air, 1),
+                content_reader_core::fixed5::fixed5_to_string(anti_air, 1),
             );
             for member in members {
                 let ship = ships.get(&member.ship).copied();

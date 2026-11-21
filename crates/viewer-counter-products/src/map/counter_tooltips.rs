@@ -25,8 +25,8 @@ mod template_facts;
 use std::{collections::BTreeMap, sync::Arc};
 use viewer_foundation::map::counter_hovers::{land::Timing, refuse};
 
-use installed_content_country_names::country_names::CountryNames;
-use installed_content_localisation::{localisation::Argument as Arg, localisation::Localisation};
+use content_reader_country_names::country_names::CountryNames;
+use content_reader_localisation::{localisation::Argument as Arg, localisation::Localisation};
 use replay_data::{
     rows::CountryLinkRow, rows::DivisionMovementRow, rows::DivisionRow, rows::DivisionStatusRow,
     rows::tables,
@@ -225,7 +225,7 @@ struct Context<'a> {
     loc: &'a Localisation,
     recorded_language: &'a str,
     icons: &'a dyn TextIcons,
-    names: &'a installed_content_division_names::division_names::Database,
+    names: &'a content_reader_division_names::division_names::Database,
     units: &'a Result<units::Content, String>,
     supply_grace: Result<i32, String>,
     comms_max_distance: Result<i32, String>,
@@ -1342,7 +1342,7 @@ mod tests {
     fn division_hover_calls_the_recorded_template_garrison_and_hq_sections() {
         let frame = template_facts::fixture();
         let loc = loc();
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("not needed for shared template facts".to_owned());
         let vision = Vision::sharing(1, []);
         let context = context(&frame, &loc, &vision, &names, &units);
@@ -1360,7 +1360,7 @@ mod tests {
     fn division_hover_shows_recorded_template_facts_only_with_diagnostics() {
         let frame = template_facts::fixture();
         let loc = loc();
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("not needed for shared template facts".to_owned());
         let vision = Vision::sharing(1, []);
         let context = Context {
@@ -1399,7 +1399,7 @@ mod tests {
         countries[0].garrison_priority = Recorded::Value(None);
         put(&mut frame, TableRows::CountryTemplateState(countries));
         let loc = loc();
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("not needed for shared template facts".to_owned());
         let vision = Vision::sharing(1, []);
         let context = context(&frame, &loc, &vision, &names, &units);
@@ -1464,7 +1464,7 @@ mod tests {
             icons[0].settings = Recorded::Value(Some(settings.into()));
             put(&mut frame, TableRows::DivisionTemplateIcons(icons));
             let loc = [("AAA_MOD_NAME".into(), name.into())].into_iter().collect();
-            let names = installed_content_division_names::division_names::Database::default();
+            let names = content_reader_division_names::division_names::Database::default();
             let units = Err("not needed for shared facts".to_owned());
             let vision = Vision::sharing(1, []);
             let context = context(&frame, &loc, &vision, &names, &units);
@@ -1537,7 +1537,7 @@ mod tests {
         groups[0].hq_nearest_front = Recorded::Value(None);
         put(&mut frame, TableRows::OrdersGroupCounterInputs(groups));
         let loc = loc();
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("not needed for shared facts".to_owned());
         let vision = Vision::sharing(1, []);
         let context = context(&frame, &loc, &vision, &names, &units);
@@ -1665,14 +1665,14 @@ mod tests {
                 ..Default::default()
             }]),
         );
-        let defines = installed_content_core::defines::Defines::new().unwrap();
+        let defines = content_reader_core::defines::Defines::new().unwrap();
         defines.load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_MIN_INTEL_TO_SHOW_BASIC_TEMPLATE_INFO=0.3,ARMY_MIN_INTEL_RATIO_NEEDED_FOR_DISPLAYING_FAKE_ENEMY_INTEL_IN_LEDGER=0.7,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.4,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.8,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=0.5}} ").unwrap();
         let units = units::Content::load(
             &defines,
-            Ok(&installed_content_core::unit_leader::SubUnits::default()),
+            Ok(&content_reader_core::unit_leader::SubUnits::default()),
         );
         let loc = loc();
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let vision = Vision::sharing(1, []);
         let initial_context = context(&frame, &loc, &vision, &names, &units);
         let tooltip = template_hover(&initial_context);
@@ -1934,7 +1934,7 @@ mod tests {
         frame: &'a DecodedFrame,
         loc: &'a Localisation,
         vision: &'a Vision,
-        names: &'a installed_content_division_names::division_names::Database,
+        names: &'a content_reader_division_names::division_names::Database,
         units: &'a Result<units::Content, String>,
     ) -> Context<'a> {
         Context {
@@ -1966,14 +1966,14 @@ mod tests {
         vision: &Vision,
     ) -> Tooltip {
         let loc = loc();
-        let defines = installed_content_core::defines::Defines::new().unwrap();
+        let defines = content_reader_core::defines::Defines::new().unwrap();
         defines
             .load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.25,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.75,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=1.5}}")
             .unwrap();
-        let mut subunits = installed_content_core::unit_leader::SubUnits::default();
+        let mut subunits = content_reader_core::unit_leader::SubUnits::default();
         subunits.read(b"sub_units={Foot={type=infantry}}", "synthetic.txt");
         let units = units::Content::load(&defines, Ok(&subunits));
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let context = context(frame, &loc, vision, &names, &units);
         let timing = members
             .iter()
@@ -2081,7 +2081,7 @@ mod tests {
         put(&mut frame, TableRows::DivisionStatus(status.clone()));
         let mut loc = loc();
         loc.language = "french".into();
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("synthetic composition is unavailable".into());
         let build = |frame: &DecodedFrame, recorded_language| {
             let context = Context {
@@ -2253,14 +2253,14 @@ mod tests {
         assert_eq!(coarse.body, "");
         assert!(coarse.refused.is_empty());
         let loc = loc();
-        let defines = installed_content_core::defines::Defines::new().unwrap();
+        let defines = content_reader_core::defines::Defines::new().unwrap();
         defines
             .load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.25,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.75,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=1.5}}")
             .unwrap();
-        let mut subunits = installed_content_core::unit_leader::SubUnits::default();
+        let mut subunits = content_reader_core::unit_leader::SubUnits::default();
         subunits.read(b"sub_units={Foot={type=infantry}}", "synthetic.txt");
         let units = units::Content::load(&defines, Ok(&subunits));
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let context = Context { diagnostics: false, ..context(&frame, &loc, &vision, &names, &units) };
         let location = build_location(&context, 3);
         assert_eq!(location.title, detailed.title);
@@ -2291,7 +2291,7 @@ mod tests {
         let frame = test_frame(600);
         let loc = loc();
         let vision = Vision::sharing(1, []);
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let context = Context {
             links: Err("unavailable".into()),
@@ -2327,7 +2327,7 @@ mod tests {
         vision: &Vision,
         loc: &Localisation,
     ) -> Tooltip {
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("unused division content".into());
         let context = Context {
             recorded_language: "english",
@@ -2649,7 +2649,7 @@ mod tests {
         .into_iter()
         .collect();
         let vision = Vision::sharing(1, []);
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let context = context(&frame, &loc, &vision, &names, &units);
         assert_eq!(context.template(1 << 32 | 7).unwrap(), (1, "Right".into()));
@@ -2769,7 +2769,7 @@ mod tests {
     #[test]
     fn derived_arrival_is_formatted_without_the_obsolete_cache_limitation() {
         let vision = Vision::sharing(1, []);
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("unused".into());
         for (remaining, moving, replacement) in [
             (Some(2_900_000), true, None),
@@ -2853,7 +2853,7 @@ mod tests {
 
         let loc = loc();
         let vision = Vision::sharing(1, []);
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let mut frame = frame(true);
         let cases = [
@@ -2990,7 +2990,7 @@ mod tests {
 
     #[test]
     fn division_arrival_words_the_estimate_of_the_stored_route() {
-        use installed_content_core::{
+        use content_reader_core::{
             movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
         };
         use viewer_foundation::movement_timing::{
@@ -3024,7 +3024,7 @@ mod tests {
         };
         let loc = loc();
         let vision = Vision::sharing(1, []);
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let mut frame = frame(true);
         let status = frame
@@ -3169,7 +3169,7 @@ mod tests {
             .chain(railway.iter())
             .map(|(key, value)| (key.to_owned(), value.to_owned()))
             .collect();
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("unused composition".into());
         let known = Vision::sharing(1, []);
         let mixed = Vision::sharing(2, []).with_truncated_unit_intel([(1, 2), (2, 0)]);
@@ -3293,13 +3293,13 @@ mod tests {
         use std::cell::Cell;
         use viewer_foundation::map::counter_hovers::land::CounterControl as Control;
 
-        let parsed = installed_content_core::gui::native::read(
+        let parsed = content_reader_core::gui::native::read(
             br#"guiTypes = {
             iconType = { name = child pdx_tooltip = RAW_TITLE pdx_tooltip_delayed = RAW_BODY }
         }"#,
         );
         let authored = gui_authored::Authored::read(parsed.template("child").unwrap(), false);
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("unused composition".into());
         let mut frame = frame(true);
         for railway_gun in [false, true] {

@@ -1,7 +1,7 @@
 use super::{Inputs, Style, pack};
 use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, Link};
 use dashboard_text::triggers::{Eval, Evaluator, Temps};
-use installed_content_core::scripted_map_modes::{Layer, LayerType};
+use content_reader_core::scripted_map_modes::{Layer, LayerType};
 use replay_data::rows::tables;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -208,7 +208,7 @@ fn choose(
     let Some(block) = layer.targets.as_ref().filter(|block| !block.is_empty()) else {
         return Ok(None);
     };
-    let selection = installed_content_core::country_scorers::script_targets(block);
+    let selection = content_reader_core::country_scorers::script_targets(block);
     let graph = Rc::new(RefCell::new(EventScopes::new(vec![EventScope::of(
         EventObject::Country(viewer),
     )])));

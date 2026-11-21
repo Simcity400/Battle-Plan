@@ -1,7 +1,7 @@
 
 use super::*;
 use crate::triggers::{Evaluator, Temps};
-use installed_content_scripted_localisation::scripted_localisation::RandomList;
+use content_reader_scripted_localisation::scripted_localisation::RandomList;
 
 pub fn scope_seed(seed: u32) -> u32 {
     lane(seed, 0x205a_d647, 0xb4f3_c315, 0x387a_9f3a)

@@ -1,5 +1,5 @@
 
-use super::terrain_shader::{Patch, SIDE, heights_into};
+use super::terrain_shader::{Patch, SIDE, heights_into, vertex_heights};
 
 const STORED_PER_BYTE: i16 = 10;
 
@@ -119,19 +119,32 @@ impl Coast {
         patch: Patch,
         cells: [u32; 2],
         copy: i64,
+        capped: Option<&[[i16; 2]]>,
     ) -> Option<Vec<[i16; 2]>> {
-        let mut heights = Vec::with_capacity(positions.len());
-        heights_into(positions, bytes, map, patch, &mut heights);
-        let mut differs = false;
-        for (&position, pair) in positions.iter().zip(&mut heights) {
+        let mut heights: Option<Vec<[i16; 2]>> = None;
+        for at in rim_vertices(cells) {
+            let index = (at[1] * (SIDE + 1) + at[0]) as usize;
+            let position = positions[index];
+            let sampled = vertex_heights(position, bytes, map, patch);
+            let own = capped.map_or(sampled, |capped| capped[index]);
+            let mut pair = sampled;
             for (height, at) in pair.iter_mut().zip(samples(position)) {
                 let [x, z] = world(patch, at);
-                let own = self.capped(*height, Some(patch.step), x, z);
                 *height = self.capped(*height, steps.at_vertex(patch, cells, copy, at), x, z);
-                differs |= *height != own;
+            }
+            if pair != own {
+                let heights = heights.get_or_insert_with(|| match capped {
+                    Some(capped) => capped.to_vec(),
+                    None => {
+                        let mut sampled = Vec::with_capacity(positions.len());
+                        heights_into(positions, bytes, map, patch, &mut sampled);
+                        sampled
+                    }
+                });
+                heights[index] = pair;
             }
         }
-        differs.then_some(heights)
+        heights
     }
 }
 
@@ -314,6 +327,19 @@ mod tests {
         out
     }
 
+    fn whole(coast: &Coast, steps: &Steps, bytes: &[u8], map: [u32; 2], patch: Patch, cells: [u32; 2], copy: i64) -> Vec<[i16; 2]> {
+        let positions = super::super::terrain_shader::positions();
+        let mut heights = Vec::new();
+        heights_into(&positions, bytes, map, patch, &mut heights);
+        for (&position, pair) in positions.iter().zip(&mut heights) {
+            for (height, at) in pair.iter_mut().zip(samples(position)) {
+                let [x, z] = world(patch, at);
+                *height = coast.capped(*height, steps.at_vertex(patch, cells, copy, at), x, z);
+            }
+        }
+        heights
+    }
+
     fn cell_corners(heights: &[[i16; 2]], origin: [u32; 2], step: u32, x: u32, z: u32) -> [i16; 4] {
         let side = (super::super::terrain_shader::SIDE + 1) as usize;
         let [cx, cz] = [((x - origin[0]) / step) as usize, ((z - origin[1]) / step) as usize];
@@ -490,13 +516,16 @@ mod tests {
             let mut heights = Vec::new();
             heights_into(&positions, &bytes, WIDE, patch, &mut heights);
             let sampled = heights.clone();
-            coast.cap(&positions, origin, step, &mut heights);
+            let changed = coast.cap(&positions, origin, step, &mut heights);
             if !steps.alone(i64::from(origin[0] / SIDE), origin[1] / SIDE, step)
                 && steps.rim(patch, cells, 0, &mut rule)
-                && let Some(rimmed) = coast.rim(&steps, &positions, &bytes, WIDE, patch, cells, 0)
             {
-                heights = rimmed;
-                rims += 1;
+                let capped = changed.then_some(heights.as_slice());
+                if let Some(rimmed) = coast.rim(&steps, &positions, &bytes, WIDE, patch, cells, 0, capped) {
+                    heights = rimmed;
+                    rims += 1;
+                }
+                assert_eq!(heights, whole(&coast, &steps, &bytes, WIDE, patch, cells, 0), "{origin:?}");
             }
             if step == 1 {
                 assert_eq!(heights, sampled, "the finest block at {origin:?} keeps its heights");
@@ -551,12 +580,14 @@ mod tests {
             let mut sampled = Vec::new();
             heights_into(&positions, &bytes, WIDE, patch, &mut sampled);
             let mut drawn = sampled.clone();
-            coast.cap(&positions, origin, step, &mut drawn);
+            let changed = coast.cap(&positions, origin, step, &mut drawn);
             let mut rule = Vec::new();
-            if steps.rim(patch, cells, copy, &mut rule)
-                && let Some(rimmed) = coast.rim(&steps, &positions, &bytes, WIDE, patch, cells, copy)
-            {
-                drawn = rimmed;
+            if steps.rim(patch, cells, copy, &mut rule) {
+                let capped = changed.then_some(drawn.as_slice());
+                if let Some(rimmed) = coast.rim(&steps, &positions, &bytes, WIDE, patch, cells, copy, capped) {
+                    drawn = rimmed;
+                }
+                assert_eq!(drawn, whole(&coast, &steps, &bytes, WIDE, patch, cells, copy), "{origin:?}");
             }
             for ((&position, pair), raw) in positions.iter().zip(&drawn).zip(&sampled) {
                 for ((&height, &raw), at) in pair.iter().zip(raw).zip(samples(position)) {

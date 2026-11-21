@@ -1,8 +1,8 @@
 use super::{loc, province::Facts};
 use crate::content::Content;
 use crate::modifier_text::{Block, Definitions};
-use installed_content_country_names::country_names::CountryNames;
-use installed_content_localisation::localisation::{Argument, crt_case_text};
+use content_reader_country_names::country_names::CountryNames;
+use content_reader_localisation::localisation::{Argument, crt_case_text};
 use replay_data::rows::{Recorded, tables};
 use replay_frame::frame::DecodedFrame;
 use viewer_foundation::tooltip_text::ensure_newlines;

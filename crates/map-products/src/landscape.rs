@@ -82,10 +82,10 @@ struct NameAreaKey {
     modes: Option<u64>,
     layers: (u8, u8),
     witness: [u8; 32],
-    localisation: Option<Operand<installed_content_localisation::localisation::Localisation>>,
-    regions: Option<Operand<BTreeMap<u32, installed_content_regions::regions::StrategicRegion>>>,
+    localisation: Option<Operand<content_reader_localisation::localisation::Localisation>>,
+    regions: Option<Operand<BTreeMap<u32, content_reader_regions::regions::StrategicRegion>>>,
     states: Option<(
-        Operand<installed_content_localisation::localisation::Localisation>,
+        Operand<content_reader_localisation::localisation::Localisation>,
         Operand<BTreeMap<u32, Result<String, String>>>,
         KeyText,
     )>,
@@ -96,7 +96,7 @@ struct NameKey {
     names: u64,
     placement: u64,
     font: u64,
-    heightmap: Operand<installed_content_image::IndexedImage>,
+    heightmap: Operand<content_reader_image::IndexedImage>,
     witness: [u8; 32],
 }
 struct NameProjection {
@@ -131,8 +131,8 @@ fn diplomatic_selection(mode: &MapMode, ours: u32, selected: Option<u32>) -> u32
 pub struct NameInputs<'a> {
     pub content: &'a map_mode::Content,
     pub names: &'a NameContent,
-    pub regions: &'a Arc<BTreeMap<u32, installed_content_regions::regions::StrategicRegion>>,
-    pub heightmap: &'a Arc<installed_content_image::IndexedImage>,
+    pub regions: &'a Arc<BTreeMap<u32, content_reader_regions::regions::StrategicRegion>>,
+    pub heightmap: &'a Arc<content_reader_image::IndexedImage>,
     pub counter: &'a viewer_counter_products::map::counter_content::Content,
     pub placement: PlacementInputs<'a>,
 }
@@ -823,7 +823,7 @@ mod identity_tests {
     #[test]
     fn name_fitting_inputs_do_not_invalidate_area_grouping_keys() {
         let localisation = Arc::new(Default::default());
-        let heightmap = Arc::new(installed_content_image::IndexedImage {
+        let heightmap = Arc::new(content_reader_image::IndexedImage {
             width: 1,
             height: 1,
             indices: vec![0].into(),

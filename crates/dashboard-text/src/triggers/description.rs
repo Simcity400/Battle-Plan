@@ -1,6 +1,6 @@
 
-use installed_content_core::{parser::Item, parser::Operator, scope::Keyword, scope::Scope as Parsed};
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_core::{parser::Item, parser::Operator, scope::Keyword, scope::Scope as Parsed};
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use std::{cell::RefCell, collections::BTreeMap};
 
 use super::{
@@ -235,7 +235,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                                 return Err("keyless trigger description is not reproduced".into());
                             }
                             Child::Scripted(template) => {
-                                let frame = installed_content_core::trigger_keys::frame(template);
+                                let frame = content_reader_core::trigger_keys::frame(template);
                                 if let Some(why) = self.evaluator.enter_frame(frame) {
                                     return Err(why);
                                 }
@@ -434,7 +434,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 key_text(item)
             ));
         };
-        let operand = installed_content_core::parser::c_string(item.value.scalar().unwrap_or_default());
+        let operand = content_reader_core::parser::c_string(item.value.scalar().unwrap_or_default());
         let key = match name.as_str() {
             "is_attacker" => Some(
                 if trigger_boolean(item).map_err(|why| why.to_string())? != inverted {
@@ -464,7 +464,7 @@ impl<'a> Formatter<'_, '_, 'a> {
         }
         match name.as_str() {
             "phase" => {
-                let id = installed_content_core::fixed5::decimal_i32(operand);
+                let id = content_reader_core::fixed5::decimal_i32(operand);
                 let key = if id < 0 {
                     b"PHASE_DEFAULT".as_slice()
                 } else {
@@ -602,7 +602,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
                 .map_err(|why| format!("trigger is_deployed: {why}")),
             "is_fighting_in_strategic_region" => {
-                let region = installed_content_core::crt::scan_i32(operand)
+                let region = content_reader_core::crt::scan_i32(operand)
                     .stored()
                     .ok_or("trigger is_fighting_in_strategic_region: the operand does not assign a region ID; the retained value is not reproduced")?
                     .to_string();

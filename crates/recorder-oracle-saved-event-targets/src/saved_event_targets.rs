@@ -1,5 +1,5 @@
 use super::{Report, complete, counters::eq, country_tag};
-use installed_content_save::saved_event_targets::Target;
+use content_reader_save::saved_event_targets::Target;
 use replay_data::{rows::CountryRow, rows::GlobalSavedEventTargetRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};

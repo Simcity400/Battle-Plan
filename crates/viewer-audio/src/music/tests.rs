@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_sound::music::{Music, Song, Track};
+use content_reader_sound::music::{Music, Song, Track};
 
 fn music(songs: usize) -> Music {
     let mut music = Music::default();

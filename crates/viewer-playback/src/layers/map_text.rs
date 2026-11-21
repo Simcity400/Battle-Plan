@@ -11,7 +11,7 @@ use crate::playhead_host::{
     mirror::{Mirror, Mirrors},
     views::{Stepped, view},
 };
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use playhead::{Step, changes::Changes};
 use replay_columnar::{manifest::Status, state::Kind};
 use replay_data::{

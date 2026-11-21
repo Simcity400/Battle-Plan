@@ -1,6 +1,6 @@
-use installed_content_core::province_geometry::native_fixed_sqrt;
-use installed_content_regions::regions::StrategicRegion;
-use installed_content_states::states::StateDefinition;
+use content_reader_core::province_geometry::native_fixed_sqrt;
+use content_reader_regions::regions::StrategicRegion;
+use content_reader_states::states::StateDefinition;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub fn battle_name_candidates(

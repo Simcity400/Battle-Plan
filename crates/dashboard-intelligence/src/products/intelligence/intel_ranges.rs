@@ -2,7 +2,7 @@ use super::{
     intel_details::{IntelDetail, detail, diplomacy_unlock, v},
     intel_explanations,
 };
-use installed_content_core::{defines::Defines, unit_leader::SubUnits};
+use content_reader_core::{defines::Defines, unit_leader::SubUnits};
 use replay_data::{
     intel_estimates::{self as native, Parameters},
     rows::{self, TableId, tables},

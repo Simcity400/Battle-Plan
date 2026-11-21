@@ -1,6 +1,6 @@
 
 use super::*;
-use installed_content_abilities::abilities::Definition;
+use content_reader_abilities::abilities::Definition;
 
 #[cfg(test)]
 mod tests;
@@ -29,7 +29,7 @@ pub fn ability_description(
         .into_iter()
         .zip(&definition.modifiers)
     {
-        if modifiers != &installed_content_core::modifiers::Modifiers::default() {
+        if modifiers != &content_reader_core::modifiers::Modifiers::default() {
             match renderer.modifier_description_with(
                 modifiers,
                 "",
