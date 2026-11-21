@@ -91,6 +91,7 @@ fn main() -> io::Result<()> {
     }
     let tables = replay_data::rows::TableId::ALL.len();
     let factors = times.unwrap_or_else(|| Factors { factor: vec![1; tables], in_phase: vec![false; tables] });
+    let started_after = start.as_ref().map(|start| u64::from(start.block) + 1);
     let mut source = Multiplied::open(Path::new(directory), capture, factors, start)?;
     let first_hours = u64::from(writer.segments()).saturating_sub(1) * 720;
     source.start(writer.segments())?;
@@ -98,7 +99,7 @@ fn main() -> io::Result<()> {
         "build": { "memory_labels": engine_allocation::labels::ENABLED, "multiplied": cfg!(feature = "multiplied"), "keep_journal": cfg!(feature = "keep-journal") } }));
     let facts = facts.filter(|_| !writer.carries_facts());
     let mut host = Everything::new(facts, pace);
-    host.blocks = source.blocks_before(writer.segments());
+    host.blocks = started_after.unwrap_or_else(|| source.blocks_before(writer.segments()));
     if let Some(block) = stop_after.filter(|&block| block < host.blocks) {
         return Err(io::Error::other(format!("Block {block} of capture {capture} is committed in {} already", out.display())));
     }
