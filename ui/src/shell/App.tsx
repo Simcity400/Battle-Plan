@@ -242,6 +242,11 @@ export default function App() {
   const defaultRequest = useRef(0);
   const lastNativePath = useRef<string | null>(null);
   const content = useRef<HTMLElement>(null);
+  const header = useCallback((element: HTMLElement) => {
+    const observer = new ResizeObserver(() => element.parentElement?.style.setProperty('--shell-header-height', `${element.offsetHeight}px`));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   const native = useDesktopState(retry);
   useEffect(() => { contentRevision(client).observe(folders); }, [client, folders?.game, folders?.user, folders?.contentReady]);
   useEffect(() => {
@@ -372,7 +377,7 @@ export default function App() {
       </aside>
       {iconMenu.menu}
       {widgetIconMenu.menu}
-      <header className="shell-header">
+      <header ref={header} className="shell-header">
         <div className="shell-campaign-controls" ref={setPlaybackHost} hidden={tab === 'settings'} />
         {tab === 'settings' && <nav className="shell-location" aria-label="Location"><span>Settings</span><Icon name="chevron-right" /><strong aria-current="page">{sectionLabel}</strong></nav>}
         {tab !== 'settings' && <BuildNotice warnings={metadata?.buildWarnings} />}
