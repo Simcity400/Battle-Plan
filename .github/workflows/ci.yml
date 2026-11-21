@@ -90,6 +90,8 @@ jobs:
           cache: npm
       - if: matrix.needs_node
         run: npm ci --no-audit --no-fund
+      - if: matrix.needs_rust || matrix.needs_toolchain
+        run: rustup toolchain install
       - if: matrix.needs_rust
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:

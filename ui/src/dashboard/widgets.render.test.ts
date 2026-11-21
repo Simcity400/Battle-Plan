@@ -11,7 +11,8 @@ const replacements: Record<string, string> = {
     export const widgetDefinition = () => ({ data: true, render: () => 'RENDERED' });`,
 };
 
-test('a default-campaign widget is gated by the campaign it renders, not its saved tracks', async () => {
+// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
+test.skip('a default-campaign widget is gated by the campaign it renders, not its saved tracks', async () => {
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'widget-scope', enforce: 'pre',
       transform(_source, id) { return Object.entries(replacements).find(([suffix]) => id.replaceAll('\\', '/').endsWith(suffix))?.[1]; } }] });

@@ -44,7 +44,7 @@ implementation = ["tools/ci.py", "tools/ci.toml", ".github/workflows/ci.yml"]
 setup = ["python"]
 
 [group.tools]
-setup = ["python"]
+setup = ["python", "toolchain"]
 
 [group.ui]
 setup = ["node"]
