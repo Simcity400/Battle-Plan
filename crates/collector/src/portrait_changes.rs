@@ -179,7 +179,7 @@ enum Log {
 // SAFETY: a slot is written only by the writer that reserved it, before its record is
 // published; published slots are only read until the next capture begins, after every reader
 // of this one returned; the storage is replaced only while no writer logs and no capture reads.
-// `image` still borrows the whole text buffer while writers fill other slots (#1636).
+// `image` still borrows the whole text buffer while writers fill other slots (#21).
 unsafe impl Sync for PreImages {}
 
 impl PreImages {

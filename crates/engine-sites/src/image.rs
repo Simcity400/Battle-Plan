@@ -58,7 +58,7 @@ impl Image<'static> {
     ///
     /// # Safety
     /// `base` must be the base of a loaded PE32+ module that stays loaded for the program's life, and
-    /// whose section bytes are readable and unchanged while this image borrows them (#1628).
+    /// whose section bytes are readable and unchanged while this image borrows them (#18).
     pub unsafe fn module(base: usize) -> Verified<Self> {
         let read = |offset: usize, len: usize| {
             // SAFETY: the headers of a loaded module are mapped and readable.

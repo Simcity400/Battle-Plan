@@ -1099,7 +1099,7 @@ fn live_stack_holds(sp: usize, mut holds: impl FnMut(&[usize]) -> bool) -> Optio
             }
             for (index, word) in buffer[..count].iter_mut().enumerate() {
                 // SAFETY: committed, readable memory of a suspended thread's stack; nothing frees
-                // it while that thread is held. A word may be uninitialized there (#1631).
+                // it while that thread is held. A word may be uninitialized there (#20).
                 *word = unsafe { ptr::read_volatile((at as *const usize).add(index)) };
             }
             if holds(&buffer[..count]) {

@@ -79,7 +79,7 @@ impl Window {
         let title = wide(title);
         // SAFETY: a class registered once per process with this module's procedure; the window
         // keeps one strong reference to the link, released at WM_NCDESTROY. A creation that fails
-        // after WM_NCCREATE releases it a second time below (#1630).
+        // after WM_NCCREATE releases it a second time below (#19).
         unsafe {
             let instance = GetModuleHandleW(ptr::null());
             let description = WNDCLASSEXW {
