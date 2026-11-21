@@ -114,4 +114,4 @@ Battle Plan is free software under the [MIT License](LICENSE).
 
 The image decoders and archive reader in `crates/installed-content` include modified Rust adaptations of the Independent JPEG Group's libjpeg 9a, libpng 1.6.16 and PhysicsFS. This software is based in part on the work of the Independent JPEG Group. The refresh icon is from Lucide. Their notices are in [LICENSES](LICENSES/).
 
-Battle Plan is an unofficial project and is not affiliated with or endorsed by Paradox Interactive. Hearts of Iron IV is a trademark of Paradox Interactive AB. No installed content are included; the app reads them from your own installation.
+Battle Plan is an unofficial project and is not affiliated with or endorsed by Paradox Interactive. Hearts of Iron IV is a trademark of Paradox Interactive AB. The repository contains no installed content, assets, or original game code from the game. The app reads the content it needs from your own installation.
