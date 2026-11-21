@@ -1972,7 +1972,7 @@ pub(crate) fn capture(
         cache_dir: facts_cache.clone(),
         dlc_order: None,
     };
-    println!("Verifying the game installation's content hashes in the background...");
+    println!("Verifying game, DLC and enabled mod hashes in the background...");
     let scan = ContentScan::start(gather_options);
     let mut next_discovery = Instant::now();
     let mut others = OtherGames::default();

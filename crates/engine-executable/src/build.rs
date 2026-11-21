@@ -78,8 +78,7 @@ impl RecordedBuild<'_> {
             None => describe(identity.size, &identity.sha256),
         };
         Some(format!(
-            "This recording was made with game {} ({}), but the installed game is {installed}. \
-             Content and tables are read from the installed game.",
+            "This recording was made with game {} ({}), but the installed game is {installed}.",
             self.version,
             describe(self.identity.size, &self.identity.sha256),
         ))
