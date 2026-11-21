@@ -191,8 +191,9 @@ mod tests {
 
     #[test]
     fn state_category_names_and_consumption() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::with(|game| {
+            game.modifiers(["local_building_slots", "local_supplies"])
+        });
         for (input, expected) in [
             (b"state_categories={Syn={local_building_slots=3 color={1 2 3}} SYN={local_supplies=0.1} other={buildings_max_level={mod_building=4}}}".as_slice(), vec![b"Syn".as_slice(), b"other"]),
             (b"\"state_categories\"={hidden={}} STATE_CATEGORIES={\"Mixed\"={}}", vec![b"Mixed".as_slice()]),
@@ -207,8 +208,7 @@ mod tests {
 
     #[test]
     fn state_category_colours_replay_on_the_object() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let database = parse(
             b"state_categories={Syn={color={1 2 3}} plain={} SYN={color={0.5 0.25 0.125 0.75}} late={color={255 0 0}} LATE={color={0 0}}}",
             &KeyNames::default(),
@@ -247,8 +247,7 @@ mod tests {
 
     #[test]
     fn state_category_stack_order_and_replacement() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let root = std::env::temp_dir().join(format!("state-category-{}", std::process::id()));
         let _folder = Folder(root.clone());
         let base = root.join("base");
@@ -292,8 +291,7 @@ mod tests {
 
     #[test]
     fn uncertain_state_category_modifier_names_are_named() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let mut names = KeyNames::default();
         names.effects.modifiers_gap = Some("synthetic missing registry".into());
         let error = parse(b"state_categories={syn={unresolved_modifier={}}}", &names)

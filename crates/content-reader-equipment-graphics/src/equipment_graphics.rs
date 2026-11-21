@@ -666,10 +666,22 @@ mod tests {
         Ok(content)
     }
 
+    fn enter_pool_test_tables() {
+        use content_reader_core::{test_game, trigger_keys::Reader};
+        use engine_executable::executable_tables::{self, Tables};
+        static TABLES: std::sync::OnceLock<Tables> = std::sync::OnceLock::new();
+        let tables = TABLES.get_or_init(|| {
+            test_game::executable()
+                .trigger("tag", 0, Reader::Assign, 0)
+                .trigger("has_cosmetic_tag", 0, Reader::Assign, 0)
+                .build()
+        });
+        executable_tables::enter(Some(*tables));
+    }
+
     #[test]
     fn the_graphic_db_trigger_reader_keeps_content_names() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let key_names = KeyNames {
             countries: [b"EST".to_vec()].into(),
             ..KeyNames::default()
@@ -705,8 +717,7 @@ mod tests {
 
     #[test]
     fn aircraft_override_keeps_pool_visit_ties_and_reverse_strings() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let names = Names {
             countries: ["AAA".to_owned()].into(),
             continents: ["europe".to_owned()].into(),
@@ -781,8 +792,7 @@ mod tests {
 
     #[test]
     fn aircraft_override_refuses_unknown_relevant_limits_before_selecting() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        enter_pool_test_tables();
         let pools = content(
             br#"default = { tank = {
             pool = { models_weight = 3 models = { declared } }
@@ -809,8 +819,7 @@ mod tests {
 
     #[test]
     fn buckets_accept_declared_tags_factions_and_continents_and_skip_the_rest() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let factions = ["EN2".to_owned()];
         let pools = content(
             br#"
@@ -853,8 +862,7 @@ mod tests {
 
     #[test]
     fn filters_and_dlc_limits_decide_pools_and_unknown_predicates_fail() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        enter_pool_test_tables();
         let pools = content(
             br#"
             default = { tank = {
@@ -918,8 +926,7 @@ mod tests {
 
     #[test]
     fn refusals_identify_each_pool_and_repeated_predicate() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        enter_pool_test_tables();
         let pools = content(
             br#"
             default = { plane = {
@@ -954,8 +961,7 @@ mod tests {
 
     #[test]
     fn limit_parse_failure_refusals_identify_the_pool() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        enter_pool_test_tables();
         let mut pools = content(
             b"default = { plane = { \
                 pool = { icons = { first } limit = { tag = AAA } } \
@@ -1012,8 +1018,7 @@ mod tests {
 
     #[test]
     fn pools_follow_the_field_readers() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let pools = content(
             br#"
             @weight = 4
@@ -1043,8 +1048,7 @@ mod tests {
     }
     #[test]
     fn icons_come_from_pools_without_a_sub_unit_filter_by_icon_weight_last_first() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        enter_pool_test_tables();
         let pools = content(
             br#"
             default = { tank = {
@@ -1096,8 +1100,7 @@ mod tests {
 
     #[test]
     fn null_equipment_names_do_not_match_authored_empty_pools() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let pools = content(
             br#"default = {
                 "" = { pool = { weight = 9 models = { null_model } icons = { null_icon } } }

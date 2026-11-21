@@ -252,6 +252,8 @@ pub(crate) fn synthetic_vocabulary(game: synthetic_game::Executable) -> syntheti
         "add_stability",
         "add_war_support",
         "add_manpower",
+        "add_core_of",
+        "transfer_state_to",
         "inherit_technology",
         "set_faction_research_unlocked",
     ]
