@@ -124,6 +124,8 @@ const DEFERRED: i32 = 432;
 const SWAPPED: i32 = 457;
 const CONTRADICTED_BLOCKED: i32 = 490;
 const CONTRADICTED: i32 = 491;
+const EMPTIED_KEPT: i32 = 505;
+const MOVED_EMPTY: i32 = 506;
 const NO_CHANGES: i32 = 26;
 
 fn put_daily(store: &mut Store, hour: i32, row: &CountryPowerDailyRow) {
@@ -330,7 +332,7 @@ fn edit(store: &mut Store, hour: i32) {
             put_daily(store, hour, &daily(168, 3 * Q, Q / 2 + Q / 10, 168));
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(168, 1, PowerDailyCostKind::MioResearch, Q / 10, 168), TEXTS).unwrap();
         }
-        192 | 216 | 240 | 288 | REPLACED | 336 | 384 | 408 | 456 | 480 => {
+        192 | 216 | 240 | 288 | REPLACED | 336 | 384 | 408 | 456 | 480 | 504 => {
             put_daily(store, hour, &daily(hour, 3 * Q, Q / 2 + Q / 10, hour as u64));
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(hour, 0, PowerDailyCostKind::Relation, Q / 2, hour as u64), TEXTS).unwrap();
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(hour, 1, PowerDailyCostKind::MioResearch, Q / 10, hour as u64), TEXTS).unwrap();
@@ -353,6 +355,14 @@ fn edit(store: &mut Store, hour: i32) {
                 testing::put(store, TableId::Countries, &CountryRow { id, canonical_slot: slot, ..Default::default() }, TEXTS).unwrap();
                 testing::put(store, TableId::CountryLinks, &CountryLinkRow { id, canonical_slot: slot }, TEXTS).unwrap();
             }
+        }
+        EMPTIED_KEPT => {
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32).unwrap();
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+        }
+        MOVED_EMPTY => {
+            testing::put(store, TableId::Countries, &CountryRow { id: 1, canonical_slot: 60, ..Default::default() }, TEXTS).unwrap();
+            testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 1, canonical_slot: 60 }, TEXTS).unwrap();
         }
         CONTRADICTED_BLOCKED => {
             testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32).unwrap();
@@ -607,7 +617,7 @@ fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_
     let (other, _) = through(0..=OTHER_PUBLISHED);
     assert_eq!(shared(&other, 0), Some(Q / 4));
     let (unshared, _) = through(0..=UNSHARED_DELETED);
-    assert_eq!(shared(&unshared, 0), None, "a country leaving a shared holder leaves the part its batch published there unknown, and a deletion from another country keeps it so");
+    assert!(!keys(&unshared, TableId::PowerDayParts).contains(&part_key(30, POLITICAL, 0)), "a country leaving a shared holder takes the part only its application holds");
     assert_eq!(cell::<Part>(&unshared, TableId::PowerDayParts, part_key(40, POLITICAL, 0), "spent"), Some(Q / 4), "and its batch is read again under its new holder");
     let gains = part_key(10, POLITICAL, Total::GAINS);
     let (unmatched, _) = through(0..=UNMATCHED);
@@ -717,6 +727,13 @@ fn a_country_that_changes_holders_mid_day_takes_its_open_batch_with_it() {
     let (contradicted, _) = through(0..=CONTRADICTED);
     let after = |ordinal: u32| cell::<Part>(&contradicted, TableId::PowerDayParts, part_key(20, POLITICAL, ordinal), "spent");
     assert_eq!((after(0), after(1)), (None, None), "rows gone while the application read that hour no longer adds up to the held parts leave them unknown");
+    assert_eq!(cell::<Coverage>(&contradicted, TableId::PowerSpendCoverage, 20, "daily_mismatch"), Some(i64::from(Coverage::STEADY_MISMATCH)), "and name the holder's costs as not adding up");
+    let (kept, _) = through(0..=EMPTIED_KEPT);
+    assert_eq!(held(&kept, 20).len(), 2, "rows gone before the application says why withdraw nothing");
+    let (moved_empty, _) = through(0..=MOVED_EMPTY);
+    let left = |ordinal: u32| cell::<Part>(&moved_empty, TableId::PowerDayParts, part_key(20, POLITICAL, ordinal), "spent");
+    assert_eq!((left(0), left(1)), (None, None), "a country moving with no rows to read again leaves its parts unknown under the old holder rather than withdrawn");
+    assert!(held(&moved_empty, 60).is_empty());
 }
 
 #[test]

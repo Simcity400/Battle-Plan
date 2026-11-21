@@ -317,7 +317,7 @@ struct Batch {
 struct Move {
     raw: u32,
     from: u32,
-    sole: bool,
+    stayed: Vec<u32>,
 }
 
 #[derive(Default)]
@@ -360,7 +360,7 @@ impl PowerLedger {
         let mut moves: Vec<Move> = links
             .into_iter()
             .filter(|&(raw, from)| from != NONE && self.slot(raw) != from)
-            .map(|(raw, from)| Move { raw, from, sole: aliases.get(&from).is_some_and(|raws| raws.as_slice() == [raw]) })
+            .map(|(raw, from)| Move { raw, from, stayed: aliases.get(&from).map_or_else(Vec::new, |raws| raws.iter().copied().filter(|&other| other != raw && self.slot(other) == from).collect()) })
             .collect();
         moves.sort_unstable_by_key(|moved| moved.raw);
         (moves, aliases)
@@ -565,6 +565,22 @@ impl PowerLedger {
         Ok(())
     }
 
+    fn defer_held(&self, own: &Rows<'_>, pending: &mut Pending) -> io::Result<()> {
+        for (&holder, (day, keys)) in self.parts.iter().filter(|(holder, _)| **holder != NONE) {
+            for &key in keys {
+                if let Some(part) = Self::held_part(own, pending, key, *day)?
+                    && part.cost_ordinal.is_some()
+                    && let Some(sequence) = part.sequence
+                {
+                    for &raw in self.aliases.get(&holder).map_or(&[][..], Vec::as_slice) {
+                        pending.recovered.insert((raw, sequence));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn reconcile(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending, before: &HashMap<u32, Vec<u32>>, moved: &HashSet<u32>) -> io::Result<()> {
         let today = midnight(hour.hour);
         let mut holders: Vec<(u32, i32)> = self.parts.iter().filter(|(holder, _)| **holder != NONE).map(|(&holder, (day, _))| (holder, *day)).collect();
@@ -626,6 +642,9 @@ impl PowerLedger {
                     }
                     None if day == today && agrees => {}
                     _ => {
+                        if !agrees {
+                            self.steady.insert(holder);
+                        }
                         for mut part in held {
                             part.covered = false;
                             part.spent = Recorded::NotRecorded;
@@ -1120,23 +1139,24 @@ impl PowerLedger {
         let Some((_, open)) = self.parts.get(&moved.from) else { return Ok(()) };
         let open = open.clone();
         let sequences = |raw: u32| -> io::Result<HashSet<u64>> { Ok(inputs::costs_of(hour, raw)?.into_iter().filter(|cost| midnight(cost.day_hour) == today).map(|cost| cost.pp_sequence).collect()) };
-        let mut kept = HashSet::new();
-        if complete && !moved.sole {
-            for &raw in self.aliases.get(&moved.from).map_or(&[][..], Vec::as_slice) {
+        let (mut kept, mut taken) = (HashSet::new(), HashSet::new());
+        if complete {
+            for &raw in &moved.stayed {
                 kept.extend(sequences(raw)?);
             }
             for sequence in sequences(moved.raw)? {
-                kept.remove(&sequence);
+                if !kept.remove(&sequence) && self.slot(moved.raw) != NONE {
+                    taken.insert(sequence);
+                }
             }
         }
-        let follow = complete && self.slot(moved.raw) != NONE;
         let mut gone = HashSet::new();
         for key in open {
             let Some(mut part) = Self::held_part(own, pending, key, today)? else { continue };
             if part.cost_ordinal.is_none() || part.sequence.is_some_and(|sequence| kept.contains(&sequence)) {
                 continue;
             }
-            if moved.sole && follow {
+            if part.sequence.is_some_and(|sequence| taken.contains(&sequence)) {
                 gone.insert(key);
                 pending.parts.remove(&key);
                 pending.withdrawn.push(key);
@@ -1434,6 +1454,7 @@ impl Writer for PowerLedger {
             self.recover = false;
         } else if self.recover {
             self.withhold_ended(out, &mut pending, midnight(at))?;
+            self.defer_held(out, &mut pending)?;
         }
         self.roll(hour, &mut pending, out)?;
         self.changes(hour, out, witnesses.as_ref(), &mut pending)?;
