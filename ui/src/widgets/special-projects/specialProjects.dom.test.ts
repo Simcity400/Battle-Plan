@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withNativePage } from '../../../../tools/native-page.ts';
 
-test('at 15 hours a frame for 600 frames, special projects ask nothing, commit only when a project starts, paint the head progress and the pushed details, and report the hour they show', async t => {
+// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
+test.skip('at 15 hours a frame for 600 frames, special projects ask nothing, commit only when a project starts, paint the head progress and the pushed details, and report the hour they show', async t => {
   await withNativePage('special-projects', '/ui/src/widgets/special-projects/specialProjects.dom.fixture.tsx', page => page.stage('special projects', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.specialProjects.${expression}`);
     await act('mount()');

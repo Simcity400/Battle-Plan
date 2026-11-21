@@ -49,6 +49,14 @@ class Comments(unittest.TestCase):
         self.assertEqual(list(lint.added_comments(name, before, b"fn after() {}\n// kept\n")), [])
         self.assertEqual(list(lint.added_comments(name, before, b"// replacement\n// kept\n// kept\n")), [1, 3])
         self.assertEqual(list(lint.added_comments(name, b"", b"fn after() {} // copied\n")), [1])
+        quarantined = b"// quarantine: #3 why\ntest.skip('name', () => {});\n"
+        self.assertEqual(list(lint.added_comments("ui/src/a.test.ts", b"", quarantined)), [])
+        self.assertEqual(list(lint.added_comments("tools/a.test.mjs", b"", quarantined)), [])
+        self.assertEqual(list(lint.added_comments("ui/src/a.ts", b"", quarantined)), [1])
+        self.assertEqual(list(lint.added_comments("ui/src/a.test.ts", b"", b"// quarantine: why\n")), [1])
+        self.assertEqual(list(lint.added_comments("ui/src/a.test.ts", b"", b"// quarantine: #3 why\ntest('name', () => {});\n")), [1])
+        looped = b"// quarantine: #3 why\r\nfor (const x of [1]) test.skip(`n ${x}`, () => {});\r\n"
+        self.assertEqual(list(lint.added_comments("ui/src/a.test.ts", b"", looped)), [])
 
     def test_git_status_keeps_rename_baselines_without_granting_them_to_copies(self):
         with patch.object(lint, "paths", side_effect=[

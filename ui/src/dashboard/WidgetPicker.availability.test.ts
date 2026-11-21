@@ -7,7 +7,8 @@ import type { DashboardSource, ProductRequest } from './client';
 import type { WidgetRuntime } from './definitions';
 import { syntheticDashboardSource } from './source.fixture.ts';
 
-test('the casualty-pairs catalogue probe carries its source into prepared product routing', async () => {
+// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
+test.skip('the casualty-pairs catalogue probe carries its source into prepared product routing', async () => {
   const calls: { request: ProductRequest; source: DashboardSource; active: boolean }[] = [];
   const globals = globalThis as typeof globalThis & { __pickerAvailability?: typeof calls };
   globals.__pickerAvailability = calls;

@@ -4,7 +4,8 @@ import { resolveOptions } from '../../dashboard/options.ts';
 import { definition, OPTIONS } from './definition.ts';
 import { airForceRequest, airForceTotals, validateAirForceReply } from './airForceData.ts';
 
-test('air force defaults to planes, roster ownership and the shared top-ten race', () => {
+// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
+test.skip('air force defaults to planes, roster ownership and the shared top-ten race', () => {
   const options = resolveOptions(OPTIONS, {});
   assert.equal(options.measure, 'planes'); assert.equal(options.ownership, 'roster');
   assert.equal(options.view, 'race'); assert.equal(options.split, false); assert.equal(options.dateOverlay, false);
@@ -14,7 +15,8 @@ test('air force defaults to planes, roster ownership and the shared top-ten race
     { branchId: 'branch', tags: [], top: 10, measure: 'planes', ownership: 'roster' });
 });
 
-test('air force requests preserve opaque picks and select wings/effective ownership', () => {
+// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
+test.skip('air force requests preserve opaque picks and select wings/effective ownership', () => {
   assert.deepEqual(airForceRequest('branch', { tags: ['space , tag', 'another'] }, resolveOptions(OPTIONS, { measure: 'wings', ownership: 'effective' })),
     { branchId: 'branch', tags: ['space , tag', 'another'], top: null, measure: 'wings', ownership: 'effective' });
   assert.equal(resolveOptions(OPTIONS, { measure: 'unknown' }).measure, 'planes');

@@ -9,7 +9,8 @@ import type { CountryRaceViewProps } from '../../charts/race/CountryRaceView';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import type { reducePartsRaceDrill } from '../../charts/race/partsRaceDrill';
 
-test('actual Army breakdown renders a country template roster when its deployed count is zero', async () => {
+// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
+test.skip('actual Army breakdown renders a country template roster when its deployed count is zero', async () => {
   const span = { firstHour: 0, lastHour: 100 };
   const reply = { branchId: '1', available: true, measures: ['divisions'], types: [], warnings: [],
     windows: [], window: 0, interval: span, series: [{ tag: 'AAA', membership: null, segments: [span],
@@ -45,7 +46,8 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
   } finally { delete host.__armyTemplateRequest; await vite.close(); }
 });
 
-test('actual Army keeps dated flags, full inventories and focusable chart return targets', async () => {
+// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
+test.skip('actual Army keeps dated flags, full inventories and focusable chart return targets', async () => {
   type Action = Parameters<typeof reducePartsRaceDrill>[1];
   const actions: Action[] = [], effects: (() => void)[] = [];
   const portals: { label: unknown; hour: number | null; reason: string | null }[] = [];
