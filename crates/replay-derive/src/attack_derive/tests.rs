@@ -456,8 +456,7 @@ fn frame() -> DecodedFrame {
             .into()
         }),
     };
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+    synthetic_game::enter_fixed_modifiers();
     let mut keys = engine_executable::modifier_keys::all()
         .unwrap()
         .collect::<Vec<_>>();

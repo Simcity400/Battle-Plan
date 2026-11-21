@@ -27,6 +27,7 @@ collector-status.workspace = true
 windows-sys = { workspace = true, features = ["Win32_System_Performance"] }
 
 [dev-dependencies]
+synthetic-game.workspace = true
 collector-test-support.workspace = true
 serde_json.workspace = true
 
@@ -35,7 +36,6 @@ serde_json.workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 collector-metadata = { workspace = true, features = ["test-support"] }
-engine-executable = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }

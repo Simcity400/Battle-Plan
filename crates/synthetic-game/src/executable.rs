@@ -109,6 +109,19 @@ impl Executable {
         self
     }
 
+    pub fn fixed_layout(token_ids: &[u32]) -> Self {
+        token_ids
+            .iter()
+            .fold(Self::empty(), |game, &id| {
+                game.keyword(id, &format!("synthetic_token_{id}"))
+            })
+            .modifiers(
+                (0..engine_executable::build::FIXED_MODIFIER_GAP)
+                    .map(|index| format!("synthetic_modifier_{index}")),
+            )
+            .pinned()
+    }
+
     pub fn version(mut self, text: &str) -> Self {
         text.clone_into(&mut self.version);
         self
@@ -366,6 +379,13 @@ pub fn tables() -> Tables {
 
 pub fn enter() -> Tables {
     let tables = tables();
+    executable_tables::enter(Some(tables));
+    tables
+}
+
+pub fn enter_fixed_modifiers() -> Tables {
+    static TABLES: OnceLock<Tables> = OnceLock::new();
+    let tables = *TABLES.get_or_init(|| Executable::fixed_layout(&[]).build());
     executable_tables::enter(Some(tables));
     tables
 }

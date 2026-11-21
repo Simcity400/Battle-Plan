@@ -159,40 +159,8 @@ pub(super) fn read(layers: &ResolvedLayers, language: &str) -> io::Result<serde_
 mod tests {
     use super::*;
     #[test]
-    #[ignore = "requires BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_SCRIPTED_CONTENT_PROFILES"]
-    fn scripted_map_demand_reads_installed_content_stacks() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
-        let game_dir: std::path::PathBuf = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap().into();
-        let profiles = std::env::var_os("BATTLE_PLAN_SCRIPTED_CONTENT_PROFILES").or_else(|| std::env::var_os("HOI4_SCRIPTED_CONTENT_PROFILES")).unwrap();
-        let mut modes_seen = 0;
-        for user_dir in std::env::split_paths(&profiles) {
-            let content =
-                content_reader_core::content::gather(&content_reader_core::content::GatherOptions {
-                    game_dir: game_dir.clone(),
-                    cache_dir: user_dir.join("content_cache"),
-                    user_dir,
-                    dlc_order: None,
-                })
-                .unwrap();
-            let modes = content_reader_core::scripted_map_modes::read(&content.layers).unwrap();
-            let demand = read(&content.layers, &content.language).unwrap();
-            modes_seen += modes.modes.len();
-            eprintln!(
-                "{} mods, {} modes, {} mode diagnostics; demand {demand}",
-                content.mods.len(),
-                modes.modes.len(),
-                modes.refused.len()
-            );
-        }
-        assert!(
-            modes_seen > 0,
-            "the installed profiles must reach scripted modes"
-        );
-    }
-
-    #[test]
     fn scripted_map_demand_empty_controller_targets_need_every_state_cache() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        content_reader_core::test_game::enter();
         let root =
             std::env::temp_dir().join(format!("scripted-empty-targets-{}", std::process::id()));
         std::fs::create_dir_all(root.join("common/map_modes")).unwrap();
@@ -210,7 +178,10 @@ mod tests {
 
     #[test]
     fn scripted_map_demand_follows_hover_alternatives_and_limits_static_state_targets() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        use engine_executable::executable_tables::TriggerReader;
+        content_reader_core::test_game::with(|game| {
+            game.trigger("is_in_tech_sharing_group", 0, TriggerReader::Assign, 0)
+        });
         let root = std::env::temp_dir().join(format!("scripted-map-demand-{}", std::process::id()));
         let files = [
             (

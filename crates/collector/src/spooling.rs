@@ -5230,8 +5230,8 @@ mod tests {
             );
             return;
         }
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("capture tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+        synthetic_game::Executable::fixed_layout(engine_fixed_layout::fixed_layout::TOKEN_IDS)
+            .enter();
         let exclusive_roles = [
             Role::World,
             Role::Presentation,
@@ -8027,8 +8027,8 @@ mod tests {
 
     #[test]
     fn fixed_layout_refusal_survives_daily_carry_and_independent_keyframes() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+        synthetic_game::Executable::fixed_layout(engine_fixed_layout::fixed_layout::TOKEN_IDS)
+            .enter();
         use replay_frame::frame::FrameDecoder;
         let (mut campaign, _) = campaign();
         let branch = campaign.observe(None, 0, Some(1)).unwrap();
@@ -8054,7 +8054,7 @@ mod tests {
             let decoded = decoder.apply(&frame).unwrap();
             for &table in replay_derive::fixed_layout::POWER_BALANCE.tables {
                 assert!(
-                    matches!(&*decoded.tables[table.index()], TableView::Unavailable { reason } if reason.contains("power_balance_daily"))
+                    matches!(&*decoded.tables[table.index()], TableView::Unavailable { reason } if reason.contains(&format!("synthetic_modifier_{key}")))
                 );
                 if force_keyframe {
                     let alone = FrameDecoder::new().apply(&frame).unwrap();
