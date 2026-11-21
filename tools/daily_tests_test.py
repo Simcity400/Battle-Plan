@@ -68,6 +68,7 @@ class Continuation(unittest.TestCase):
         self.clock = self.enterContext(mock.patch.object(dt.time, "monotonic", return_value=100.0))
         self.step = self.enterContext(mock.patch.object(dt, "run_step", side_effect=self.complete))
         self.record_history = dt.record_history
+        self.mark = self.enterContext(mock.patch.object(dt, "write_marker", wraps=dt.write_marker))
         self.history = self.enterContext(mock.patch.object(dt, "record_history", wraps=self.record_history))
         self.write_report = dt.write_report
         self.report = self.enterContext(mock.patch.object(dt, "write_report", wraps=self.write_report))
@@ -106,8 +107,7 @@ class Continuation(unittest.TestCase):
             return self.record_history(*args)
 
         self.history.side_effect = record
-        with mock.patch.object(dt, "MARKER", wraps=self.marker) as marker:
-            self.assertEqual(dt.run(self.args), 0)
+        self.assertEqual(dt.run(self.args), 0)
         self.step.assert_called_once()
         command, log, environment, seconds = self.step.call_args.args
         self.assertEqual(command[:6], [
@@ -124,14 +124,24 @@ class Continuation(unittest.TestCase):
         ])
         self.lock.assert_called_once_with()
         self.close.assert_called_once_with(41)
-        self.assertEqual(marker.write_text.call_count, 2)
-        self.assertTrue(marker.write_text.call_args.args[0].endswith(f"{self.step.call_args.args[1].parent.name}\n"))
-        marker.unlink.assert_called_with(missing_ok=True)
+        self.assertEqual(self.mark.call_count, 2)
+        self.assertTrue(self.mark.call_args.args[0].endswith(f"{self.step.call_args.args[1].parent.name}\n"))
         self.assertFalse(self.marker.exists())
         self.history.assert_called_once()
         self.assertEqual([call.args[0] for call in self.report.call_args_list], ["RUNNING", "PASSED"])
         self.assertEqual(self.report.call_args, mock.call("PASSED", ["synthetic report"]))
         self.assertEqual(len((self.reports / "history.tsv").read_text().splitlines()), 1)
+
+    def test_an_interrupted_marker_rewrite_keeps_the_run_it_named(self):
+        dt.write_marker("4242 2026-11-20 03:00 2026-11-20-0300-aaaaaaaaaa\n")
+
+        def stopped(path, *args, **kwargs):
+            path.write_bytes(b"")
+            raise OSError("stopped mid-write")
+
+        with mock.patch.object(Path, "write_text", stopped), self.assertRaises(OSError):
+            dt.write_marker("4242 2026-11-21 03:00\n")
+        self.assertEqual(self.marker.read_text(encoding="utf-8"), "4242 2026-11-20 03:00 2026-11-20-0300-aaaaaaaaaa\n")
 
     def test_an_interrupted_open_groups_write_still_closes_the_groups_listed_before(self):
         folder = self.reports / "run"

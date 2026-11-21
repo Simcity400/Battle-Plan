@@ -213,6 +213,12 @@ def record_history(started, commit, result, failed):
         history.write(f"{started:%Y-%m-%d %H:%M}\t{(commit or '')[:10]}\t{result}\t{count}\n")
 
 
+def write_marker(text):
+    """Replaces TESTS_RUNNING whole, so an interrupted rewrite keeps the run it named."""
+    (REPORTS / (MARKER.name + ".tmp")).write_text(text, encoding="utf-8")
+    os.replace(REPORTS / (MARKER.name + ".tmp"), MARKER)
+
+
 def run_step(command, log, environment, seconds, stdout=None):
     """The step's exit code, or None when it ran out of time and was stopped. Its stdout goes to
     `stdout` when given, else to its log with its stderr."""
@@ -866,13 +872,13 @@ def run(args):
             unfinished = unfinished_run()
             if unfinished:
                 earlier = report_unfinished(unfinished, publishing)
-            MARKER.write_text(f"{os.getpid()} {started:%Y-%m-%d %H:%M}\n", encoding="utf-8")
+            write_marker(f"{os.getpid()} {started:%Y-%m-%d %H:%M}\n")
             write_report("RUNNING", [f"Started {started:%Y-%m-%d %H:%M}. Earlier runs: history.tsv."])
             git("fetch", "--quiet", "origin", "main")
             git("checkout", "--quiet", "--detach", "--force", "origin/main")
             commit = git("rev-parse", "HEAD")
             folder = run_folder(started, commit)
-            MARKER.write_text(f"{os.getpid()} {started:%Y-%m-%d %H:%M} {folder.name}\n", encoding="utf-8")
+            write_marker(f"{os.getpid()} {started:%Y-%m-%d %H:%M} {folder.name}\n")
             publishing.status(commit, STATUS, "pending", f"running since {started:%Y-%m-%d %H:%M}")
             log = folder / "runner.log"
             command = [
