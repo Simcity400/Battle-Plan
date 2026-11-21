@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn a_refused_portrait_or_tactic_picture_hides_the_earlier_sprite() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut out = Bindings::default();
     let has = |name: &str| name == "GFX_known" || name == "combat_tactic:tactic_a";
     sprite(&mut out.values, "leader", "GFX_earlier".into());
@@ -107,8 +106,7 @@ fn exile_operand_refusal_hides_only_badge_and_keeps_commander_portrait() {
 
 #[test]
 fn null_tactic_keeps_authored_art_and_counters_the_real_defender() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut out = Bindings::default();
     for prefix in ["attacker", "defender"] {
         hide(&mut out.values, &format!("{prefix}_tactic"));

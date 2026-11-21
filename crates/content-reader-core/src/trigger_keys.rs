@@ -718,17 +718,87 @@ pub fn frame(template: &Template) -> Vec<u8> {
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn synthetic_vocabulary(game: synthetic_game::Executable) -> synthetic_game::Executable {
+    use crate::scope::ScopeKind::{Character, Combat, Country, State};
+    let country = Country.bit();
+    let state = State.bit();
+    let combat = Combat.bit();
+    let character = Character.bit();
     game.trigger_at(0x27C3, "if", 0, Reader::Body, 0)
         .trigger("and", 0, Reader::Body, 0)
         .trigger("or", 0, Reader::Body, 0)
         .trigger("not", 0, Reader::Body, 0)
         .trigger("always", 0, Reader::Assign, 0)
-        .trigger("skill", 0, Reader::Comparison, 0)
-        .trigger("is_attacker", 0, Reader::Assign, 0)
+        .trigger("skill", combat | character, Reader::Comparison, 0)
+        .trigger("is_attacker", combat, Reader::Assign, 0)
         .trigger("custom_trigger_tooltip", 0, Reader::Own(0x141446060), 0x141446C20)
         .trigger("meta_trigger", 0, Reader::Body, 0x1403CC150)
         .trigger_at(0x2828, "can_build_railway", 0, Reader::Body, 0x1404566e0)
         .trigger_at(0x4C9D, "collection_size", 0, Reader::Body, 0x140567870)
+        .trigger("all_country_with_original_tag", 0, Reader::Body, 0x140454AA0)
+        .trigger("all_neighbor_state", state, Reader::Body, 0x1404559d0)
+        .trigger("any_country_with_original_tag", 0, Reader::Body, 0x140454AA0)
+        .trigger("any_neighbor_state", state, Reader::Body, 0x1404559d0)
+        .trigger("any_state_in", 0, Reader::Body, 0x140491720)
+        .trigger("exists", country, Reader::Assign, 0)
+        .trigger("frontage_full", combat, Reader::Assign, 0)
+        .trigger("hardness", combat, Reader::Comparison, 0)
+        .trigger("has_any_captured_general", country, Reader::Assign, 0)
+        .trigger("has_artillery_ratio", combat, Reader::Comparison, 0)
+        .trigger("has_character_flag", character, Reader::Assign, 0)
+        .trigger("has_civil_war", country, Reader::Assign, 0)
+        .trigger("has_combat_modifier", combat, Reader::Assign, 0)
+        .trigger("has_completed_focus", country, Reader::Assign, 0)
+        .trigger("has_cosmetic_tag", country, Reader::Assign, 0)
+        .trigger("has_country_flag", country, Reader::Assign, 0)
+        .trigger("has_country_leader", country, Reader::Body, 0x140457AE0)
+        .trigger("has_country_leader_ideology", country, Reader::Assign, 0)
+        .trigger("has_country_leader_with_trait", country, Reader::Assign, 0)
+        .trigger("has_dlc", 0, Reader::Assign, 0)
+        .trigger(
+            "has_dynamic_modifier",
+            state | country,
+            Reader::Own(0x140454140),
+            0x140457B50,
+        )
+        .trigger("has_global_flag", 0, Reader::Assign, 0)
+        .trigger("has_government", country, Reader::Assign, 0)
+        .trigger("has_idea", country, Reader::Assign, 0)
+        .trigger(
+            "has_naval_invasion_against_state",
+            country,
+            Reader::Own(0x140454290),
+            0x1405972d0,
+        )
+        .trigger("has_reserves", combat, Reader::Assign, 0)
+        .trigger("has_tactic", country, Reader::Assign, 0)
+        .trigger("has_tech", country, Reader::Assign, 0)
+        .trigger("has_trait", combat | character, Reader::Assign, 0)
+        .trigger("has_unit_type", combat, Reader::Assign, 0)
+        .trigger("has_war_with", country, Reader::Assign, 0)
+        .trigger(
+            "hidden_trigger",
+            crate::scope::ScopeKind::all_bits(),
+            Reader::Body,
+            0,
+        )
+        .trigger("is_ai", country, Reader::Assign, 0)
+        .trigger("is_ally_with", country, Reader::Assign, 0)
+        .trigger("is_coastal", state, Reader::Assign, 0)
+        .trigger("is_controlled_by", state, Reader::Assign, 0)
+        .trigger("is_core_of", state, Reader::Assign, 0)
+        .trigger("is_country_leader", character, Reader::Assign, 0)
+        .trigger("is_fighting_in_terrain", combat, Reader::Assign, 0)
+        .trigger("is_in_faction_with", country, Reader::Assign, 0)
+        .trigger("is_leader_visible", country, Reader::Own(0x14046ACF0), 0x14046AE20)
+        .trigger("is_owned_by", state, Reader::Assign, 0)
+        .trigger("is_special_project_completed", country, Reader::Assign, 0)
+        .trigger("is_subject_of", country, Reader::Assign, 0)
+        .trigger("num_of_controlled_states", country, Reader::Comparison, 0)
+        .trigger("num_of_nukes", country, Reader::Comparison, 0)
+        .trigger("original_tag", country, Reader::Assign, 0)
+        .trigger("phase", combat, Reader::Assign, 0)
+        .trigger("province_vp", combat, Reader::Comparison, 0)
+        .trigger("skill_advantage", combat, Reader::Comparison, 0)
 }
 
 #[cfg(test)]

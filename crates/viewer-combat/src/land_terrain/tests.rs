@@ -3,8 +3,7 @@ use viewer_foundation::tooltip_text::NoIcons;
 
 #[test]
 fn terrain_effects_read_content_and_keep_native_order_and_zero_branches() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let content = content_reader_core::terrain::parse_definitions(b"categories={synthetic={movement_cost=1.75 combat_width=47 combat_support_width=19 supply_flow_penalty_factor=0.12 units={attack=-0.23 movement=0.15 defence=0.07} example_effect=0.2}} ").unwrap();
     let terrain = &content.categories[0];
     let loc: Localisation = [

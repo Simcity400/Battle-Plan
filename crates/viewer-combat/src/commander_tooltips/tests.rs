@@ -6,8 +6,7 @@ use viewer_foundation::tooltip_text::NoIcons;
 
 #[test]
 fn naval_trait_hovers_refuse_each_shown_entry_by_name_and_clear_authored_seeds() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use viewer_foundation::map::test_support::gui::windows;
     let windows = windows(
         br#"guiTypes={
@@ -438,8 +437,7 @@ fn exile_windows() -> NativeWindows {
 
 #[test]
 fn exile_badge_hover_has_native_modifier_lines_and_delayed_description() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use std::time::{Duration, Instant};
     use viewer_foundation::map::{native_gui::lifecycle::Instance, test_support::gui::fixture};
     use viewer_foundation::tooltip_painter::HoverState;
@@ -515,8 +513,7 @@ fn exile_badge_hover_has_native_modifier_lines_and_delayed_description() {
 
 #[test]
 fn exile_badge_hover_uses_mod_values_and_counts_named_refusals() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let windows = exile_windows();
     let mut files = exile_files();
     files.push((
@@ -622,8 +619,7 @@ fn learning_ratio_preserves_native_sentinel_and_integer_arithmetic() {
 
 #[test]
 fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let loc: Localisation = [
         ("MODIFIER_ATTACK", "Division Attack"),
         ("forest", "Forest"),
@@ -935,8 +931,7 @@ fn timed_trait_uses_the_first_matching_entry_and_nonnegative_days() {
 
 #[test]
 fn naval_timed_trait_hover_shows_zero_days_and_refuses_old_format_absence() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let loc: Localisation = exile_localisation()
         .iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -1014,8 +1009,7 @@ fn naval_timed_trait_hover_shows_zero_days_and_refuses_old_format_absence() {
 
 #[test]
 fn naval_bind_uses_live_and_result_grid_paths_and_skips_null_commanders() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use replay_data::{
         rows::CountryLinkRow, rows::NavalCombatDetailsRow, rows::NavalCombatResultDetailsRow,
         rows::NavalCombatSideDetails, rows::NavalResultSideDetails, rows::SimulationFeatureRow,

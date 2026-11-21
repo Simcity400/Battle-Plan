@@ -169,6 +169,17 @@ impl Executable {
         self
     }
 
+    pub fn pinned_modifiers(mut self, names: impl IntoIterator<Item = (u32, &'static str)>) -> Self {
+        let count = engine_executable::build::FIXED_MODIFIER_GAP as usize;
+        self.modifiers.extend(
+            (self.modifiers.len()..count).map(|index| leak(&format!("synthetic_modifier_{index}"))),
+        );
+        for (index, name) in names {
+            self.modifiers[index as usize] = name;
+        }
+        self.pinned()
+    }
+
     pub fn pinned(mut self) -> Self {
         self.pinned = true;
         self

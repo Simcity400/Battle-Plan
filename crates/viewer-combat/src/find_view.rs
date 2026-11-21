@@ -746,8 +746,7 @@ mod tests {
 
     #[test]
     fn the_buttons_show_their_authored_text_localised() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let windows = viewer_foundation::map::native_windows::NativeWindows::read(
             b"guiTypes = { containerWindowType = { name = unit_counter_navy }               containerWindowType = { name = naval_combat_mapicon }               containerWindowType = { name = find_view                 buttonType = { name = find_button buttonText = \"FIND\" buttonFont = \"hoi_16mbs\" }                 buttonType = { name = goto_home_button buttonText = \"GOTO_CAPITAL\" buttonFont = \"hoi_16mbs\" }                 buttonType = { name = back_button buttonFont = \"hoi_16mbs\" } } }",
             [1280, 720],
