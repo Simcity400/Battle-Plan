@@ -276,7 +276,10 @@ mod tests {
 
     #[test]
     fn songs_join_tracks_stations_and_chance_bodies_across_files() {
-        engine_tables();
+        use content_reader_core::trigger_keys::Reader;
+        content_reader_core::test_game::with(|game| {
+            game.trigger("has_war", 0, Reader::Assign, 0)
+        });
         let stack = Stack::new("music_catalog");
         let (base, addon) = (stack.base(), stack.addon());
         stack.write(
@@ -320,12 +323,19 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
             })
             .collect();
         assert_eq!(songs, [("theme", "base_music"), ("march", "pack")]);
-        assert!(
-            music.songs[0]
-                .chance
-                .iter()
-                .any(|item| item.keyword_is("modifier"))
-        );
+        let modifier = music.songs[0]
+            .chance
+            .iter()
+            .find(|item| item.keyword_is("modifier"))
+            .unwrap();
+        let has_war = modifier
+            .value
+            .items()
+            .unwrap()
+            .iter()
+            .find(|item| item.keyword_is("has_war"))
+            .unwrap();
+        assert_eq!(has_war.value.scalar(), Some(b"yes".as_slice()));
         let notes = music.notes.lines();
         for expected in [
             "music/music.asset: refused repeated music theme",
@@ -351,7 +361,7 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
 
     #[test]
     fn unmodelled_track_fields_are_refused_by_name() {
-        engine_tables();
+        content_reader_core::test_game::enter();
         let stack = Stack::new("music_catalog_fields");
         let base = stack.base();
         stack.write(
@@ -379,7 +389,7 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
 
     #[test]
     fn track_fields_in_any_case_load_without_a_refusal() {
-        engine_tables();
+        content_reader_core::test_game::enter();
         let stack = Stack::new("music_catalog_case");
         let base = stack.base();
         stack.write(
@@ -412,7 +422,7 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
 
     #[test]
     fn escaped_quotes_stay_part_of_track_song_and_station_names() {
-        engine_tables();
+        content_reader_core::test_game::enter();
         let stack = Stack::new("music_catalog_quotes");
         let base = stack.base();
         stack.write(
@@ -456,7 +466,7 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
 
     #[test]
     fn a_track_name_is_added_and_found_by_its_first_63_bytes() {
-        engine_tables();
+        content_reader_core::test_game::enter();
         let stack = Stack::new("music_catalog_long_names");
         let base = stack.base();
         let cut = "t".repeat(63);
@@ -491,39 +501,42 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
         );
     }
 
-    fn engine_tables() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    #[test]
+    fn a_resolved_song_decodes_the_same_in_packets_and_as_one_track() {
+        content_reader_core::test_game::enter();
+        let stack = Stack::new("music_decode");
+        let base = stack.base();
+        stack.write(
+            &base,
+            "music/tone.asset",
+            r#"music = { name = tone file = "tone.ogg" }"#,
+        );
+        stack.write(
+            &base,
+            "music/tone.txt",
+            r#"music_station = "test_station" music = { song = tone }"#,
+        );
+        std::fs::write(
+            base.join("music/tone.ogg"),
+            include_bytes!("fixtures/synthetic-tone.ogg"),
+        )
+        .unwrap();
+        let layers = stack.layers(&[]);
+        let music = Music::read(&layers).unwrap();
+        let [song] = music.songs.as_slice() else {
+            panic!("expected one song, got {:?}", music.songs);
+        };
+        let track = &music.tracks[song.track];
+        let bytes = layers.read_uncovered(&track.path).unwrap();
+        let pcm = crate::ogg::decode(bytes.to_vec()).unwrap();
+        assert_eq!((pcm.rate, pcm.channels), (8_000, 1));
+        assert!(pcm.samples.iter().any(|sample| sample.abs() > 0.1));
+        let mut stream = crate::ogg::open(bytes).unwrap();
+        let mut streamed = Vec::new();
+        while let Some(packet) = stream.decode_next().unwrap() {
+            assert_eq!((packet.rate, packet.channels), (pcm.rate, pcm.channels));
+            streamed.extend_from_slice(&packet.samples);
+        }
+        assert_eq!(streamed, pcm.samples);
     }
-}
-
-#[cfg(test)]
-#[test]
-#[ignore = "reads the installation named by BATTLE_PLAN_GAME_DIR"]
-fn installed_music_resolves_and_decodes() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
-    let game = std::path::PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));
-    let layers = ResolvedLayers::from_folders(&[(&game, &[])]).unwrap();
-    let music = Music::read(&layers).unwrap();
-    eprintln!("{} tracks, {} songs", music.tracks.len(), music.songs.len());
-    for line in music.notes.lines() {
-        eprintln!("  {line}");
-    }
-    let first = &music.tracks[music.songs[0].track];
-    let pcm = crate::ogg::decode(layers.read_uncovered(&first.path).unwrap().to_vec()).unwrap();
-    eprintln!(
-        "{}: {} Hz, {} channels, {} frames",
-        first.path,
-        pcm.rate,
-        pcm.channels,
-        pcm.frames()
-    );
-    assert!(pcm.frames() > 0);
-    let mut stream = crate::ogg::open(layers.read_uncovered(&first.path).unwrap()).unwrap();
-    let mut streamed = Vec::new();
-    while let Some(packet) = stream.decode_next().unwrap() {
-        assert_eq!((packet.rate, packet.channels), (pcm.rate, pcm.channels));
-        streamed.extend_from_slice(&packet.samples);
-    }
-    assert_eq!(streamed, pcm.samples);
 }

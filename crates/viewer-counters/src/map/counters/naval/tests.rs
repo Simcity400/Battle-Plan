@@ -628,7 +628,7 @@ fn cached_naval_operands_equal_fresh_joins_and_share_the_model_column() {
 
 #[test]
 fn a_port_roster_drawn_over_another_hours_task_forces_joins_them_by_handle() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let guis = native::Guis::new(vec![(
         MAPICONS_GUI.into(),
         native::read(
@@ -710,7 +710,7 @@ fn a_port_roster_drawn_over_another_hours_task_forces_joins_them_by_handle() {
 
 #[test]
 fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occurrences() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let guis = native::Guis::new(vec![(
         MAPICONS_GUI.into(),
         native::read(
@@ -870,7 +870,7 @@ fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occur
 #[test]
 fn counters_laid_out_across_a_seek_back_never_mix_their_tables_hour_with_another() {
     use replay_data::rows::TaskForceCounterInputRow;
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let guis = native::Guis::new(vec![(
         MAPICONS_GUI.into(),
         native::read(

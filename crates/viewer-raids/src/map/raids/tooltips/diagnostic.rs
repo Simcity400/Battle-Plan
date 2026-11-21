@@ -726,8 +726,7 @@ mod tests {
 
     #[test]
     fn failed_condition_chain_keeps_order_first_cooldown_and_source_country_title() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let assets = assets();
         let mut frame = frame();
         let mut kind = assets.catalog.types[0].clone();
@@ -818,8 +817,7 @@ mod tests {
 
     #[test]
     fn passing_conditions_emit_nothing_and_category_denial_has_no_text() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let mut assets = assets();
         let frame = frame();
         let mut kind = assets.catalog.types[0].clone();

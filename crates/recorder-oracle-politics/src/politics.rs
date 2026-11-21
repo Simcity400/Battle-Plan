@@ -1386,8 +1386,7 @@ mod tests {
 
     #[test]
     fn advisor_tokens_merge_case_variants_from_different_mod_files() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let names = content_reader_core::key_names::KeyNames::default();
         let mut authored = content_reader_core::characters::Characters::default();
         for file in [

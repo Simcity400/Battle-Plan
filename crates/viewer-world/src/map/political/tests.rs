@@ -53,7 +53,7 @@ fn appearance(country: u32, rgb: [f32; 3]) -> CountryAppearanceRow {
     }
 }
 
-fn strategic_regions() -> BTreeMap<u32, StrategicRegion> {
+pub(in crate::map) fn strategic_regions() -> BTreeMap<u32, StrategicRegion> {
     BTreeMap::from([(
         4,
         StrategicRegion {
@@ -115,7 +115,7 @@ fn strategic() -> LayerPlane {
     }
 }
 
-fn map() -> MapData {
+pub(in crate::map) fn map() -> MapData {
     let kinds = [
         (0, ProvinceKind::Land),
         (1, ProvinceKind::Land),
@@ -201,7 +201,7 @@ fn frame(rows: Vec<ProvinceRow>) -> DecodedFrame {
     }
 }
 
-fn occupied() -> DecodedFrame {
+pub(in crate::map) fn occupied() -> DecodedFrame {
     frame(vec![
         province(1, 10, 100, 100),
         province(2, 10, 100, 100),

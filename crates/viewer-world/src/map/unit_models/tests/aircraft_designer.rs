@@ -191,8 +191,7 @@ const ALL: [&str; 3] = [
 
 #[test]
 fn with_the_dlc_an_archetype_without_a_saved_model_takes_its_pool_model() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let assets = assets(&ALL);
     let recorded = frame(ARCHETYPE, "", DLC);
     assert_eq!(
@@ -209,8 +208,7 @@ fn with_the_dlc_an_archetype_without_a_saved_model_takes_its_pool_model() {
 
 #[test]
 fn a_saved_model_is_answered_before_the_pools_are_run() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let assets = assets(&ALL);
     assert_eq!(
         resolve(&assets, ARCHETYPE, "saved_c47_entity", DLC),
@@ -224,8 +222,7 @@ fn a_saved_model_is_answered_before_the_pools_are_run() {
 
 #[test]
 fn an_undeclared_pool_model_falls_through_to_the_aircraft_ladder() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let assets = assets(&["ENG_transport_plane_entity"]);
     let recorded = frame(ARCHETYPE, "", DLC);
     assert_eq!(
@@ -242,8 +239,7 @@ fn an_undeclared_pool_model_falls_through_to_the_aircraft_ladder() {
 
 #[test]
 fn without_the_dlc_or_a_sub_unit_list_the_pools_are_not_run() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let assets = assets(&ALL);
     assert_eq!(
         resolve(&assets, ARCHETYPE, "saved_c47_entity", 0),

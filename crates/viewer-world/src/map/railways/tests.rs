@@ -86,8 +86,7 @@ fn edges(pairs: &[(u32, u32, i32)]) -> Vec<RailEdgeRow> {
 }
 #[test]
 fn anchor_slots_fold_ascii_case_and_skip_ambiguous_slots() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let map = MapData {
         width: 32,
         height: 32,
@@ -131,8 +130,6 @@ fn anchor_slots_fold_ascii_case_and_skip_ambiguous_slots() {
 
 #[test]
 fn native_strips_preserve_triangles_and_do_not_join_provinces() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mesh = geography().build_rows(&edges(&[(1, 2, 2), (2, 3, 4)]), &[], &[]);
     let pack = |v: RailVertex| {
         [
@@ -194,8 +191,6 @@ fn building_and_losing_edges_changes_the_current_network() {
 }
 #[test]
 fn a_train_route_runs_over_the_boundary_crossings_and_out_of_its_first_province() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let geo = geography();
     let h = heights();
     let network = RailNetwork::new(&edges(&[(1, 2, 1), (2, 3, 1)]), &[], &[]);

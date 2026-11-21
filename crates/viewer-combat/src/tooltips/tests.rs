@@ -5,8 +5,7 @@ use viewer_foundation::tooltip_text::NoIcons;
 
 #[test]
 fn combat_close_hovers_use_first_authored_shortcut_and_keep_tooltip_parts() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let loc = loc(&[
         ("SHORTCUT", "Shortcut: $KEY$"),
         ("MAIN", "Main"),
@@ -269,8 +268,7 @@ fn loc(entries: &[(&str, &str)]) -> Localisation {
 
 #[test]
 fn recorded_tactics_find_their_registry_effects() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut names = content_reader_core::key_names::KeyNames::default();
     names.counts.ideologies_gap = Some("common/ideologies/a.txt is unknown from line 1".into());
     let registry = Tactics::from_database(content_reader_core::combat_tactics::parse(
@@ -335,8 +333,7 @@ fn tactic_a() -> Described<'static> {
 
 #[test]
 fn the_null_tactic_object_is_described_like_a_tactic() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let loc = loc(&[
         ("HEADER", "$KEY$\n"),
         ("nullCombatTactic", "No Tactic Chosen"),
@@ -379,8 +376,7 @@ fn the_null_tactic_object_is_described_like_a_tactic() {
 
 #[test]
 fn tactic_description_goes_to_the_delayed_slot() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let loc = loc(&[
         ("tactic_a", "Tactic A"),
         ("HEADER", "$KEY$\n"),
@@ -411,8 +407,7 @@ fn tactic_description_goes_to_the_delayed_slot() {
 
 #[test]
 fn refused_hovers_name_their_reason() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let entries = |extra: &[(&str, &str)]| -> Localisation {
         [("tactic_a", "Tactic A"), ("HEADER", "$KEY$\n")]
             .iter()
@@ -576,8 +571,7 @@ fn skill_hover_prints_the_recorded_progress_and_offence_and_defence() {
 
 #[test]
 fn authored_seeds_never_replace_a_dynamic_hover_or_its_refusal() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let windows = windows(
         br#"containerWindowType = { name = view
             buttonType = { name = dynamic pdx_tooltip = AUTHORED }
@@ -612,8 +606,7 @@ fn authored_seeds_never_replace_a_dynamic_hover_or_its_refusal() {
 
 #[test]
 fn authored_seeds_resolve_case_without_aliasing_dynamic_hovers() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let windows = windows(
         br#"containerWindowType = { name = view
         buttonType = { name = Dynamic pdx_tooltip = AUTHORED }
@@ -660,8 +653,7 @@ fn authored_seeds_resolve_case_without_aliasing_dynamic_hovers() {
 
 #[test]
 fn authored_tooltip_hashes_preserve_fallback_and_count_invalid_keys() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let windows = windows(
         br#"containerWindowType = { name = view
         buttonType = { name = fallback tooltipText = MISSING }
@@ -747,8 +739,7 @@ fn null_tactic_object_can_counter_but_null_pointer_cannot() {
 
 #[test]
 fn organisation_effects_follow_active_tactics_and_validate_damage_sums() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let content = tactics(
         b"tactic_a = { attacker = 0.2 attacker_org_damage_modifier = 0.15 \
           defender_org_damage_modifier = -0.05 }",

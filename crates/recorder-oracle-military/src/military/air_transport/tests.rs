@@ -121,8 +121,7 @@ fn run_literals(
 
 #[test]
 fn pool_index_compares_exact_recorded_content_spelling_and_native_null_token() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let content = content();
     let report = run(wing(), saved(b"ModTransport", Some(RAID)), Ok(&content));
     assert!(report.differences.is_empty());
@@ -149,8 +148,7 @@ fn pool_index_compares_exact_recorded_content_spelling_and_native_null_token() {
 
 #[test]
 fn native_reverse_spelling_is_exact_even_when_content_declared_another_case() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let content = content();
     let literals = [(100, b"modtransport".as_slice()), (101, b"Fighter")];
     let report = run_literals(
@@ -181,8 +179,7 @@ fn native_reverse_spelling_is_exact_even_when_content_declared_another_case() {
 
 #[test]
 fn an_unsettled_content_category_refuses_only_a_reached_raid_admission() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut content = content();
     content.read(
         b"sub_units={bad={weights={x @variable=1}}}",
@@ -208,8 +205,7 @@ fn an_unsettled_content_category_refuses_only_a_reached_raid_admission() {
 
 #[test]
 fn missing_ambiguous_and_rejected_lexical_identity_refuse_the_pool_join() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let content = content();
     for literals in [
         vec![],
@@ -255,8 +251,7 @@ fn missing_ambiguous_and_rejected_lexical_identity_refuse_the_pool_join() {
 
 #[test]
 fn identical_native_reverse_aliases_keep_exact_writer_bytes_and_conflicts_stay_ambiguous() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut alias_content = SubUnits::default();
     alias_content.read(
         br#"sub_units={">"={type=air_transport}}"#,
@@ -266,7 +261,7 @@ fn identical_native_reverse_aliases_keep_exact_writer_bytes_and_conflicts_stay_a
         wing(),
         saved(b">", Some(RAID)),
         Ok(&alias_content),
-        &[(0x1D3, b">"), (20_000, b">\0ignored")],
+        &[(100, b">"), (20_000, b">\0ignored")],
     );
     assert!(report.differences.is_empty());
     assert!(report.failed_comparisons.is_empty());
@@ -295,8 +290,7 @@ fn identical_native_reverse_aliases_keep_exact_writer_bytes_and_conflicts_stay_a
 
 #[test]
 fn pool_fault_unknown_index_and_content_failure_do_not_erase_live_raid_differences() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let content = content();
     let mut actual = wing();
     actual.pool_subunit = Recorded::Value(None);
@@ -349,8 +343,7 @@ fn pool_fault_unknown_index_and_content_failure_do_not_erase_live_raid_differenc
 
 #[test]
 fn an_unrecorded_admitted_raid_reference_is_a_limitation_whatever_the_save_holds() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let content = content();
     for expected in [Some(RAID), None] {
         let mut actual = wing();
@@ -368,7 +361,7 @@ fn an_unrecorded_admitted_raid_reference_is_a_limitation_whatever_the_save_holds
 
 #[test]
 fn pool_backed_active_fighters_compare_certified_nonresolution_without_a_raw_packet() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let content = content();
     for (flags, saved_raid, differences) in [
         (Some(16), None, 0),
@@ -416,8 +409,7 @@ fn pool_backed_active_fighters_compare_certified_nonresolution_without_a_raw_pac
 
 #[test]
 fn live_raid_compares_both_full_words_and_resolution_in_both_directions() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let content = content();
     for (raw, resolves, expected, differences) in [
         (RAID, true, Some(RAID), 0),
@@ -442,8 +434,7 @@ fn live_raid_compares_both_full_words_and_resolution_in_both_directions() {
 
 #[test]
 fn omitted_null_and_stale_raw_bits_require_an_independent_native_witness() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let content = content();
     for raw in [0, u64::MAX, RAID] {
         let mut actual = wing();
@@ -464,8 +455,7 @@ fn omitted_null_and_stale_raw_bits_require_an_independent_native_witness() {
 
 #[test]
 fn intentional_unadmitted_raid_scope_and_older_fields_remain_explicit() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let content = content();
     for gate in 0..4 {
         let mut actual = wing();

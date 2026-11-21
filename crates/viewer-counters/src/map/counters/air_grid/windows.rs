@@ -459,7 +459,7 @@ mod tests {
     }
     #[test]
     fn carrier_grid_composes_through_both_holders_and_hits_in_the_outer_coordinates() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        content_reader_core::test_game::enter();
         let source = std::str::from_utf8(window_bytes()).unwrap().replacen(
             "guiTypes={",
             r#"guiTypes={
@@ -612,7 +612,7 @@ mod tests {
 
     #[test]
     fn air_item_draws_authored_controls_count_type_selection_flags_and_current_strength() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        content_reader_core::test_game::enter();
         super::super::super::tests::with_counter_inputs_fixture(
             super::super::super::tests::action_gui(false),
             |_| {},

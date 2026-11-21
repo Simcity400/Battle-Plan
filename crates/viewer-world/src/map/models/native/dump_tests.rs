@@ -69,8 +69,7 @@ fn draw(
 }
 
 fn fixture() -> (TestDir, ModelLibrary, usize) {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let directory = TestDir::new();
     let root = &directory.0;
     std::fs::create_dir_all(root.join("gfx/FX")).unwrap();

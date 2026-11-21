@@ -337,8 +337,7 @@ impl Presentation {
 
 #[test]
 fn placement_preserves_authored_height_scale_and_only_y_rotation() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let types = ambient::parse(b"type={type=mod_frame scale=2 always_visible=yes use_animation=no object={position={3 -4 5} rotation={90 90 90}}}", &content_reader_core::key_names::KeyNames::default()).unwrap();
     let value = instance(&types[0], &types[0].objects[0]);
     assert_eq!(value.position, [3., -4., 5.]);
@@ -460,8 +459,7 @@ fn ambient_admission_expiry_and_recreation_preserve_native_order() {
 
 #[test]
 fn event_only_ambient_uses_shared_player_scale_and_entry_clock() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let descriptors = content_reader_core::mesh::parse_descriptors(br#"entity={name=emitter scale=0.3 state={name=idle event={time=0 particle=mist keep_particle=yes}}}"#, "gfx/synthetic.asset").unwrap();
     let library = ModelLibrary::load(
         &ResolvedLayers::default(),
@@ -505,8 +503,7 @@ fn event_only_ambient_uses_shared_player_scale_and_entry_clock() {
 
 #[test]
 fn a_still_ambient_object_plays_its_default_state_from_when_it_appears() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let descriptors = content_reader_core::mesh::parse_descriptors(
         br#"entity={name=wind default_state=idle state={name=idle state_time=1 event={trigger_once=yes sound={soundeffect=amb_wind}}}}
             entity={name=late default_state=idle state={name=idle looping=no event={time=5 sound={soundeffect=amb_late}}}}

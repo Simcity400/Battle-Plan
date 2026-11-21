@@ -505,8 +505,7 @@ fn the_pool_is_the_raids_recorded_row_or_refused_by_name() {
 
 #[test]
 fn the_unit_entity_follows_the_native_ladder() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use content_reader_raids::raids::RaidUnitModel;
     let declared = |name: &str| {
         [
@@ -552,7 +551,12 @@ fn the_unit_entity_follows_the_native_ladder() {
         ),
         UnitEntity::Entity("fallback_entity".into())
     );
-    let primary = [(10, 0x40), (11, 0x10_0000), (12, 0x10_0000)];
+    let category = content_reader_core::test_game::category;
+    let primary = [
+        (10, category("capital_ship")),
+        (11, category("air_transport")),
+        (12, category("air_transport")),
+    ];
     assert_eq!(
         choose(
             &model(Some("ship_entity"), None, Some("air_transport")),
@@ -585,8 +589,7 @@ fn the_unit_entity_follows_the_native_ladder() {
 
 #[test]
 fn the_designer_model_follows_resolve_aircraft_designer_model_with_and_without_the_dlc() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (content, _) = content_reader_core::equipment::fixture::load(&[(
         "common/units/equipment/planes.txt",
         "equipments = {

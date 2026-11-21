@@ -22,10 +22,6 @@ retour = "0.3"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 [dev-dependencies]
-engine-events.workspace = true
-engine-executable.workspace = true
-engine-mutations.workspace = true
-engine-sites.workspace = true
 serde_json.workspace = true
 collector-test-support.workspace = true
 

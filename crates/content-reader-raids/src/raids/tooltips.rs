@@ -139,8 +139,7 @@ mod tests {
 
     #[test]
     fn repeated_formulas_preserve_modifier_order_and_defaults() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let got = tooltip(
             br#"days_to_prepare = 4 target_loc_key = "some_target"
             success_factors = { success = { base = 0.4 STRENGTH = { weight = -0.1 ignored = 1 } } }
@@ -167,8 +166,7 @@ mod tests {
 
     #[test]
     fn an_unconfigured_custom_modifier_is_dropped() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let got = tooltip(
             br#"success_factors = { success = {
                 "strength" = { weight = 0.3 }

@@ -352,8 +352,7 @@ fn offered(assets: &RaidAssets, frame: &DecodedFrame) -> (Vec<String>, RaidRepor
 
 #[test]
 fn the_cache_country_uses_the_recorded_list_and_others_evaluate_allowed() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let mut assets = assets();
     assets.catalog.types[0].allowed = parse("always = no");
     let mut frame = frame();
@@ -578,8 +577,7 @@ fn a_state_target_resolves_to_the_province_nearest_its_centre() {
 
 #[test]
 fn icons_draw_at_the_top_priority_inside_the_height_band_nearest_last() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let icons = RaidIcons {
         icons: vec![
             RaidIcon {
@@ -783,8 +781,7 @@ fn an_incoming_raid_of_an_unknown_type_counts_its_stand_in_glyph() {
 
 #[test]
 fn a_scripted_trigger_with_parameters_reads_as_no_like_the_game() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let mut assets = assets();
     scripted(
         &mut assets,
@@ -802,7 +799,7 @@ fn a_scripted_trigger_with_parameters_reads_as_no_like_the_game() {
             assert!(
                 reasons
                     .iter()
-                    .any(|reason| reason.contains("$who$") && reason.contains("ScriptVariables")),
+                    .any(|reason| reason.contains("$who$") && reason.contains("no script variables row")),
                 "{reasons:?}"
             );
         }
@@ -812,8 +809,7 @@ fn a_scripted_trigger_with_parameters_reads_as_no_like_the_game() {
 
 #[test]
 fn has_tech_is_unknown_when_a_completed_row_has_no_definition() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     use replay_data::{rows::ResearchTechnologyRow, rows::TechnologyDefinitionRow};
     let assets = assets();
     let mut frame = frame();
@@ -851,8 +847,7 @@ fn has_tech_is_unknown_when_a_completed_row_has_no_definition() {
 
 #[test]
 fn has_tech_uses_first_indexed_case_insensitive_name_and_exact_classifier() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     use replay_data::{rows::ResearchTechnologyRow, rows::TechnologyDefinitionRow};
     let assets = assets();
     let mut frame = frame();
@@ -893,8 +888,7 @@ fn has_tech_uses_first_indexed_case_insensitive_name_and_exact_classifier() {
 
 #[test]
 fn missing_trigger_inputs_are_unknown_rather_than_false() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let assets = assets();
     let mut frame = frame();
     let unknown = |frame: &DecodedFrame, source: &str| {
@@ -970,8 +964,7 @@ fn military_access_reads_only_the_owner_asked() {
 
 #[test]
 fn incomplete_raid_tables_withhold_the_hours_offers() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let assets = assets();
     let mut frame = frame();
     put::<tables::RaidTargetStatuses>(&mut frame, vec![status(0, 3), status(1, 4)]);
@@ -991,8 +984,7 @@ fn incomplete_raid_tables_withhold_the_hours_offers() {
 
 #[test]
 fn unlinked_focus_project_and_party_rows_leave_their_triggers_unknown() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     use replay_data::{rows::CompletedFocusRow, rows::PoliticalPartyRow};
     let mut assets = assets();
     assets.trigger_content.ideologies = Some(raid_ideologies());
@@ -1078,8 +1070,7 @@ fn raid_ideologies() -> content_reader_core::ideologies::Ideologies {
 
 #[test]
 fn raid_facts_keep_loaded_ideologies_for_government_and_leader_subtypes() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     use replay_data::{rows::CountryAppearanceRow, rows::PoliticalPartyRow};
     use script::Eval::{False, True};
     let mut assets = unnamed_assets();
@@ -1136,8 +1127,7 @@ fn raid_facts_keep_loaded_ideologies_for_government_and_leader_subtypes() {
 
 #[test]
 fn raid_type_tokens_without_a_literal_leave_the_types_undecided() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let assets = assets();
     let mut frame = frame();
     put::<tables::RaidTargetStatuses>(&mut frame, vec![status(0, 3)]);
@@ -1229,8 +1219,7 @@ fn drawn_in(
 
 #[test]
 fn the_camera_band_includes_both_edges() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let viewport = [2048, 1152];
     assert!(drawn(10.0, viewport, 1.0).0 > 0);
     assert_eq!(drawn(500.0, viewport, 1.0).0, 2);
@@ -1240,8 +1229,7 @@ fn the_camera_band_includes_both_edges() {
 
 #[test]
 fn the_map_mode_decides_whether_and_how_far_raid_icons_show() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let viewport = [2048, 1152];
     let raids = Some(RaidReach::RaidMode);
     assert_eq!(drawn_in(raids, 1600.0, viewport, 1.0).0, 2);
@@ -1264,8 +1252,7 @@ fn the_map_mode_decides_whether_and_how_far_raid_icons_show() {
 
 #[test]
 fn icons_lay_out_in_interface_pixels_at_any_ui_scale() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let (count, single) = drawn(300.0, [2048, 1152], 1.0);
     let (_, double) = drawn(300.0, [4096, 2304], 2.0);
     assert_eq!(count, 2);
@@ -1407,8 +1394,7 @@ fn on_state(assets: &RaidAssets, frame: &DecodedFrame, source: &str) -> script::
 
 #[test]
 fn oil_and_the_damaged_modifier_decide_the_state_selector() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let assets = resource_assets();
     let mut frame = resource_frame();
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
@@ -1479,8 +1465,7 @@ fn controller_overrides_replace_building_grants_by_their_first_entry() {
 
 #[test]
 fn missing_inputs_and_unsupported_forms_stay_unknown() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let assets = resource_assets();
     let mut frame = resource_frame();
     assert!(matches!(
@@ -1505,8 +1490,7 @@ fn missing_inputs_and_unsupported_forms_stay_unknown() {
 
 #[test]
 fn every_content_building_type_is_a_count_trigger() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let mut assets = resource_assets();
     assets.trigger_content.buildings.types.insert(
         "dock".into(),
@@ -1572,8 +1556,7 @@ fn every_content_building_type_is_a_count_trigger() {
 
 #[test]
 fn exists_reads_the_owned_state_count() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     use replay_data::rows::CountryCounterInputRow;
     let assets = assets();
     let mut frame = positive_frame();
@@ -1606,8 +1589,7 @@ fn exists_reads_the_owned_state_count() {
 
 #[test]
 fn a_daily_fact_decides_from_its_latest_recorded_rows() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let assets = assets();
     let mut frame = frame();
     put::<tables::CompletedFocuses>(
@@ -1653,8 +1635,7 @@ fn a_memo_row_found_from_a_hint_is_the_binary_searchs() {
 
 #[test]
 fn if_else_chains_take_the_first_branch_whose_limit_holds() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let assets = assets();
     let frame = positive_frame();
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
@@ -1679,7 +1660,7 @@ fn if_else_chains_take_the_first_branch_whose_limit_holds() {
         script::Eval::Unknown(_)
     ));
     assert_eq!(
-        eval("if = { limit = { future_trigger = yes } always = yes } else = { always = yes }"),
+        eval("if = { limit = { synthetic_unported_trigger = yes } always = yes } else = { always = yes }"),
         script::Eval::True,
         "both branches agree"
     );
@@ -1687,8 +1668,7 @@ fn if_else_chains_take_the_first_branch_whose_limit_holds() {
 
 #[test]
 fn from_and_prev_follow_the_scope_chain() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let assets = assets();
     let frame = positive_frame();
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
@@ -1719,8 +1699,7 @@ fn from_and_prev_follow_the_scope_chain() {
 
 #[test]
 fn a_state_scope_from_resolves_to_the_state_owner() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let assets = assets();
     let frame = frame();
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
@@ -2178,8 +2157,7 @@ mod launch_gate {
 
     #[test]
     fn transport_range_reads_the_first_variant_stat() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let mut long_first = [1; 10];
         long_first[0] = 100 * 100_000;
         assert_eq!(airborne(long_first), Eval::True);
@@ -2190,10 +2168,12 @@ mod launch_gate {
 
     #[test]
     fn a_lost_equipment_database_leaves_only_equipment_queries_unknown() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let mut assets = launch_assets();
-        assert_eq!(assets.equipment_category("convoy"), Ok(1));
+        assert_eq!(
+            assets.equipment_category("convoy"),
+            Ok(content_reader_core::test_game::category("convoy")),
+        );
         assets.equipment_lost = Some("the equipment database cannot be followed past x".into());
         let unknown = assets.equipment_category("convoy").unwrap_err();
         assert!(unknown.contains("followed past x"), "{unknown}");
@@ -2210,8 +2190,7 @@ mod launch_gate {
 
     #[test]
     fn a_refused_cooldown_type_leaves_its_target_undecided() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         put::<tables::RaidCooldowns>(
@@ -2240,8 +2219,7 @@ mod launch_gate {
 
     #[test]
     fn a_bomber_wing_at_an_air_base_in_range_makes_the_offer_launchable() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         assert_eq!(
             gate(&launch_assets(), &launch_frame(), &bomber(), 3),
             Eval::True
@@ -2250,8 +2228,7 @@ mod launch_gate {
 
     #[test]
     fn a_requirement_naming_an_equipment_group_admits_through_its_members() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let mut assets = launch_assets();
         let (_, groups) = content_reader_core::equipment::fixture::load(&[(
             "common/equipment_groups/raids.txt",
@@ -2280,8 +2257,7 @@ mod launch_gate {
 
     #[test]
     fn command_power_below_the_cost_or_the_free_capacity_disables_the_offer() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let mut kind = bomber();
         kind.command_power_raw = 60 * 100_000;
@@ -2301,8 +2277,7 @@ mod launch_gate {
 
     #[test]
     fn an_unregistered_capacity_modifier_leaves_the_command_power_gate_unknown() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         put::<tables::CountryCommandPower>(
@@ -2323,8 +2298,7 @@ mod launch_gate {
 
     #[test]
     fn convoys_count_after_reservations_up_to_the_invasion_priority() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let mut kind = bomber();
         kind.essential_equipment = vec![("convoy".into(), 10)];
@@ -2335,8 +2309,7 @@ mod launch_gate {
 
     #[test]
     fn an_assigned_small_or_unmatched_wing_is_not_a_raid_unit() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         put::<tables::Raids>(
@@ -2369,8 +2342,7 @@ mod launch_gate {
 
     #[test]
     fn range_and_max_distance_bound_the_source_unless_the_ai_is_unlimited() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         let mut wings = frame.complete::<tables::AirWings>().unwrap().to_vec();
@@ -2401,8 +2373,7 @@ mod launch_gate {
 
     #[test]
     fn own_sources_demand_faction_members_only_on_native_faction_branches() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         put::<tables::FactionMembers>(
@@ -2591,8 +2562,7 @@ mod launch_gate {
 
     #[test]
     fn mixed_air_success_defers_later_faction_and_prefetch_preserves_it() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         *frame.tables[TableId::FactionMembers.index()] = TableView::Unavailable {
@@ -2630,8 +2600,7 @@ mod launch_gate {
 
     #[test]
     fn mixed_air_failure_reaches_the_later_faction_refusal() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         *frame.tables[TableId::FactionMembers.index()] = TableView::Unavailable {
@@ -2648,8 +2617,7 @@ mod launch_gate {
 
     #[test]
     fn mixed_earlier_unknown_still_queries_the_later_source() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         use replay_data::rows::NavalBaseRow;
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -2690,8 +2658,7 @@ mod launch_gate {
 
     #[test]
     fn mixed_naval_success_defers_later_building_inputs() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         use replay_data::rows::NavalBaseRow;
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -2729,8 +2696,7 @@ mod launch_gate {
 
     #[test]
     fn mixed_naval_refusal_can_reach_independent_own_buildings() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         let mut kind = marine_sources(&mut frame, true);
@@ -2767,8 +2733,7 @@ mod launch_gate {
 
     #[test]
     fn mixed_walk_prefix_order_and_reach_memo_remain_stable() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         use replay_data::rows::LaunchNavalBase;
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -2829,8 +2794,7 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_naval_occurrences_keep_member_order_and_repeats() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         use replay_data::{rows::LaunchNavalBase, rows::NavalBaseRow};
         let assets = launch_assets();
         for zero_at in 0..3 {
@@ -2903,8 +2867,7 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_null_sources_skip_provider_path_and_army_demands() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         use replay_data::rows::LaunchNavalBase;
         let assets = launch_assets();
         for stored in [0, u32::MAX, 0x8000_0000] {
@@ -2964,8 +2927,7 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_native_null_stays_unknown_and_never_uses_global_owner_zero_bases() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         use replay_data::{rows::LaunchNavalBases, rows::NavalBaseRow};
 
         let assets = launch_assets();
@@ -3019,8 +2981,7 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_positive_provider_and_packet_gaps_stay_named_at_their_position() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         use replay_data::{rows::LaunchNavalBase, rows::NavalBaseRow, rows::Recorded};
         let assets = launch_assets();
         let mut base = launch_frame();
@@ -3122,8 +3083,7 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_state_sources_use_ordered_roster_and_independent_domains() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         let kind = marine_sources(&mut frame, false);
@@ -3228,8 +3188,7 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_buildings_require_the_full_province_census_after_nonzero_count() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         let kind = marine_sources(&mut frame, false);
@@ -3291,8 +3250,7 @@ mod launch_gate {
 
     #[test]
     fn launch_zero_packet_and_provider_changes_do_not_reuse_other_frame_sources() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         use replay_data::rows::LaunchNavalBase;
         let assets = launch_assets();
         let mut first = launch_frame();
@@ -3346,8 +3304,7 @@ mod launch_gate {
 
     #[test]
     fn air_sources_in_range_decide_and_types_share_only_an_equal_range() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let frame = launch_frame();
         let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
@@ -3390,8 +3347,7 @@ mod launch_gate {
 
     #[test]
     fn a_marine_division_waits_on_the_path_search_but_wings_cannot_use_a_naval_base() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         put::<tables::NavalBases>(
@@ -3453,8 +3409,7 @@ mod launch_gate {
 
     #[test]
     fn launch_inputs_read_before_the_hour_still_decide_the_gate() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         assert_eq!(gate(&assets, &frame, &bomber(), 3), Eval::True);
@@ -3486,8 +3441,7 @@ mod launch_gate {
 
     #[test]
     fn a_carrier_launching_a_live_raid_is_no_source() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = launch_assets();
         let mut frame = launch_frame();
         const SHIP: u64 = 0x0000_0007_0000_0033;
@@ -4155,8 +4109,7 @@ mod unlinked {
 
     #[test]
     fn an_unlinked_modifier_owner_leaves_the_trigger_undecided() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let assets = assets();
         let mut frame = frame();
         let row = |country: u32, token: &[u8]| DynamicModifierRow {
@@ -4235,8 +4188,7 @@ fn invasion_frame(army_group: u8) -> DecodedFrame {
 
 #[test]
 fn naval_invasions_are_found_through_the_successor_graph() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let assets = assets();
     let eval = |frame: &DecodedFrame, source: &str, state: u32| {
         let world = World::new(frame, assets.trigger_content.facts()).unwrap();
@@ -4271,8 +4223,7 @@ fn naval_invasions_are_found_through_the_successor_graph() {
 
 #[test]
 fn is_ally_with_follows_the_friend_relation() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     use replay_data::{
         rows::CountryCounterInputRow, rows::Recorded, rows::ReservedCountryNamingRow,
         rows::SubjectRow, rows::WarRelationRow,
@@ -4335,7 +4286,7 @@ fn is_ally_with_follows_the_friend_relation() {
     assert!(matches!(
         eval(&frame, "is_ally_with = ENG"),
         script::Eval::Unknown(reasons)
-            if reasons.iter().any(|reason| reason.contains("ReservedCountryNaming"))
+            if reasons.iter().any(|reason| reason.contains("reserved country naming"))
     ));
     put::<tables::ReservedCountryNaming>(
         &mut frame,
@@ -4349,8 +4300,7 @@ fn is_ally_with_follows_the_friend_relation() {
 
 #[test]
 fn any_state_in_reads_a_global_array() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     use replay_data::{rows::ScriptVariableEntry, rows::ScriptVariablesRow};
     let mut assets = assets();
     scripted(&mut assets, "helper = { always = yes }");
@@ -4436,8 +4386,7 @@ fn any_state_in_reads_a_global_array() {
 
 #[test]
 fn neighbour_state_triggers_walk_the_content_neighbours() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let frame = positive_frame();
     let eval = |assets: &RaidAssets, scope: Scope, source: &str| {
         let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
@@ -4485,8 +4434,7 @@ fn neighbour_state_triggers_walk_the_content_neighbours() {
 
 #[test]
 fn custom_tooltips_and_is_subject_of() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     use replay_data::rows::SubjectRow;
     let assets = assets();
     let eval = |frame: &DecodedFrame, source: &str| {
@@ -4504,8 +4452,11 @@ fn custom_tooltips_and_is_subject_of() {
         eval(&frame, &wrapped("tag = GER tag = ENG")),
         script::Eval::False
     );
-    let formatted = "custom_override_tooltip = { tooltip = { localization_key = KEY } tag = GER }";
-    assert_eq!(eval(&frame, formatted), script::Eval::True);
+    let formatted = |tag: &str| {
+        format!("custom_override_tooltip = {{ tooltip = {{ localization_key = KEY }} tag = {tag} }}")
+    };
+    assert_eq!(eval(&frame, &formatted("GER")), script::Eval::True);
+    assert_eq!(eval(&frame, &formatted("ENG")), script::Eval::False);
     assert_eq!(
         eval(&frame, "custom_trigger_tooltip = { tooltip = KEY }"),
         script::Eval::True
@@ -4557,8 +4508,7 @@ fn leader_row(id: u32, owner: u32, captured: u8) -> replay_data::rows::UnitLeade
 
 #[test]
 fn captured_general_triggers_read_the_recorded_leaders() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let assets = assets();
     let mut frame = frame();
     let reference = (5_u64 << 32) | 7;
@@ -4584,7 +4534,7 @@ fn captured_general_triggers_read_the_recorded_leaders() {
     assert!(
         reasons
             .iter()
-            .any(|why| why.contains("more than one UnitLeaders row")),
+            .any(|why| why.contains("more than one unit leaders row")),
         "{reasons:?}"
     );
     let mut chosen = leader_row(5, 10, 1);
@@ -4614,8 +4564,7 @@ fn captured_general_triggers_read_the_recorded_leaders() {
 
 #[test]
 fn is_core_of_reads_the_recorded_state_cores() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     use replay_data::rows::StateCoreRow;
     let assets = assets();
     let mut frame = positive_frame();
@@ -4720,8 +4669,7 @@ fn a_prepared_raids_launch_triggers_follow_the_native_chain() {
 
 #[test]
 fn leader_visibility_evaluates_the_recorded_template_role() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     use replay_data::rows::CharacterRow;
     use script::RecordedTemplate;
     let path = "common/characters/X.txt";
@@ -4903,8 +4851,7 @@ fn leader_visibility_evaluates_the_recorded_template_role() {
 
 #[test]
 fn character_scope_global_flag_overlord_and_cosmetic_triggers() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     use replay_data::{rows::CountryAppearanceRow, rows::ScriptFlagRow};
     let assets = assets();
     let mut frame = positive_frame();
@@ -5029,8 +4976,7 @@ fn country_leader_traits() -> content_reader_core::leader_traits::LeaderTraits {
 
 #[test]
 fn country_leader_civil_war_and_idea_triggers() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     use replay_data::{
         rows::ActiveIdeaRow, rows::CharacterRow, rows::CountryAppearanceRow, rows::HiredAdvisorRow,
         rows::WarRelationRow,
@@ -5313,8 +5259,7 @@ fn country_leader_civil_war_and_idea_triggers() {
 
 #[test]
 fn recorded_political_tables_decide_country_leader_triggers() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     use replay_data::{
         rows::CharacterRow, rows::CountryAppearanceRow, rows::CountryCharacterRow,
         rows::PartyLeaderRow, rows::PoliticalPartyRow,
@@ -5560,7 +5505,7 @@ fn recorded_political_tables_decide_country_leader_triggers() {
         script::Eval::Unknown(reasons) => assert!(
             reasons
                 .iter()
-                .any(|r| r.contains("no PoliticalParties row")),
+                .any(|r| r.contains("no political parties row")),
             "{reasons:?}"
         ),
         other => panic!("{other:?}"),
@@ -5569,8 +5514,7 @@ fn recorded_political_tables_decide_country_leader_triggers() {
 
 #[test]
 fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selected_raw() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     use replay_data::{rows::CountryAppearanceRow, rows::Recorded, rows::ReservedCountryNamingRow};
     let assets = assets();
     let mut frame = positive_frame();
@@ -5647,10 +5591,10 @@ fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selecte
     assert_eq!(any("count = 3 original_tag = GER"), False);
     assert_eq!(any("count = 2.9 tooltip = x original_tag = GER"), True);
     assert_eq!(any("count = 0 tag = ENG"), True);
-    assert!(matches!(
-        eval("any_country_with_original_tag = { original_tag_to_check = FRA count = 0 }"),
-        script::Eval::Unknown(reasons) if reasons.iter().any(|reason| reason.contains("ScriptVariables"))
-    ));
+    let unknown = eval("any_country_with_original_tag = { original_tag_to_check = FRA count = 0 }");
+    assert!(matches!(&unknown,
+        script::Eval::Unknown(reasons) if reasons.iter().any(|reason| reason.contains("no script variables row"))
+    ), "{unknown:?}");
     assert_eq!(
         eval("any_country_with_original_tag = { original_tag_to_check = D01 tag = GER }"),
         True
@@ -5695,10 +5639,13 @@ fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selecte
         );
     }
     for (buckets, why) in [
-        (Recorded::NotRecorded, "original_tag_buckets not recorded"),
+        (
+            Recorded::NotRecorded,
+            "original tag buckets of reserved country naming not recorded",
+        ),
         (
             Recorded::Value(None),
-            "original_tag_buckets capture refused",
+            "original tag buckets of reserved country naming capture refused",
         ),
     ] {
         let mut missing = frame.clone();
@@ -5722,8 +5669,7 @@ fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selecte
 
 #[test]
 fn naval_invasion_preparation_reads_the_recorded_operands() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     use replay_data::rows::InvasionPreparationRow;
     let assets = assets();
     let eval = |frame: &DecodedFrame, source: &str| {

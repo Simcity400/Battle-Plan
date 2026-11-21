@@ -245,3 +245,43 @@ impl<'a> Image<'a> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_strings_stay_within_each_word_and_stop_at_the_terminator() {
+        const BASE: usize = 0x1000;
+        const RVA: u32 = 0x200;
+        const START: usize = 5;
+        let name = b"sentinel";
+        let mut data = [0xff; 3 * WORD];
+        let terminator = START + name.len();
+        data[START..terminator].copy_from_slice(name);
+        data[terminator] = 0;
+        let copy = |address: usize, out: &mut [u8]| {
+            let offset = address - BASE - RVA as usize;
+            if offset / WORD > terminator / WORD || out.len() > WORD - address % WORD {
+                return false;
+            }
+            out.copy_from_slice(&data[offset..offset + out.len()]);
+            true
+        };
+        let image = Image {
+            sections: vec![Section {
+                name: *b".data\0\0\0",
+                rva: RVA,
+                size: data.len() as u32,
+                bytes: &[],
+            }],
+            live: Some(&copy),
+            unreadable: Cell::new(false),
+            pointer_base: BASE as u64,
+            base: BASE,
+        };
+
+        assert_eq!(image.cstring(RVA + START as u32).as_deref(), Some(&name[..]));
+        assert!(!image.unreadable());
+    }
+}

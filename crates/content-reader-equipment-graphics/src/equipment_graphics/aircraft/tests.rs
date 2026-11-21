@@ -203,8 +203,7 @@ fn modded(root: &Root) -> PathBuf {
 }
 
 fn catalogue(layers: &ResolvedLayers, designs: &[(String, String)]) -> Catalogue {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let roster = layers.descriptor_roster().unwrap();
     let equipment = equipment::Database::load_complete(layers).unwrap();
     let names = Names {

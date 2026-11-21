@@ -16,7 +16,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["layer-fixtures"] }
+content-reader-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
 
 [features]
 test-support = ["content-reader-core/test-support"]
@@ -30,7 +30,6 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphic
 [target.'cfg(all())'.dev-dependencies]
 content-reader-settings = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
-engine-executable = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-bitflags-2 = { workspace = true }

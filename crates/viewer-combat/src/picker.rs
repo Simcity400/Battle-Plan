@@ -1097,8 +1097,7 @@ mod tests {
 
     #[test]
     fn the_find_view_button_opens_the_find_view_by_click_and_shortcut() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let windows = viewer_foundation::map::native_windows::NativeWindows::read(
             b"guiTypes = { containerWindowType = { name = unit_counter_navy }               containerWindowType = { name = naval_combat_mapicon }               containerWindowType = { name = MapmodesInterface_Ingame                 buttonType = { name = open_find_view_button shortcut = \"ctrl+f\" } } }",
             [1280, 720],
@@ -1134,8 +1133,7 @@ mod tests {
 
     #[test]
     fn a_mode_list_grows_upward_a_slot_per_scripted_mode() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let windows = viewer_foundation::map::test_support::gui::windows(
             br#"guiTypes = { containerWindowType = {
                 name = "List" position = { x = -255 y = -322 } size = { width = 180 height = 296 }
@@ -1161,8 +1159,7 @@ mod tests {
 
     #[test]
     fn buttons_show_their_modes_frame_whatever_the_slot() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let windows = viewer_foundation::map::native_windows::NativeWindows::read(
             b"guiTypes = { containerWindowType = { name = unit_counter_navy } \
               containerWindowType = { name = naval_combat_mapicon } \

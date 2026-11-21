@@ -117,9 +117,16 @@ mod tests {
         frame::Metrics,
     };
 
+    fn enter_layout() {
+        use engine_executable::executable_tables::{self, Tables};
+        static TABLES: std::sync::OnceLock<Tables> = std::sync::OnceLock::new();
+        let tables =
+            *TABLES.get_or_init(|| synthetic_game::Executable::fixed_layout(TOKEN_IDS).build());
+        executable_tables::enter(Some(tables));
+    }
+
     fn valid() -> Report {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+        enter_layout();
         Report {
             static_token_maximum: 0x6000,
             gap: Ok(()),
@@ -233,12 +240,14 @@ mod tests {
 
     #[test]
     fn a_used_key_mismatch_refuses_every_key_family_and_survives_encoding() {
-        let report = mismatched(modifier_keys::ARMY_SPEED_FACTOR as usize);
+        let index = modifier_keys::ARMY_SPEED_FACTOR;
+        let name = format!("synthetic_modifier_{index}");
+        let report = mismatched(index as usize);
         let mut input = inputs();
         apply(&mut input, &Ok(report)).unwrap();
         assert_key_families_refused(
             &input,
-            "army_speed_factor (0x2b): definition token spells a different script name",
+            &format!("{name} ({index:#x}): definition token spells a different script name"),
         );
         for table in [
             TableId::Countries,
@@ -262,7 +271,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             &*frame.tables[family.tables[0].index()],
-            TableView::Unavailable { reason } if reason.contains(&format!("{} refused: army_speed_factor", family.name))
+            TableView::Unavailable { reason } if reason.contains(&format!("{} refused: {name}", family.name))
         ));
         let status = serde_json::to_value(status(Some(&report))).unwrap();
         assert_eq!(status["state"], "refused");
@@ -273,14 +282,13 @@ mod tests {
             refusal["reason"]
                 .as_str()
                 .unwrap()
-                .contains("army_speed_factor")
+                .contains(&name)
         }));
     }
 
     #[test]
     fn an_unused_builtin_mismatch_refuses_every_key_family_by_name() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+        enter_layout();
         for index in [0, GAP as usize - 1] {
             assert!(
                 modifier_keys::ALL_INDICES
@@ -317,16 +325,17 @@ mod tests {
         };
         let mut input = inputs();
         apply(&mut input, &Ok(report)).unwrap();
-        assert_key_families_refused(&input, "modifier definition gap (0x29a)");
+        assert_key_families_refused(&input, &format!("modifier definition gap ({GAP:#x})"));
         assert!(untouched(&input, TableId::ResearchSlots));
     }
 
     #[test]
     fn token_mismatch_refuses_its_consumers_by_name() {
+        let idle = cresearch_slot::IDLE_HANDLE;
         let mut report = valid();
         report.tokens[engine_fixed_layout::fixed_layout::tokens()
             .unwrap()
-            .position(|token| token.id == cresearch_slot::IDLE_HANDLE)
+            .position(|token| token.id == idle)
             .unwrap()] = Err("token spells a different name");
         let mut input = inputs();
         apply(&mut input, &Ok(report)).unwrap();
@@ -334,15 +343,16 @@ mod tests {
             assert!(refused(
                 &input,
                 table,
-                "research slots refused: empty (0x2a4e)"
+                &format!("research slots refused: synthetic_token_{idle} ({idle:#x})")
             ));
         }
         assert!(untouched(&input, TableId::LexicalTokens));
 
+        let fixed15 = cpdx_lexer::FIXED15_TOKEN;
         let mut report = valid();
         report.tokens[engine_fixed_layout::fixed_layout::tokens()
             .unwrap()
-            .position(|token| token.id == cpdx_lexer::FIXED15_TOKEN)
+            .position(|token| token.id == fixed15)
             .unwrap()] = Err("exceeds the static token maximum");
         let mut input = inputs();
         let original = input.clone();
@@ -354,7 +364,7 @@ mod tests {
             status["refusals"][0]["reason"]
                 .as_str()
                 .unwrap()
-                .contains("long_float (0x167)")
+                .contains(&format!("synthetic_token_{fixed15} ({fixed15:#x})"))
         );
     }
 

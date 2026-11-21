@@ -483,8 +483,7 @@ fn a_group_astride_the_seam_means_across_it_rather_than_through_the_map() {
 use viewer_foundation::map::{allegiance::NativeRelations, test_support::allegiance::*};
 #[test]
 fn native_grouping_uses_directed_stored_truth_despite_active_war() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    synthetic_game::enter();
     let frame = native_frame(vec![
         native_row(201, vec![0, 2], [1, 0]),
         native_row(102, vec![], [1, 128]),

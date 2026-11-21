@@ -17,6 +17,7 @@ replay-frame.workspace = true
 content-reader-save.workspace = true
 recorder-oracle-support.workspace = true
 [dev-dependencies]
+content-reader-core = { workspace = true, features = ["test-support"] }
 engine-land-inputs.workspace = true
 engine-native.workspace = true
 engine-executable.workspace = true

@@ -512,10 +512,16 @@ pub fn set_map_diagnostics(app: AppHandle, enabled: Option<bool>) -> Result<MapS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn enter_display_settings() {
+        content_reader_core::test_game::with(|game| {
+            game.words(["graphics", "gui_scale", "fullscreen", "borderless", "vsync"])
+        });
+    }
+
     #[test]
     fn game_display_defaults_keep_scale_and_vsync_without_resizing() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        enter_display_settings();
         let keys = content_reader_settings::settings::SettingsKeys::read(b"graphics={size={x=2048 y=1152} gui_scale=1.125 fullScreen=no borderless=yes VSync=no}");
         let settings = parse_game_display(&keys).unwrap();
         assert_eq!(settings.ui_scale, 112.5);
@@ -533,8 +539,7 @@ mod tests {
 
     #[test]
     fn a_game_scale_outside_the_app_range_keeps_the_game_settings() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        enter_display_settings();
         let parse = |text: &str| {
             parse_game_display(&content_reader_settings::settings::SettingsKeys::read(
                 text.as_bytes(),

@@ -33,8 +33,7 @@ fn custom_sea_declarations_follow_effective_strategic_templates() {
 
 #[test]
 fn combat_native_assets_follow_global_templates_and_scrollbars() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let windows = NativeWindows::of(gui::native::Guis::new(vec![
         (
             "first.gui".into(),
@@ -74,8 +73,7 @@ fn combat_native_assets_follow_global_templates_and_scrollbars() {
 #[test]
 fn every_window_the_map_opens_loads_its_own_and_its_entries_sprites() {
     use viewer_foundation::combat_selection::Selection;
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let opened: Vec<&[u8]> = [
         Selection::Land(0),
         Selection::Naval(0),
@@ -119,8 +117,7 @@ fn every_window_the_map_opens_loads_its_own_and_its_entries_sprites() {
 
 #[test]
 fn combat_shortcut_assets_request_the_first_keycap_without_localisation() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let windows = tests::windows(
         br#"guiTypes={containerWindowType={name=landcombatview
             containerWindowType={name=header
@@ -136,8 +133,24 @@ pub(crate) fn synthetic_assets(
     children: &str,
     write: impl FnOnce(&std::path::Path),
 ) -> (std::path::PathBuf, Assets, Arc<LazyTextures>) {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use engine_executable::{executable_tables, modifier_keys};
+    use std::sync::OnceLock;
+
+    static TABLES: OnceLock<executable_tables::Tables> = OnceLock::new();
+    let tables = *TABLES.get_or_init(|| {
+        content_reader_core::test_game::executable()
+            .pinned_modifiers([
+                (modifier_keys::NAVAL_RETREAT_SPEED, "naval_retreat_speed"),
+                (modifier_keys::SUB_RETREAT_SPEED, "sub_retreat_speed"),
+                (
+                    modifier_keys::NAVAL_RETREAT_SPEED_AFTER_INITIAL_COMBAT,
+                    "naval_retreat_speed_after_initial_combat",
+                ),
+                (modifier_keys::CONVOY_RETREAT_SPEED, "convoy_retreat_speed"),
+            ])
+            .build()
+    });
+    executable_tables::enter(Some(tables));
     let root = std::env::temp_dir().join(format!(
         "hoi4_combat_assets_{name}_{}_{:?}",
         std::process::id(),
@@ -324,8 +337,7 @@ fn lazy_portraits_publish_loaded_and_missing_resources() {
 
 #[test]
 fn combat_resources_use_native_texture_resolution_and_shared_pages() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4_combat_resources_{}_{:?}",
         std::process::id(),
@@ -377,9 +389,8 @@ fn combat_resources_use_native_texture_resolution_and_shared_pages() {
 }
 
 #[test]
-fn combat_resources_name_undefined_texture_reads() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+fn combat_resources_name_corrupt_textures() {
+    content_reader_core::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4_combat_refused_texture_{}_{:?}",
         std::process::id(),
@@ -408,14 +419,14 @@ fn combat_resources_name_undefined_texture_reads() {
     gui.load(&layers, &assets, &mut Vec::new()).unwrap();
     let warnings = sprite_warnings(&gui, &assets.sprites, true);
     assert_eq!(warnings.len(), 1);
-    assert!(warnings[0].contains("1 undefined_read"), "{warnings:?}");
+    assert!(warnings[0].contains("gfx/portrait.dds does not load"), "{warnings:?}");
+    assert!(warnings[0].contains("1 missing_texture"), "{warnings:?}");
     std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn combat_resources_preserve_producer_dimensions_and_named_refusals() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4_combat_unusable_sheets_{}_{:?}",
         std::process::id(),
@@ -476,8 +487,7 @@ fn combat_resources_preserve_producer_dimensions_and_named_refusals() {
 
 #[test]
 fn content_preload_uses_the_same_native_glyph_names_and_type_masks() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (assets, refusals) = unit_assets(&synthetic_subunits());
     assert!(refusals.is_empty());
     assert!(
