@@ -15,7 +15,7 @@ test('mounted virtual histories preserve scrolling, expansion and native column 
       await native.press(key, shift);
       await act('settle()');
     };
-    if (!(process.env.BATTLE_PLAN_VIRTUAL_TAB_ONLY ?? process.env.HOI4_VIRTUAL_TAB_ONLY)) await native.stage('VirtualList DOM assertions', async () => {
+    if (!(process.env.BATTLEPLAN_VIRTUAL_TAB_ONLY ?? process.env.HOI4_VIRTUAL_TAB_ONLY)) await native.stage('VirtualList DOM assertions', async () => {
       await context.test('a parent and child mounted together bind scroll, row measurements and nested expansion', async () => {
         await act('mount()');
         const initial = await snapshot();
@@ -279,7 +279,7 @@ test('mounted virtual histories preserve scrolling, expansion and native column 
     };
     const nativeTab = async (backwards: boolean) => { await dispatchTab(backwards); await tab('keySettled()'); return tab('active()'); };
     const mountCase = (spec: TabCase) => tab(`mount(${JSON.stringify(spec)})`);
-    const fullSweep = (process.env.BATTLE_PLAN_VIRTUAL_TAB_FULL ?? process.env.HOI4_VIRTUAL_TAB_FULL) === '1';
+    const fullSweep = (process.env.BATTLEPLAN_VIRTUAL_TAB_FULL ?? process.env.HOI4_VIRTUAL_TAB_FULL) === '1';
     const mutationTrace = async (side: 'reference' | 'virtual', id: string, mutation: TabMutation, backwards: boolean,
       viewport: TabViewport, control = 'summary') => {
       await tab('reset()'); await tab(`activate("${side}", "before")`);

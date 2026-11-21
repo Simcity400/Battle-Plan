@@ -97,7 +97,7 @@ const forwardedRunnerArgs = appSeparator < 0 ? forwardedCargoArgs : [...forwarde
 
 try {
   const notices = mode === "build" ? await thirdPartyNotices(path.join(root, "LICENSES"), SHIPPED.notices.components) : null;
-  const releaseVersion = mode === "build" ? process.env.BATTLE_PLAN_VERSION || undefined : undefined;
+  const releaseVersion = mode === "build" ? process.env.BATTLEPLAN_VERSION || undefined : undefined;
   if (releaseVersion) process.env.TAURI_CONFIG = JSON.stringify({ version: releaseVersion });
   if (mode === "build") {
     if (!process.env.npm_execpath) throw new Error("Run the build through npm: npm run build:desktop");

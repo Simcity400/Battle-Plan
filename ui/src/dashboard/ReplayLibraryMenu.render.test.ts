@@ -242,7 +242,7 @@ test('with nothing loaded the campaigns list explains itself once, and the libra
   assert.equal(toggle().props['aria-expanded'], true, 'the library starts open');
   toggle().props.onClick(); view.render();
   assert.equal(toggle().props['aria-expanded'], false);
-  assert.equal(view.storage.get('hoi4-replay.sidebar.archive-open'), 'closed');
+  assert.equal(view.storage.get('battleplan.sidebar.archive-open'), 'closed');
   view.props.campaigns = []; view.props.bindings = {}; view.render();
   const empty = () => elements(view.find((node: Element) => node.props.className === 'sidebar-campaigns-empty').props.children);
   const text = () => empty().find(node => node.type === 'p')?.props.children;

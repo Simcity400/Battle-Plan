@@ -41,7 +41,7 @@ pub type EventLoopBuilderHook = Box<dyn FnOnce(&mut EventLoopBuilder<UserEvent>)
 #[cfg(any(feature = "glow", feature = "wgpu_no_default_features"))]
 pub type WindowBuilderHook = Box<dyn FnOnce(egui::ViewportBuilder) -> egui::ViewportBuilder>;
 
-// HOI4 Replay patch: optional native-wgpu paint ownership.
+// BattlePlan patch: optional native-wgpu paint ownership.
 
 /// The native window lent to a paint owner.
 #[cfg(not(target_arch = "wasm32"))]
@@ -400,7 +400,7 @@ pub struct NativeOptions {
     #[cfg(feature = "wgpu_no_default_features")]
     pub wgpu_options: egui_wgpu::WgpuConfiguration,
 
-    /// HOI4 Replay patch: an optional native-wgpu paint owner; `None` keeps published painting.
+    /// BattlePlan patch: an optional native-wgpu paint owner; `None` keeps published painting.
     #[cfg(feature = "wgpu_no_default_features")]
     pub paint_owner: Option<std::sync::Arc<dyn PaintOwner>>,
 
@@ -451,7 +451,7 @@ impl Clone for NativeOptions {
             wgpu_options: self.wgpu_options.clone(),
 
             #[cfg(feature = "wgpu_no_default_features")]
-            paint_owner: self.paint_owner.clone(), // HOI4 Replay patch
+            paint_owner: self.paint_owner.clone(), // BattlePlan patch
 
             persistence_path: self.persistence_path.clone(),
 
@@ -494,7 +494,7 @@ impl Default for NativeOptions {
                 .with_surface_config(egui_wgpu::SurfaceConfig::LOW_LATENCY),
 
             #[cfg(feature = "wgpu_no_default_features")]
-            paint_owner: None, // HOI4 Replay patch
+            paint_owner: None, // BattlePlan patch
 
             persist_window: true,
 

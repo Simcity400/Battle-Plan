@@ -534,7 +534,7 @@ fn loader(name: &str, requests: mpsc::Receiver<Request>, done: mpsc::Sender<Load
 }
 
 fn control(commands: mpsc::Receiver<Command>, status: Arc<Mutex<Status>>, silent: bool) {
-    let log_path = std::env::var_os("BATTLE_PLAN_VIEWER_AUDIO_LOG").or_else(|| std::env::var_os("HOI4_VIEWER_AUDIO_LOG")).map(PathBuf::from);
+    let log_path = std::env::var_os("BATTLEPLAN_VIEWER_AUDIO_LOG").or_else(|| std::env::var_os("HOI4_VIEWER_AUDIO_LOG")).map(PathBuf::from);
     let log_file = log_path.and_then(|path| std::fs::File::create(path).ok());
     Control::new(status, log_file, silent).run(commands);
 }

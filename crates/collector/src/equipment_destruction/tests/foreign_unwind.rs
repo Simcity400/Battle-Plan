@@ -268,7 +268,7 @@ fn production_land_detour_foreign_unwind() {
 }
 
 #[test]
-#[ignore = "parent-only actual foreign C++/SEH; requires BATTLE_PLAN_TAP_UNWIND_PROBE and reviewed shared Hook"]
+#[ignore = "parent-only actual foreign C++/SEH; requires BATTLEPLAN_TAP_UNWIND_PROBE and reviewed shared Hook"]
 fn production_return_call_foreign_unwind() {
     let _probe_guard = probe::SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let _serial = serial();

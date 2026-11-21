@@ -48,7 +48,7 @@ export const SPEEDS = [24, 1440];
 const QUICK_PLAYBACK = { pages: ['Politics', 'Overview', 'Army'], speeds: [1440] };
 const GLANCE_AT = 0.5;
 const PRESETS = [0.25, 1, 4, 24, 168, 720, 1440];
-const PLAY_SECONDS = Number((process.env.BATTLE_PLAN_PLAY_SECONDS ?? process.env.HOI4_PLAY_SECONDS) ?? 8);
+const PLAY_SECONDS = Number((process.env.BATTLEPLAN_PLAY_SECONDS ?? process.env.HOI4_PLAY_SECONDS) ?? 8);
 const rate = Number(flag('--cpu-throttle', '1'));
 if (!(rate >= 1 && Number.isFinite(rate) && PLAY_SECONDS > 0 && Number.isFinite(PLAY_SECONDS))) throw new Error('Invalid playback duration or throttle');
 const TRACE_SPEED = 1440;
@@ -580,7 +580,7 @@ async function playbackVisibility() {
 }
 
 await phase('playback', async () => {
-  if (!await s.holds('window.__perf')) throw new Error('the app was not started with BATTLE_PLAN_PERF_LOG: playback cannot be measured');
+  if (!await s.holds('window.__perf')) throw new Error('the app was not started with BATTLEPLAN_PERF_LOG: playback cannot be measured');
   const requested = onlyPages ?? (quick ? QUICK_PLAYBACK.pages : meta.pages);
   for (const requestedPage of requested) {
     const page = pageOf(requestedPage);

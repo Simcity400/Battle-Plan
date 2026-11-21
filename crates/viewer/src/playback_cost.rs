@@ -17,7 +17,7 @@ pub(crate) mod proof;
 pub(crate) mod toggle;
 pub(crate) mod viewpoint;
 
-const CAPTURES: &str = "BATTLE_PLAN_CAPTURES";
+const CAPTURES: &str = "BATTLEPLAN_CAPTURES";
 const ROWS: &[(&str, &str, f64)] = &[
     (
         "territory",
@@ -140,13 +140,13 @@ fn lean_refusal(
         return Some(format!("--lean times the app's frame intervals alone: not with {flag}"));
     }
     const SETTINGS: [(&str, &str); 7] = [
-        ("BATTLE_PLAN_VIEWER_GPU_PASSES", "waits for each frame's GPU timestamps"),
-        ("BATTLE_PLAN_PERF_MAP_LOG", "writes each frame's perf log"),
-        ("BATTLE_PLAN_EXTRA_MAPS", "opens extra maps the lean loop never draws"),
-        ("BATTLE_PLAN_EXTRA_RECORDING", "opens a map the lean loop never draws"),
-        ("BATTLE_PLAN_MAP_CHURN", "churns extra maps the lean loop never draws"),
-        ("BATTLE_PLAN_HIDE", "covers maps the lean loop never covers"),
-        ("BATTLE_PLAN_HOVER_FAMILY", "hovers a target the lean loop never points at"),
+        ("BATTLEPLAN_VIEWER_GPU_PASSES", "waits for each frame's GPU timestamps"),
+        ("BATTLEPLAN_PERF_MAP_LOG", "writes each frame's perf log"),
+        ("BATTLEPLAN_EXTRA_MAPS", "opens extra maps the lean loop never draws"),
+        ("BATTLEPLAN_EXTRA_RECORDING", "opens a map the lean loop never draws"),
+        ("BATTLEPLAN_MAP_CHURN", "churns extra maps the lean loop never draws"),
+        ("BATTLEPLAN_HIDE", "covers maps the lean loop never covers"),
+        ("BATTLEPLAN_HOVER_FAMILY", "hovers a target the lean loop never points at"),
     ];
     SETTINGS
         .iter()
@@ -163,7 +163,7 @@ struct Request {
     recording: PathBuf,
 }
 
-const SEED_CACHE: &str = "BATTLE_PLAN_PLAYBACK_SEED_CACHE";
+const SEED_CACHE: &str = "BATTLEPLAN_PLAYBACK_SEED_CACHE";
 
 fn copy_tree(from: &Path, to: &Path) -> io::Result<usize> {
     let mut copied = 0;
@@ -247,7 +247,7 @@ fn labels(snapshot: &Value) -> BTreeMap<(String, String, String), u64> {
 }
 
 fn parse(args: &[OsString], var: impl Fn(&str) -> Option<OsString>) -> io::Result<Request> {
-    if var("BATTLE_PLAN_VIEWER_PROFILE")
+    if var("BATTLEPLAN_VIEWER_PROFILE")
         .or_else(|| var("HOI4_VIEWER_PROFILE"))
         .is_some()
     {
@@ -577,9 +577,9 @@ fn admit(mut request: Request, var: impl Fn(&str) -> Option<OsString>) -> io::Re
             .ok_or_else(|| invalid("Output needs a parent"))?,
     )?;
     let captures = var(CAPTURES)
-        .ok_or_else(|| invalid("Set BATTLE_PLAN_CAPTURES to the folder --out must be under"))?;
+        .ok_or_else(|| invalid("Set BATTLEPLAN_CAPTURES to the folder --out must be under"))?;
     if !parent.starts_with(fs::canonicalize(captures)?) {
-        return Err(invalid("--out must be a new directory under BATTLE_PLAN_CAPTURES"));
+        return Err(invalid("--out must be a new directory under BATTLEPLAN_CAPTURES"));
     }
     match fs::symlink_metadata(output) {
         Ok(_) => Err(io::Error::new(
@@ -674,9 +674,9 @@ fn run(request: Request, window: Window) -> io::Result<()> {
     report["setup_and_teardown_seconds"] =
         json!(setup.elapsed().as_secs_f64() - report["wall_seconds"].as_f64().unwrap());
     report["recording"] = json!({"path":recording,"sha256":hash(&recording)?});
-    report["commit"] = json!(option_env!("BATTLE_PLAN_PLAYBACK_COST_COMMIT"));
-    report["baseline_main_commit"] = json!(option_env!("BATTLE_PLAN_PLAYBACK_COST_MAIN"));
-    report["build_dirty"] = json!(option_env!("BATTLE_PLAN_PLAYBACK_COST_DIRTY").map(|v| v == "true"));
+    report["commit"] = json!(option_env!("BATTLEPLAN_PLAYBACK_COST_COMMIT"));
+    report["baseline_main_commit"] = json!(option_env!("BATTLEPLAN_PLAYBACK_COST_MAIN"));
+    report["build_dirty"] = json!(option_env!("BATTLEPLAN_PLAYBACK_COST_DIRTY").map(|v| v == "true"));
     let exe = std::env::current_exe()?;
     report["executable"] = json!({"path":exe,"sha256":hash(&exe)?});
     report["command"] = json!(
@@ -866,10 +866,10 @@ mod lean_tests {
         let unwindowed: Vec<_> = args(&[]).into_iter().filter(|arg| arg != "--windowed").collect();
         assert!(parse(&unwindowed, none).err().is_some_and(|why| why.to_string().contains("--windowed")));
         for name in [
-            "BATTLE_PLAN_VIEWER_GPU_PASSES",
-            "BATTLE_PLAN_EXTRA_MAPS",
-            "BATTLE_PLAN_HOVER_FAMILY",
-            "BATTLE_PLAN_VIEWER_PROFILE",
+            "BATTLEPLAN_VIEWER_GPU_PASSES",
+            "BATTLEPLAN_EXTRA_MAPS",
+            "BATTLEPLAN_HOVER_FAMILY",
+            "BATTLEPLAN_VIEWER_PROFILE",
             "HOI4_VIEWER_PROFILE",
         ] {
             let set = |given: &str| (given == name).then(|| OsString::from("1"));

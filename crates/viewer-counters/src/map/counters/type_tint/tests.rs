@@ -604,7 +604,7 @@ fn the_memo_reuses_an_index_until_its_tables_or_key_change() {
 #[ignore = "unit-scale tint cost; run release, one test thread"]
 fn type_tint_unit_scale() {
     use std::{hint::black_box, time::Instant};
-    let stress = std::env::var("BATTLE_PLAN_UNIT_SHAPE").or_else(|_| std::env::var("HOI4_UNIT_SHAPE")).as_deref() == Ok("stress");
+    let stress = std::env::var("BATTLEPLAN_UNIT_SHAPE").or_else(|_| std::env::var("HOI4_UNIT_SHAPE")).as_deref() == Ok("stress");
     let (n, d) = if stress {
         (5_000_u32, 100_000_usize)
     } else {

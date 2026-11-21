@@ -25,7 +25,7 @@ pub struct Case {
 }
 impl Probe {
     pub fn load() -> Self {
-        let path = std::env::var_os("BATTLE_PLAN_TAP_UNWIND_PROBE").or_else(|| std::env::var_os("HOI4_TAP_UNWIND_PROBE"))
+        let path = std::env::var_os("BATTLEPLAN_TAP_UNWIND_PROBE").or_else(|| std::env::var_os("HOI4_TAP_UNWIND_PROBE"))
             .unwrap_or_else(|| "tap_foreign_probe.dll".into());
         let path: Vec<_> = path.encode_wide().chain(Some(0)).collect();
         let module = unsafe { LoadLibraryW(path.as_ptr()) };

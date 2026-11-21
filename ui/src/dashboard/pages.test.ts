@@ -35,7 +35,7 @@ test('saved page lists keep names and order, refuse damaged entries and fall bac
   for (const bad of [[], [{ id: 'unknown', label: 'X' }], [{ id: 'politics', label: '  ' }], [{ id: 'politics', label: 'A' }, { id: 'politics', label: 'B' }]]) {
     assert.equal(parsePageList(bad), null);
   }
-  values.set('hoi4-replay.analytics-pages.v1', '{');
+  values.set('battleplan.analytics-pages.v1', '{');
   assert.deepEqual(loadPages(storage), defaultPages());
 });
 

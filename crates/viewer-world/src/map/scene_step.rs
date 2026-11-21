@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn coarse_animation_scopes_are_profile_only_and_preserve_state() {
-        const ARM: &str = "BATTLE_PLAN_TEST_ANIMATION_PROFILE_ARM";
+        const ARM: &str = "BATTLEPLAN_TEST_ANIMATION_PROFILE_ARM";
         let Some(arm) = std::env::var_os(ARM) else {
             let name = concat!(
                 module_path!(),
@@ -503,10 +503,10 @@ mod tests {
                 child
                     .args(["--exact", name.split_once("::").unwrap().1, "--nocapture"])
                     .env(ARM, if enabled { "1" } else { "0" })
-                    .env_remove("BATTLE_PLAN_VIEWER_PROFILE")
-                    .env_remove("BATTLE_PLAN_ANIMATION_PROFILE");
+                    .env_remove("BATTLEPLAN_VIEWER_PROFILE")
+                    .env_remove("BATTLEPLAN_ANIMATION_PROFILE");
                 if enabled {
-                    child.env("BATTLE_PLAN_VIEWER_PROFILE", "1");
+                    child.env("BATTLEPLAN_VIEWER_PROFILE", "1");
                 }
                 let output = child.output().unwrap();
                 assert!(output.status.success(), "{output:?}");

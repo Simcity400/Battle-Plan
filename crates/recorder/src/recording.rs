@@ -708,7 +708,7 @@ use crate::replay_io::write_json;
 
 pub use crate::replay_io::{Omission, Refusal};
 
-pub(crate) const RECORDER_VERSION: &str = match option_env!("BATTLE_PLAN_VERSION") {
+pub(crate) const RECORDER_VERSION: &str = match option_env!("BATTLEPLAN_VERSION") {
     Some(version) if !version.is_empty() => version,
     _ => env!("CARGO_PKG_VERSION"),
 };
@@ -799,7 +799,9 @@ fn usage() -> String {
     #[cfg(not(feature = "alloc-fault-injection"))]
     let fault_option = "";
     format!(
-        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once] [--capture-mode full|map] [--no-game-score] [--disable-operation-outcomes] [--disable-politics-capture]{fault_option}
+        "BattlePlan command-line recorder
+
+recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once] [--capture-mode full|map] [--no-game-score] [--disable-operation-outcomes] [--disable-politics-capture]{fault_option}
 recorder detach [--out <directory>]
 recorder refresh [--out <directory>]
 recorder finalize <session-directory> [--out <directory>]
@@ -814,9 +816,9 @@ recorder inspect <campaign.battleplan> --characters <substring> --hour <n> --bra
 {}
 {}
 {}
-Environment: BATTLE_PLAN_WORKER_SAMPLER (comma-separated off, interval_us=<n>)
+Environment: BATTLEPLAN_WORKER_SAMPLER (comma-separated off, interval_us=<n>)
   Forwarded verbatim to collector attach; a nonempty value requires collector feature worker_sampler.
-Environment: BATTLE_PLAN_MAP_EVENTS (comma-separated map event family names, or none)
+Environment: BATTLEPLAN_MAP_EVENTS (comma-separated map event family names, or none)
   The map event families the collector installs; every family when unset. The others record unavailable coverage.",
         crate::clock::USAGE,
         crate::metrics::USAGE,
@@ -932,12 +934,7 @@ fn recompress(args: &[OsString]) -> Result<(), String> {
 }
 
 pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
-    if args.first().is_some_and(|arg| {
-        Path::new(arg)
-            .extension()
-            .and_then(OsStr::to_str)
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("battleplan") || extension.eq_ignore_ascii_case("hoi4replay"))
-    }) {
+    if args.first().is_some_and(|arg| replay::recording_files::is_recording(Path::new(arg))) {
         return crate::metrics::command(args);
     }
     let command = if args
@@ -1188,7 +1185,7 @@ pub(crate) const GAME_CLAIMED: &str =
     "another recorder is attaching to or recording this game; nothing recorded";
 
 fn game_claim(pid: u32, start_time: u64) -> String {
-    format!("Local\\HOI4Replay.Game.{pid}.{start_time}")
+    format!("Local\\BattlePlan.Game.{pid}.{start_time}")
 }
 const COLLECTOR_UNLOAD_WARNING: &str =
     "collector unload is unconfirmed; quit the game before recording again";
@@ -2096,7 +2093,7 @@ pub(crate) fn capture(
             session
                 .encode(&mut session_bytes)
                 .map_err(|e| e.to_string())?;
-            let prefix = format!("Local\\HOI4Replay.{}.{}", process.start_time, nonce);
+            let prefix = format!("Local\\BattlePlan.{}.{}", process.start_time, nonce);
             let names =
                 ["ready", "detach", "done", "idle"].map(|event| format!("{prefix}.{event}"));
             let events = Events::create(names.each_ref().map(String::as_str))?;
@@ -2114,19 +2111,19 @@ pub(crate) fn capture(
                 replay_io::reconcile_session(&ended, target)?;
             }
             let config = json!({"session_id":session.id,"output_dir":directory,"replay_dir":target,"session_start":session_bytes,"ready_event":ready_name,"detach_event":detach_name,"done_event":done_name,"idle_event":idle_name,"cancel_file":cancel_file,"content_order_note":content.order_note,"expected_mounts":expected_mounts,"mod_descriptors":content.mod_descriptors,"game_score":game_score,"operation_outcomes":operation_outcomes,"politics_capture":politics_capture,"scripted_maps":scripted_maps,"without_history":Vec::<String>::new()});
-            let sampler = match std::env::var("BATTLE_PLAN_WORKER_SAMPLER").or_else(|_| std::env::var("HOI4_WORKER_SAMPLER")) {
+            let sampler = match std::env::var("BATTLEPLAN_WORKER_SAMPLER").or_else(|_| std::env::var("HOI4_WORKER_SAMPLER")) {
                 Ok(value) => Some(value),
                 Err(std::env::VarError::NotPresent) => None,
                 Err(std::env::VarError::NotUnicode(_)) => {
-                    return Err("BATTLE_PLAN_WORKER_SAMPLER is not valid Unicode".into());
+                    return Err("BATTLEPLAN_WORKER_SAMPLER is not valid Unicode".into());
                 }
             };
             let config = worker_sampler_config(config, sampler);
-            let config = match std::env::var("BATTLE_PLAN_MAP_EVENTS").or_else(|_| std::env::var("HOI4_MAP_EVENTS")) {
+            let config = match std::env::var("BATTLEPLAN_MAP_EVENTS").or_else(|_| std::env::var("HOI4_MAP_EVENTS")) {
                 Ok(families) => map_event_config(config, &families),
                 Err(std::env::VarError::NotPresent) => config,
                 Err(std::env::VarError::NotUnicode(_)) => {
-                    return Err("BATTLE_PLAN_MAP_EVENTS is not valid Unicode".into());
+                    return Err("BATTLEPLAN_MAP_EVENTS is not valid Unicode".into());
                 }
             };
             #[cfg(feature = "alloc-fault-injection")]
@@ -5376,7 +5373,7 @@ mod tests {
         let mut session_bytes = Vec::new();
         started.encode(&mut session_bytes).unwrap();
         let names = ["ready", "detach", "done", "idle"]
-            .map(|event| format!("Local\\HOI4Replay.test.{pid}.{start}.{event}"));
+            .map(|event| format!("Local\\BattlePlan.test.{pid}.{start}.{event}"));
         let events = Events::create(names.each_ref().map(String::as_str)).unwrap();
         write_json(
             &session.join("bin/collector.json"),
@@ -6277,7 +6274,7 @@ mod tests {
             assert_eq!(config["game_score"], original["game_score"]);
             assert_eq!(config["output_dir"], original["output_dir"]);
         }
-        assert!(usage().contains("BATTLE_PLAN_WORKER_SAMPLER"));
+        assert!(usage().contains("BATTLEPLAN_WORKER_SAMPLER"));
     }
 
     #[test]

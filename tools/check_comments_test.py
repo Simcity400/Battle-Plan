@@ -63,6 +63,11 @@ class Comments(unittest.TestCase):
         self.assertEqual(list(lint.added_comments(".github/workflows/ci.yml", b"", b"      - uses: owner/action@v2 # v2.9.3\n")), [1])
         self.assertEqual(list(lint.added_comments("tools/a.py", b"", b"x = 1 # v2.9.3\n")), [1])
 
+    def test_powershell_script_help_is_user_facing_documentation(self):
+        help_text = b"<#\n.SYNOPSIS\nShow help\n#>\nparam()\n"
+        self.assertEqual(list(lint.added_comments("tools/a.ps1", b"", help_text)), [])
+        self.assertEqual(list(lint.added_comments("tools/a.ps1", b"", help_text.replace(b".SYNOPSIS\n", b""))), [1])
+
     def test_safety_contracts_are_exempt_only_at_unsafe_code(self):
         rust = b"""fn f(p: *const u8) -> u8 {
     // SAFETY: kept.

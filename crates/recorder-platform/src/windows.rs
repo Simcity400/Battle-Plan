@@ -601,7 +601,7 @@ mod tests {
     #[test]
     fn a_claimed_name_is_refused_until_its_holder_lets_it_go() {
         let name = format!(
-            "Local\\HOI4Replay.ClaimTest.{}.{}",
+            "Local\\BattlePlan.ClaimTest.{}.{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -635,7 +635,7 @@ mod tests {
         }
     }
 
-    const HELD_CHILD: &str = "HOI4REPLAY_TEST_HELD_CHILD";
+    const HELD_CHILD: &str = "BATTLEPLAN_TEST_HELD_CHILD";
 
     #[test]
     fn a_held_child_waits_for_its_release() {
@@ -653,7 +653,7 @@ mod tests {
             CONTEXT, CONTEXT_CONTROL_AMD64, GetThreadContext,
         };
         let unique = format!(
-            "hoi4replay-state-test-{}-{}",
+            "battleplan-state-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

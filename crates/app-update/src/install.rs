@@ -35,7 +35,7 @@ fn open(file: &OsStr, parameters: Option<&str>, show: i32) -> Result<(), String>
 }
 
 pub fn launch(version: &str, package: &[u8], arguments: &str) -> Result<(), String> {
-    let path = std::env::temp_dir().join(format!("battle-plan-{version}-setup.exe"));
+    let path = std::env::temp_dir().join(format!("battleplan-{version}-setup.exe"));
     std::fs::write(&path, package).map_err(|error| {
         format!(
             "The installer couldn’t be saved to {}: {error}",

@@ -578,7 +578,7 @@ fn note_culled(
     frame: u64,
 ) {
     static LIST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*LIST.get_or_init(|| std::env::var_os("BATTLE_PLAN_CULL_LIST").or_else(|| std::env::var_os("HOI4_CULL_LIST")).is_some()) {
+    if !*LIST.get_or_init(|| std::env::var_os("BATTLEPLAN_CULL_LIST").or_else(|| std::env::var_os("HOI4_CULL_LIST")).is_some()) {
         return;
     }
     let Some(cull) = cull else {
@@ -644,7 +644,7 @@ fn note_part(
     order: Option<mesh_shader::Order>,
 ) {
     static LIST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*LIST.get_or_init(|| std::env::var_os("BATTLE_PLAN_ORDER_LIST").or_else(|| std::env::var_os("HOI4_ORDER_LIST")).is_some()) {
+    if !*LIST.get_or_init(|| std::env::var_os("BATTLEPLAN_ORDER_LIST").or_else(|| std::env::var_os("HOI4_ORDER_LIST")).is_some()) {
         return;
     }
     let technique = &selection.effect.source.techniques[selection.index].name;

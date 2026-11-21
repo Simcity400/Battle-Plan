@@ -4,7 +4,7 @@ import { saveCampaignFlag, settingsFlags, shareCampaignFlags } from './campaignF
 import { loadCampaignSettings, parseCampaignSettings, saveCampaignSettings, setCampaignFlag, setFactionStyle } from './campaignSettings.ts';
 
 test('browser flags stay with this device; desktop flags move once into the shared settings', async () => {
-  const key = 'hoi4-replay.campaign-settings.v1';
+  const key = 'battleplan.campaign-settings.v1';
   const values = new Map<string, string>();
   const storage = { getItem: (item: string) => values.get(item) ?? null, setItem: (item: string, value: string) => { values.set(item, value); } };
   let local = setCampaignFlag(parseCampaignSettings(undefined), 'ab', 'GER');

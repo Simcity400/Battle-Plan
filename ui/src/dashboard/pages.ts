@@ -106,7 +106,7 @@ export const pageDefinition = (id: PageId): Page | undefined => PAGES.find(page 
 export const pageIcon = (id: PageId): IconName => pageDefinition(id)?.icon ?? 'layout';
 
 export interface PageEntry { id: PageId; label: string }
-const PAGE_LIST_KEY = 'hoi4-replay.analytics-pages.v1';
+const PAGE_LIST_KEY = 'battleplan.analytics-pages.v1';
 export const MAX_PAGE_LABEL = 60;
 type PageStorage = Pick<Storage, 'getItem' | 'setItem'>;
 

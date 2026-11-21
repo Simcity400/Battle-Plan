@@ -15,7 +15,7 @@ release candidate per commit (.github/workflows/release-candidate.yml). The rele
 The workspace version in Cargo.toml is the last stable release. Nightly and preview candidates are
 its next patch with `-<channel>.<yyyymmdd>.<n>`: the UTC date of the build and the commit's position
 on main's first-parent line, so candidates built in main's order sort in it. Stable is that next
-patch, or `--version` for a larger step. The build passes the version as BATTLE_PLAN_VERSION, which
+patch, or `--version` for a larger step. The build passes the version as BATTLEPLAN_VERSION, which
 only app-update, the recorder and Tauri's bundle read, so a new version recompiles only them. It is
 compiled in, so a candidate belongs to one channel. After a stable release, `finalize` pushes it to main
 as the workspace version, over SSH with the release deploy key the checkout carries.
@@ -68,7 +68,7 @@ AZURE = ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_SIG
          "AZURE_SIGNING_ACCOUNT", "AZURE_SIGNING_PROFILE")
 GB = 2**30
 ASSET_LIMIT = 2 * GB
-INSTALLER = "battle-plan-{version}-x64-setup.exe"
+INSTALLER = "battleplan-{version}-x64-setup.exe"
 CANDIDATE_WORKFLOW = "release-candidate.yml"
 RELEASE_WORKFLOW = "release.yml"
 PUSH_ATTEMPTS = 5
@@ -479,8 +479,8 @@ def verify_published(repo, tag, draft, files):
 
 def authenticode_valid(path):
     checked = run(["powershell", "-NoProfile", "-Command",
-                   "if ((Get-AuthenticodeSignature -LiteralPath $env:BATTLE_PLAN_SIGNED).Status -ne 'Valid') { exit 1 }"],
-                  env={**os.environ, "BATTLE_PLAN_SIGNED": str(path)}, check=False)
+                   "if ((Get-AuthenticodeSignature -LiteralPath $env:BATTLEPLAN_SIGNED).Status -ne 'Valid') { exit 1 }"],
+                  env={**os.environ, "BATTLEPLAN_SIGNED": str(path)}, check=False)
     return checked.returncode == 0
 
 
@@ -691,7 +691,7 @@ def preflight(draft, public_key):
     else:
         with tempfile.TemporaryDirectory() as scratch:
             probe = Path(scratch) / "probe.bin"
-            probe.write_bytes(b"Battle Plan updater key probe\n")
+            probe.write_bytes(b"BattlePlan updater key probe\n")
             try:
                 verify_signature(probe, sign_for_updates(probe, "0.0.0-probe"), "0.0.0-probe", public_key)
             except Refused as error:

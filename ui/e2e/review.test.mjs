@@ -15,7 +15,7 @@ import { captureWidget } from './capture.mjs';
 test('explicit prepared seed keeps every page and private writes with provenance', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'parity-prepared-seed-'));
   try {
-    const source = path.join(root, 'input'), destination = path.join(root, 'adapter/HOI4Replay/prepared');
+    const source = path.join(root, 'input'), destination = path.join(root, 'adapter/BattlePlan/prepared');
     await mkdir(path.join(source, 'synthetic-campaign'), { recursive: true });
     for (const [name, body] of [['manifest', 'synthetic committed manifest'], ['range-0', 'exact page zero'], ['range-1', 'exact page one']])
       await writeFile(path.join(source, 'synthetic-campaign', name), body);
@@ -94,7 +94,7 @@ test('stale parents, reused PIDs and delayed observers cannot tree-kill', async 
   const foreign = () => assert.fail('Foreign PID reached execution');
   const cp = Object.fromEntries(['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync'].map(name => [name, foreign]));
   cp.execFile = Object.assign(() => {}, { [promisify.custom]: foreign });
-  const process = { env: { BATTLE_PLAN_OWNED_JOB: 'owned', BATTLE_PLAN_JOB_STOP_FILE: 'owned' }, kill: foreign };
+  const process = { env: { BATTLEPLAN_OWNED_JOB: 'owned', BATTLEPLAN_JOB_STOP_FILE: 'owned' }, kill: foreign };
   runInNewContext(source, { require: name => name === 'node:child_process' ? cp : name === 'node:fs' ? { writeFileSync: () => requests.push('job') }
     : name === 'node:util' ? { promisify } : { syncBuiltinESMExports() {} }, process, Error });
   for (const state of ['stale parent', 'reused PID', 'delayed observer']) {
@@ -237,7 +237,7 @@ test('bridge cleanup awaits the retained child close before staging can be remov
   assert.deepEqual(removed, []);
   child.emit('close');
   await stopping;
-  assert.deepEqual(removed, [path.join(tmpdir(), 'battle-plan-imports', '1-synthetic')]);
+  assert.deepEqual(removed, [path.join(tmpdir(), 'battleplan-imports', '1-synthetic')]);
 });
 
 test('adapter preserves source-change timestamps and private native verification writes', async () => {
@@ -247,7 +247,7 @@ test('adapter preserves source-change timestamps and private native verification
   const { utimes } = await import('node:fs/promises');
   const root = await mkdtemp(path.join(tmpdir(), 'parity-source-time-'));
   const previousLocal = process.env.LOCALAPPDATA;
-  const hashInput = path.join(root, 'input/HOI4Replay/viewer/content-hashes-v2.bin');
+  const hashInput = path.join(root, 'input/BattlePlan/viewer/content-hashes-v2.bin');
   let server;
   try {
     await mkdir(path.dirname(hashInput), { recursive: true }); await writeFile(hashInput, 'synthetic hash cache');
@@ -265,7 +265,7 @@ test('adapter preserves source-change timestamps and private native verification
     for (const name of ['dxcompiler.dll', 'dxil.dll']) await writeFile(path.join(release, name), name);
     const buildTime = sourceTime / 1000 + 60.123456;
     await utimes(binary, buildTime, buildTime);
-    const historyInput = path.join(root, 'input/HOI4Replay/viewer/history/recording/reply.zst');
+    const historyInput = path.join(root, 'input/BattlePlan/viewer/history/recording/reply.zst');
     await mkdir(path.dirname(historyInput), { recursive: true }); await writeFile(historyInput, 'synthetic reply');
     const config = { bridge: binary, recording: path.join(root, 'synthetic.battleplan'), gameDir: '', userDir: '' };
     server = await startUI({ root: repository, commit: 'synthetic' }, config, path.join(root, 'runs', 'capture'));
@@ -275,10 +275,10 @@ test('adapter preserves source-change timestamps and private native verification
     assert.equal((await stat(path.join(debug, 'dashboard-bridge.exe'), { bigint: true })).mtimeNs,
       (await stat(binary, { bigint: true })).mtimeNs, 'release build identity preserves fractional timestamp precision');
     for (const name of ['dxcompiler.dll', 'dxil.dll']) assert.equal(await readFile(path.join(debug, name), 'utf8'), name);
-    const hashCopy = path.join(adapter, 'localappdata/HOI4Replay/viewer/content-hashes-v2.bin');
+    const hashCopy = path.join(adapter, 'localappdata/BattlePlan/viewer/content-hashes-v2.bin');
     assert.equal(await readFile(hashCopy, 'utf8'), 'synthetic hash cache');
     await writeFile(hashCopy, 'private update'); assert.equal(await readFile(hashInput, 'utf8'), 'synthetic hash cache');
-    const historyCopy = path.join(adapter, 'localappdata/HOI4Replay/viewer/history/recording/reply.zst');
+    const historyCopy = path.join(adapter, 'localappdata/BattlePlan/viewer/history/recording/reply.zst');
     assert.equal(await readFile(historyCopy, 'utf8'), 'synthetic reply');
     await writeFile(historyCopy, 'private reply'); assert.equal(await readFile(historyInput, 'utf8'), 'synthetic reply');
   } finally {
@@ -292,7 +292,7 @@ test('runner publishes comparison before its Job reaps Edge, without PID cleanup
   const source = (await readFile(new URL('./run.mjs', import.meta.url), 'utf8')).replace(/^import .*;$/gm, '');
   const exits = [], phases = [];
   const browser = { newContext: async () => ({ newPage: async () => ({}), close: async () => {} }), close: async () => { throw Error('Unsafe PID fallback'); } };
-  const context = { process: { env: { BATTLE_PLAN_OWNED_JOB: 'owned' }, argv: ['node', 'run', 'compare', 'base', 'head'], exit: code => exits.push(code) },
+  const context = { process: { env: { BATTLEPLAN_OWNED_JOB: 'owned' }, argv: ['node', 'run', 'compare', 'base', 'head'], exit: code => exits.push(code) },
     fixture: { cache: 'cache', bridge: 'release' }, path, performance, randomUUID: () => 'owned',
     mkdir: async () => {}, writeFile: async () => {}, writeJSON: async () => {}, outsideRepository: value => value,
     resolveUI: async target => ({ root: target }), startUI: async () => ({ url: 'synthetic', close: async () => {} }),

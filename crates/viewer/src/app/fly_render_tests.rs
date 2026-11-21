@@ -6,7 +6,7 @@ use viewer_foundation::map::camera::Placement;
 use viewer_foundation::map::test_support::TEST_HANG_GUARD;
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn the_chosen_aircraft_is_drawn_while_the_frame_holds_the_document() -> std::io::Result<()> {
     let fixture = Fixture::load("fly-aircraft")?;
     let request = fixture.request([256, 144]);

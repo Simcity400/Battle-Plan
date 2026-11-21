@@ -1013,7 +1013,7 @@ fn refused_selection_storage_never_ends_the_recording() {
         corders_group as group, corders_group_member as member, cunit, cunit_leader,
         modifier_definition::TRADE_FEATURE_FLAGS_RVA,
     };
-    const CHILD: &str = "BATTLE_PLAN_DIVISION_SELECTION_ALLOCATION_TEST";
+    const CHILD: &str = "BATTLEPLAN_DIVISION_SELECTION_ALLOCATION_TEST";
     if std::env::var_os(CHILD).is_none() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([

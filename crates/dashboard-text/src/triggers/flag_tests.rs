@@ -44,7 +44,7 @@ fn flagged() -> DecodedFrame {
 #[test]
 fn country_flags_compare_value_date_and_days() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let f = flagged();
     for (slot, trigger, expected) in [
         (1, "has_country_flag = x", Some(true)),
@@ -96,7 +96,7 @@ fn country_flags_compare_value_date_and_days() {
 #[test]
 fn state_global_and_character_flags_share_the_test() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let f = flagged();
     with_world(&f, "", Err("none"), |world| {
         let cases = |trigger: &str, positive: Scope, zero: Option<Scope>| {

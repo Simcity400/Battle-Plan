@@ -19,7 +19,7 @@ export function factionIdentity(recordedName: string | null, founder: string | n
   return key && key.length <= MAX_IDENTITY ? key : null;
 }
 
-const KEY = 'hoi4-replay.campaign-settings.v1';
+const KEY = 'battleplan.campaign-settings.v1';
 export const MAX_CAMPAIGN_SETTINGS_STORAGE = 2_000_000;
 const MAX_TEXT = 160;
 const MAX_IDENTITY = 400;

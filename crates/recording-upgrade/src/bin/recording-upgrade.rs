@@ -65,10 +65,7 @@ fn collect(path: &std::path::Path, out: &mut Vec<PathBuf>) {
             }
             collect(&entry, out);
         }
-    } else if path
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("battleplan") || extension.eq_ignore_ascii_case("hoi4replay"))
-    {
+    } else if replay::recording_files::is_recording(path) {
         out.push(path.to_owned());
     }
 }

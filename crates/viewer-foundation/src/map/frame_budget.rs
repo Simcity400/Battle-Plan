@@ -116,7 +116,7 @@ pub mod check {
     pub fn on() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| {
-            std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_BUDGET").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_BUDGET")).is_some_and(|value| !value.is_empty() && value != "0")
+            std::env::var_os("BATTLEPLAN_VIEWER_CHECK_BUDGET").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_BUDGET")).is_some_and(|value| !value.is_empty() && value != "0")
         })
     }
 
@@ -146,7 +146,7 @@ pub mod check {
 
     pub fn found(part: &str, why: impl std::fmt::Display) {
         DIFFERING.fetch_add(1, Relaxed);
-        eprintln!("BATTLE_PLAN_VIEWER_CHECK_BUDGET: {part}: {why}");
+        eprintln!("BATTLEPLAN_VIEWER_CHECK_BUDGET: {part}: {why}");
     }
 
     pub fn counted() -> (u64, u64, u64, u64) {
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn the_judge_names_a_piece_held_past_the_bound() {
-        assert!(!check::on(), "the judge is off unless BATTLE_PLAN_VIEWER_CHECK_BUDGET is set");
+        assert!(!check::on(), "the judge is off unless BATTLEPLAN_VIEWER_CHECK_BUDGET is set");
         let (checks, differing, _, _) = check::counted();
         check::carrying("a part", 9, BOUND + 1);
         check::quiet("a part", 3);

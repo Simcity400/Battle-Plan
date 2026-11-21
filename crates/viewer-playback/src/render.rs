@@ -80,7 +80,7 @@ pub struct MapLayers<'a> {
 pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
     let mut configuration = eframe::egui_wgpu::WgpuConfiguration::default();
     configuration.surface = eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY;
-    if std::env::var_os("BATTLE_PLAN_VIEWER_NO_VSYNC").or_else(|| std::env::var_os("HOI4_VIEWER_NO_VSYNC")).is_some() {
+    if std::env::var_os("BATTLEPLAN_VIEWER_NO_VSYNC").or_else(|| std::env::var_os("HOI4_VIEWER_NO_VSYNC")).is_some() {
         configuration.surface.present_mode = wgpu::PresentMode::AutoNoVsync;
     }
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut configuration.wgpu_setup {
@@ -441,7 +441,7 @@ pub fn dump_png(
             render_banner(&scene, &device, &queue, text)?;
         }
         write_png(&scene, &device, &queue, path)?;
-        if let Some(path) = std::env::var_os("BATTLE_PLAN_MAP_SCENE_RGBA16F").or_else(|| std::env::var_os("HOI4_MAP_SCENE_RGBA16F")) {
+        if let Some(path) = std::env::var_os("BATTLEPLAN_MAP_SCENE_RGBA16F").or_else(|| std::env::var_os("HOI4_MAP_SCENE_RGBA16F")) {
             use std::io::Write;
             let targets = scene
                 .targets()
@@ -515,14 +515,14 @@ fn model_frames(
     path: &Path,
     banner: Option<&str>,
 ) -> io::Result<()> {
-    let Some(value) = std::env::var_os("BATTLE_PLAN_VIEWER_MODEL_FRAMES").or_else(|| std::env::var_os("HOI4_VIEWER_MODEL_FRAMES")) else {
+    let Some(value) = std::env::var_os("BATTLEPLAN_VIEWER_MODEL_FRAMES").or_else(|| std::env::var_os("HOI4_VIEWER_MODEL_FRAMES")) else {
         return Ok(());
     };
     let count: u32 = value
         .to_str()
         .and_then(|value| value.parse().ok())
         .ok_or_else(|| {
-            io::Error::other("BATTLE_PLAN_VIEWER_MODEL_FRAMES must be an unsigned frame count")
+            io::Error::other("BATTLEPLAN_VIEWER_MODEL_FRAMES must be an unsigned frame count")
         })?;
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
     scene.restart_live_models();
@@ -555,7 +555,7 @@ fn bench_frames(
     queue: &wgpu::Queue,
     request: Request<'_>,
 ) -> io::Result<()> {
-    let Some(frames) = std::env::var("BATTLE_PLAN_VIEWER_BENCH_FRAMES").or_else(|_| std::env::var("HOI4_VIEWER_BENCH_FRAMES"))
+    let Some(frames) = std::env::var("BATTLEPLAN_VIEWER_BENCH_FRAMES").or_else(|_| std::env::var("HOI4_VIEWER_BENCH_FRAMES"))
         .ok()
         .and_then(|frames| frames.parse::<u32>().ok())
     else {
@@ -570,7 +570,7 @@ fn bench_frames(
             .map(|_| ())
             .map_err(io::Error::other)
     };
-    if std::env::var_os("BATTLE_PLAN_VIEWER_BENCH_MODELS").or_else(|| std::env::var_os("HOI4_VIEWER_BENCH_MODELS")).is_some() {
+    if std::env::var_os("BATTLEPLAN_VIEWER_BENCH_MODELS").or_else(|| std::env::var_os("HOI4_VIEWER_BENCH_MODELS")).is_some() {
         scene.restart_live_models();
     }
     for frame in 0..frames {

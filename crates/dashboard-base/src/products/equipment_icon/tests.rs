@@ -232,7 +232,7 @@ fn authored_equipment_icons_keep_null_archetype_candidates() {
 #[test]
 fn equipment_icons_follow_the_production_rows_rule() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::equipment_icon::{Icon, IconContent, IconHour};
     use content_reader_core::{technology::Enabler, technology::Enablers};
     use content_reader_equipment_graphics::equipment_graphics;
@@ -549,7 +549,7 @@ fn equipment_icons_follow_the_production_rows_rule() {
 #[test]
 fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::equipment_icon::{Icon, IconContent, IconHour};
     use content_reader_core::{ResolvedLayers, technology};
     use content_reader_equipment_graphics::equipment_graphics;

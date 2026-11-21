@@ -43,10 +43,10 @@ async function desktopImagePolicies() {
 test('a widget header icon picker opened by right-click returns focus to the widget on close', async context => {
   const policies = await desktopImagePolicies();
   let policy = policies[0];
-  const edge = (process.env.BATTLE_PLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
+  const edge = (process.env.BATTLEPLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
     .filter((directory): directory is string => Boolean(directory))
     .map(directory => resolve(directory, 'Microsoft/Edge/Application/msedge.exe')).find(existsSync);
-  assert.ok(edge && existsSync(edge), 'Headless Edge is required; set BATTLE_PLAN_CANVAS_BROWSER to its executable');
+  assert.ok(edge && existsSync(edge), 'Headless Edge is required; set BATTLEPLAN_CANVAS_BROWSER to its executable');
   const profile = await mkdtemp(resolve(tmpdir(), 'icon-menu-dom-'));
   const vite = await createServer({ configFile: false, root: resolve('.'),
     cacheDir: resolve(profile, 'vite'), optimizeDeps: { noDiscovery: true,

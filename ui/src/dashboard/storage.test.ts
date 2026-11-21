@@ -20,7 +20,7 @@ test('a page is at its default until its saved layouts differ from the designed 
   assert.equal(saveLayouts({ ...library, layouts: [{ ...first, template: { ...first.template, widgets } }] }, storage, 'overview'), null);
   assert.equal(layoutsAtDefault('overview', storage), false, 'a renamed widget');
   assert.equal(layoutsAtDefault('politics', storage), true, 'each page is judged on its own');
-  storage.values.set('hoi4-replay.workspace-layouts.v1.politics', '{not json');
+  storage.values.set('battleplan.workspace-layouts.v1.politics', '{not json');
   assert.notEqual(loadLayouts(storage, 'politics').warning, null);
   assert.equal(layoutsAtDefault('politics', storage), false, 'unreadable saved layouts');
 });
@@ -86,12 +86,12 @@ test('widget content scales migrate, persist independently and reject invalid sa
 test('migrates a single saved layout without overwriting the original', () => {
   const storage = memoryStorage();
   const legacy = JSON.stringify({ ...defaultTemplate(), name: 'My campaign' });
-  storage.setItem('hoi4-replay.workspace-template.v1', legacy);
+  storage.setItem('battleplan.workspace-template.v1', legacy);
   const { library, warning } = loadLayouts(storage);
   assert.equal(warning, null);
   assert.equal(library.layouts[0].template.name, 'My campaign');
   assert.equal(saveLayouts(library, storage), null);
-  assert.equal(storage.getItem('hoi4-replay.workspace-template.v1'), legacy);
+  assert.equal(storage.getItem('battleplan.workspace-template.v1'), legacy);
   assert.deepEqual(loadLayouts(storage).library, library);
 });
 
@@ -182,7 +182,7 @@ test('failed storage preserves the saved library and unsaved draft', () => {
   assert.match(saveLayouts(draft, blocked)!, /Couldn’t save this layout/);
   assert.deepEqual(loadLayouts(storage).library, previous);
   assert.equal(draft.layouts[0].template.name, 'Unsaved edits');
-  storage.setItem('hoi4-replay.workspace-layouts.v1', '{damaged');
+  storage.setItem('battleplan.workspace-layouts.v1', '{damaged');
   assert.ok(loadLayouts(storage).warning);
 });
 
@@ -287,16 +287,16 @@ test('modded, dynamic and unusual country tags survive saving and reloading', ()
   assert.equal(parsed.droppedTags, 3);
   assert.deepEqual(parsed.library.layouts[0].template.widgets[0].countries, { kind: 'tags', tags: ['GER', 'x'.repeat(129)] });
   assert.equal(parsed.library.layouts[0].template.roles[0].selectedTag, null);
-  storage.setItem('hoi4-replay.workspace-layouts.v1', JSON.stringify(raw));
+  storage.setItem('battleplan.workspace-layouts.v1', JSON.stringify(raw));
   const loaded = loadLayouts(storage);
   assert.equal(loaded.droppedTags, 3);
   assert.match(loaded.warning!, /3 country tag entries were left out/);
   assert.deepEqual(loaded.library, parsed.library);
-  const before = storage.getItem('hoi4-replay.workspace-layouts.v1');
+  const before = storage.getItem('battleplan.workspace-layouts.v1');
   assert.match(saveLayouts(raw, storage)!, /3 country tag entries couldn’t be saved/);
-  assert.equal(storage.getItem('hoi4-replay.workspace-layouts.v1'), before);
-  storage.values.delete('hoi4-replay.workspace-layouts.v1');
-  storage.setItem('hoi4-replay.workspace-template.v1', JSON.stringify(raw.layouts[0].template));
+  assert.equal(storage.getItem('battleplan.workspace-layouts.v1'), before);
+  storage.values.delete('battleplan.workspace-layouts.v1');
+  storage.setItem('battleplan.workspace-template.v1', JSON.stringify(raw.layouts[0].template));
   assert.equal(loadLayouts(storage).droppedTags, 3);
   assert.match(loadLayouts(storage).warning!, /3 country tag entries were left out/);
 });
@@ -317,12 +317,12 @@ test('restoration drops non-string tag entries and counts notes across layouts',
     assert.equal(entry.template.roles[0].selectedTag, null);
   }
   const saved = JSON.stringify(library);
-  storage.setItem('hoi4-replay.workspace-layouts.v1', saved);
+  storage.setItem('battleplan.workspace-layouts.v1', saved);
   const loaded = loadLayouts(storage);
   assert.equal(loaded.droppedTags, 10);
   assert.match(loaded.warning!, /10 country tag entries were left out/);
   assert.deepEqual(loaded.library, parsed.library);
-  assert.equal(storage.getItem('hoi4-replay.workspace-layouts.v1'), saved);
+  assert.equal(storage.getItem('battleplan.workspace-layouts.v1'), saved);
 });
 
 test('an uninstalled widget retains faction selections beyond thirty without a private default limit', () => {

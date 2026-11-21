@@ -1460,7 +1460,7 @@ impl Content {
         }
         crate::perf_log::first_complete();
         let _post_load = crate::perf_log::StartupSpan::new("content_post_load");
-        if let Some(path) = std::env::var_os("BATTLE_PLAN_CONTENT_COUNTS_FILE").or_else(|| std::env::var_os("HOI4_CONTENT_COUNTS_FILE")) {
+        if let Some(path) = std::env::var_os("BATTLEPLAN_CONTENT_COUNTS_FILE").or_else(|| std::env::var_os("HOI4_CONTENT_COUNTS_FILE")) {
             let counts = serde_json::json!({
                 "stage": "complete first hour",
                 "at": crate::perf_log::epoch_ms(),
@@ -2931,7 +2931,7 @@ impl Document {
                 content.layers.validate_generation()?;
             }
             let loading = content.layers.loading();
-            if let Some(path) = std::env::var_os("BATTLE_PLAN_CONTENT_COUNTS_FILE").or_else(|| std::env::var_os("HOI4_CONTENT_COUNTS_FILE")) {
+            if let Some(path) = std::env::var_os("BATTLEPLAN_CONTENT_COUNTS_FILE").or_else(|| std::env::var_os("HOI4_CONTENT_COUNTS_FILE")) {
                 let counts = serde_json::json!({
                     "reads": content_reader_core::content::io_counts::snapshot(),
                     "graph": content.layers.content_counts(),
@@ -5611,10 +5611,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an authored game, user folder, and recording.battleplan in BATTLE_PLAN_VIEWER_TEST_FIXTURES/coverage-2 and coverage-3"]
+    #[ignore = "requires an authored game, user folder, and recording.battleplan in BATTLEPLAN_VIEWER_TEST_FIXTURES/coverage-2 and coverage-3"]
     fn historical_coverage_document_load_keeps_uncovered_read_notes() {
         let fixtures = PathBuf::from(
-            std::env::var_os("BATTLE_PLAN_VIEWER_TEST_FIXTURES")
+            std::env::var_os("BATTLEPLAN_VIEWER_TEST_FIXTURES")
                 .expect("choose the authored viewer fixtures folder"),
         );
         let scratch = synthetic_game::Installation::new("historical-coverage").build();

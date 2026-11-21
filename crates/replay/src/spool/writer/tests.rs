@@ -1349,7 +1349,7 @@ fn every_record_flushes_and_pause_timeout_and_detach_sync() {
 #[test]
 fn periodic_syncs_reuse_one_persistent_durability_thread() {
     let directory = std::env::temp_dir().join(format!(
-        "battle-plan-durability-worker-{}",
+        "battleplan-durability-worker-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&directory);

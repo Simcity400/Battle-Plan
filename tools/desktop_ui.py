@@ -23,7 +23,7 @@ if ROOT == repository or repository in ROOT.parents:
     parser.error('Keep test profiles, binaries and captures outside the repository')
 if not 1024 <= cli.port <= 65535:
     parser.error('Choose a port between 1024 and 65535')
-NAME = 'HOI4ReplayTest-' + hashlib.sha256(str(ROOT).casefold().encode()).hexdigest()[:16]
+NAME = 'BattlePlanTest-' + hashlib.sha256(str(ROOT).casefold().encode()).hexdigest()[:16]
 
 class Startup(c.Structure):
     _fields_ = [('cb',w.DWORD),('reserved',w.LPWSTR),('desktop',w.LPWSTR),('title',w.LPWSTR),

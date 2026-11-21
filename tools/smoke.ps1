@@ -30,9 +30,9 @@ or minimize that application, including when it is TeamViewer.
 Console opens the console with the supplied key, types one line, presses Enter,
 and closes it. Use Text for an already-open console or a save-name field.
 .PARAMETER GameExe
-Path to the installed hoi4.exe, or set BATTLE_PLAN_GAME_DIR. A build this release does not recognise is a warning.
+Path to the installed hoi4.exe, or set BATTLEPLAN_GAME_DIR. A build this release does not recognise is a warning.
 .PARAMETER CaptureRoot
-User-selected output root; defaults to LOCALAPPDATA/HOI4Replay/captures.
+User-selected output root; defaults to LOCALAPPDATA/BattlePlan/captures.
 .PARAMETER GameLock
 Shared lock directory used to prevent concurrent full smoke runs.
 .PARAMETER ContinueLastSave
@@ -84,11 +84,11 @@ Run workspace checks and build the release binaries before the live smoke.
 Mutually exclusive with BuildReceipt/BinaryDirectory. Subsequent smokes use the
 receipt and do not repeat the workspace checks.
 .EXAMPLE
-powershell -NoProfile -File tools/smoke.ps1 -Action Smoke -BuildReceipt "$env:LOCALAPPDATA\HOI4Replay\captures\checkpoint\build-receipt.json" -BinaryDirectory "$env:LOCALAPPDATA\HOI4Replay\captures\checkpoint\bin" -ExpectedSave save.hoi4 -UiConfig "$env:LOCALAPPDATA\HOI4Replay\captures\smoke_config\ui.json" -Out "$env:LOCALAPPDATA\HOI4Replay\captures\smoke_new" -WaitForUiReview
+powershell -NoProfile -File tools/smoke.ps1 -Action Smoke -BuildReceipt "$env:LOCALAPPDATA\BattlePlan\captures\checkpoint\build-receipt.json" -BinaryDirectory "$env:LOCALAPPDATA\BattlePlan\captures\checkpoint\bin" -ExpectedSave save.hoi4 -UiConfig "$env:LOCALAPPDATA\BattlePlan\captures\smoke_config\ui.json" -Out "$env:LOCALAPPDATA\BattlePlan\captures\smoke_new" -WaitForUiReview
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action Launch -ContinueLastSave -ExpectedSave baseline.hoi4
 .EXAMPLE
-powershell -File tools/smoke.ps1 -Action Screenshot -Out "$env:LOCALAPPDATA\HOI4Replay\captures\probe\menu.png"
+powershell -File tools/smoke.ps1 -Action Screenshot -Out "$env:LOCALAPPDATA\BattlePlan\captures\probe\menu.png"
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action Key -Key Space
 .EXAMPLE
@@ -98,7 +98,7 @@ powershell -File tools/smoke.ps1 -Action Move -GameId 1234 -X 1280 -Y 720
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action Wheel -X 1280 -Y 720 -Delta -3
 .EXAMPLE
-powershell -File tools/smoke.ps1 -Action Baseline -Seconds 120 -Out "$env:LOCALAPPDATA\HOI4Replay\captures\baseline"
+powershell -File tools/smoke.ps1 -Action Baseline -Seconds 120 -Out "$env:LOCALAPPDATA\BattlePlan\captures\baseline"
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action ShimStatus
 .EXAMPLE
@@ -115,8 +115,8 @@ param(
     [switch]$ContinueLastSave,
     [string]$ExpectedSave,
     [string]$Out,
-    [string]$CaptureRoot = (Join-Path $env:LOCALAPPDATA 'HOI4Replay\captures'),
-    [string]$GameLock = (Join-Path $env:TEMP 'HOI4Replay\hoi4_game.lock'),
+    [string]$CaptureRoot = (Join-Path $env:LOCALAPPDATA 'BattlePlan\captures'),
+    [string]$GameLock = (Join-Path $env:TEMP 'claude\hoi4_game.lock'),
     [string]$LockOwner,
     [ValidateRange(1, 2147483647)][int]$Seconds = 120,
     [ValidateSet('Space', 'Escape', 'Enter', 'Grave', 'Tab', 'Backspace', 'Delete',
@@ -716,7 +716,7 @@ function Invoke-FullSmoke {
         $report.completion=$completed; $report.collector_absence_confirmed=$true
         Stage 'normal-game-exit'
         Stop-OwnedGame
-        $replays=@(Get-ChildItem -LiteralPath $recordRoot -File | Where-Object { $_.Extension -in '.battleplan', '.hoi4replay' })
+        $replays=@(Get-ChildItem -LiteralPath $recordRoot -File | Where-Object { $_.Extension -in '.battleplan' })
         if ($replays.Count -ne 1) { throw 'Expected exactly one finalized replay.' }
         $replay=$replays[0].FullName; $report.replay=$replay; $report.replay_bytes=$replays[0].Length
         $stream=[IO.File]::OpenRead($replay)
@@ -802,8 +802,8 @@ function Invoke-FullSmoke {
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if (-not $GameExe) {
-    if ($(if (Test-Path Env:BATTLE_PLAN_GAME_DIR) { $env:BATTLE_PLAN_GAME_DIR } else { $env:HOI4_GAME_DIR })) { $GameExe = Join-Path $(if (Test-Path Env:BATTLE_PLAN_GAME_DIR) { $env:BATTLE_PLAN_GAME_DIR } else { $env:HOI4_GAME_DIR }) 'hoi4.exe' }
-    else { throw 'Supply -GameExe or set BATTLE_PLAN_GAME_DIR to the installed game directory.' }
+    if ($(if (Test-Path Env:BATTLEPLAN_GAME_DIR) { $env:BATTLEPLAN_GAME_DIR } else { $env:HOI4_GAME_DIR })) { $GameExe = Join-Path $(if (Test-Path Env:BATTLEPLAN_GAME_DIR) { $env:BATTLEPLAN_GAME_DIR } else { $env:HOI4_GAME_DIR }) 'hoi4.exe' }
+    else { throw 'Supply -GameExe or set BATTLEPLAN_GAME_DIR to the installed game directory.' }
 }
 if ($Action -eq 'Smoke') { Invoke-FullSmoke; return }
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {

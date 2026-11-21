@@ -191,7 +191,7 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         cache_dir: PathBuf::from(
             std::env::var_os("LOCALAPPDATA").ok_or_else(|| invalid("LOCALAPPDATA is not set"))?,
         )
-        .join("HOI4Replay")
+        .join("BattlePlan")
         .join("recorder"),
     };
     println!(

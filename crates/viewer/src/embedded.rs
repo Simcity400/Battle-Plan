@@ -737,7 +737,7 @@ impl Controller {
     }
 
     pub fn report_details(&self, details: dashboard::protocol::MapDetails) {
-        if let Some(path) = std::env::var_os("BATTLE_PLAN_MAP_DETAILS_FILE").or_else(|| std::env::var_os("HOI4_MAP_DETAILS_FILE"))
+        if let Some(path) = std::env::var_os("BATTLEPLAN_MAP_DETAILS_FILE").or_else(|| std::env::var_os("HOI4_MAP_DETAILS_FILE"))
             && let Ok(bytes) = serde_json::to_vec(&serde_json::json!({
                 "at": crate::perf_log::epoch_ms(), "details": &details,
             }))

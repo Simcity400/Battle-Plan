@@ -14,8 +14,8 @@ against the bars of "completely smooth", and the dashboard judged from a desktop
 `--cores`, its peak memory sampled, the machine's load recorded before and after, its exit code kept, and stops only
 that process (on `--minutes`, or deliberately after `--stop-after` seconds); then it says WHOLE or PARTIAL.
 `map` runs the phase's set of harness runs into <dir> and writes <dir>/verdicts.md. `dashboard` judges a perf log
-(BATTLE_PLAN_PERF_LOG) into <dir>/dashboard.md. The viewer loads the pinned shader compiler, dxcompiler.dll and dxil.dll, from
-beside itself; while the folder BATTLE_PLAN_TIMING_LOCK names exists, a run waits for it (up to ten minutes, then goes on and says so); a run starts only
+(BATTLEPLAN_PERF_LOG) into <dir>/dashboard.md. The viewer loads the pinned shader compiler, dxcompiler.dll and dxil.dll, from
+beside itself; while the folder BATTLEPLAN_TIMING_LOCK names exists, a run waits for it (up to ten minutes, then goes on and says so); a run starts only
 with 8 GB of physical memory free, and is partial when the machine ran under 2 GB free during it (paging). Exits 0 when
 every judged bar passed, 1 when any failed or a run was partial, 2 when the phase could not run.
 """
@@ -130,7 +130,7 @@ def machine_load(seconds=2.0):
         if pid in before and before[pid][1] == name:
             busy.append({"name": name, "pid": pid, "cpu": 100.0 * (ticks - before[pid][0]) / max(1, total)})
     busy.sort(key=lambda entry: -entry["cpu"])
-    lock = os.environ.get("BATTLE_PLAN_TIMING_LOCK", os.environ.get("HOI4_TIMING_LOCK"))
+    lock = os.environ.get("BATTLEPLAN_TIMING_LOCK", os.environ.get("HOI4_TIMING_LOCK"))
     return {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "cpu_percent": round(100.0 * (total - idle) / max(1, total), 1),
             "busy": [{**entry, "cpu": round(entry["cpu"], 1)} for entry in busy[:8] if entry["cpu"] >= 0.5],
             "lock": bool(lock) and Path(lock).is_dir(), "free_memory_mb": round(available_memory() / 2 ** 20)}
@@ -138,7 +138,7 @@ def machine_load(seconds=2.0):
 
 def wait_for_lock():
     """Seconds waited for the timing lock to go, and whether it was still there when the wait ended."""
-    lock = os.environ.get("BATTLE_PLAN_TIMING_LOCK", os.environ.get("HOI4_TIMING_LOCK"))
+    lock = os.environ.get("BATTLEPLAN_TIMING_LOCK", os.environ.get("HOI4_TIMING_LOCK"))
     began = time.monotonic()
     while lock and Path(lock).is_dir() and time.monotonic() - began < LOCK_WAIT_SECONDS:
         time.sleep(5)
@@ -213,9 +213,9 @@ def harness_run(viewer, arguments, folder, *, cores=0, minutes=30, stop_after=No
     """One harness run into `folder` (new): the viewer writes `folder/harness`, the runner `folder/run.json`."""
     folder.mkdir(parents=True)
     environment = dict(os.environ)
-    environment["BATTLE_PLAN_CAPTURES"] = str(folder)
+    environment["BATTLEPLAN_CAPTURES"] = str(folder)
     check_shader_compiler(viewer)
-    environment.pop("BATTLE_PLAN_PERF_LOG", None)
+    environment.pop("BATTLEPLAN_PERF_LOG", None)
     kind = "proof" if "--playhead-proof" in arguments else "paced" if "--paced" in arguments else "step"
     command = [str(viewer), *arguments, "--out", str(folder / "harness")]
     waited = held = 0.0

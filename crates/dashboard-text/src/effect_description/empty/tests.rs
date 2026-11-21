@@ -4,7 +4,7 @@ use crate::scripted_text::{EventObject, EventScope};
 #[test]
 fn empty_dispatch() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     for body in [
         "add_ai_strategy={}",
@@ -75,7 +75,7 @@ fn empty_dispatch() {
 #[test]
 fn empty_containers_describe_and_probe_children_once() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let names = content_reader_core::key_names::KeyNames::default();
     let content = Content {
@@ -107,7 +107,7 @@ fn empty_containers_describe_and_probe_children_once() {
 #[test]
 fn empty_containers_keep_child_refusals_once() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     for effect_key in ["create_dynamic_country", "force_disable_resistance"] {
         let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);

@@ -9,7 +9,7 @@ unsafe extern "system" fn callback() -> usize {
 }
 
 fn child(name: &str) -> bool {
-    const CHILD: &str = "BATTLE_PLAN_PREPARED_RESTORATION";
+    const CHILD: &str = "BATTLEPLAN_PREPARED_RESTORATION";
     if std::env::var_os(CHILD).is_some() {
         return true;
     }

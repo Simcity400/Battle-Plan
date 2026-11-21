@@ -9,7 +9,7 @@ import { captureWidget } from './capture.mjs';
 import { compareCaptures } from './compare.mjs';
 import { captureCases, readMatrix } from './matrix.mjs';
 
-if (!(process.env.BATTLE_PLAN_OWNED_JOB ?? process.env.HOI4_OWNED_JOB)) throw Error('Launch through python ui/e2e/owned_job.py node ui/e2e/run.mjs');
+if (!(process.env.BATTLEPLAN_OWNED_JOB ?? process.env.HOI4_OWNED_JOB)) throw Error('Launch through python ui/e2e/owned_job.py node ui/e2e/run.mjs');
 const [command, ...args] = process.argv.slice(2);
 if (command !== 'compare' || args.length !== 2) throw Error('Usage: compare <prepared-instrumented-worktree> <prepared-instrumented-worktree>');
 const config = { ...fixture, cache: outsideRepository(fixture.cache) }, started = performance.now(), phases = {};

@@ -33,12 +33,12 @@ pub struct Standings {
 
 fn checking() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_STEP").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_STEP")).is_some())
+    *ON.get_or_init(|| std::env::var_os("BATTLEPLAN_VIEWER_CHECK_STEP").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_STEP")).is_some())
 }
 
 fn checking_rates() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_RATES").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_RATES")).is_some())
+    *ON.get_or_init(|| std::env::var_os("BATTLEPLAN_VIEWER_CHECK_RATES").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_RATES")).is_some())
 }
 
 impl Standings {
@@ -194,7 +194,7 @@ impl Standings {
             "bound": BOUND,
             "stopped_pictures_judged": self.judges,
             "layers": each,
-            "scope": "Per layer, over the publications it settled in (one publication is the map side's step, which applies one of the playhead's with that step's own hourly change sets): publications_behind, the publications at which its product stood behind the publication's hour, with how far behind it stood at those in publications and in milliseconds; held, the publications at which it reached the bound and the publication waited for it by name; fell_without_a_product_going_back, the publications at which the hour it stood at fell because it had owed nothing the publication before and then drew something of an older hour. A layer with no worker of its own is current at every publication and shows zeros. stopped_pictures_judged counts the times the judge (BATTLE_PLAN_VIEWER_CHECK_STEP=1) reached a picture whose hours had stopped and found every drawn layer standing at it.",
+            "scope": "Per layer, over the publications it settled in (one publication is the map side's step, which applies one of the playhead's with that step's own hourly change sets): publications_behind, the publications at which its product stood behind the publication's hour, with how far behind it stood at those in publications and in milliseconds; held, the publications at which it reached the bound and the publication waited for it by name; fell_without_a_product_going_back, the publications at which the hour it stood at fell because it had owed nothing the publication before and then drew something of an older hour. A layer with no worker of its own is current at every publication and shows zeros. stopped_pictures_judged counts the times the judge (BATTLEPLAN_VIEWER_CHECK_STEP=1) reached a picture whose hours had stopped and found every drawn layer standing at it.",
         })
     }
 }

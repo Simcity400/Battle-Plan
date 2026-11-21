@@ -7,7 +7,7 @@ use viewer_foundation::map::province_map::HeightField;
 use viewer_world::map::scene::{PlayerModel, Request};
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn the_flying_aircraft_draws_whatever_the_map_cutoffs_and_layer_switches() -> io::Result<()> {
     let fixture = Fixture::load("player")?;
     let mut scene = fixture.scene()?;

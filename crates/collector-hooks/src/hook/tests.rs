@@ -182,7 +182,7 @@ fn installation_keeps_the_first_native_rollback_failure_after_successful_disable
 
 #[test]
 fn owned_family_restores_after_capture_stop_without_clearing_it() {
-    const CHILD: &str = "BATTLE_PLAN_HOOK_RESTORE_AFTER_CAPTURE_STOP";
+    const CHILD: &str = "BATTLEPLAN_HOOK_RESTORE_AFTER_CAPTURE_STOP";
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([

@@ -204,7 +204,7 @@ export function testGroups(files, manifest = browserTests, { tabFull = false } =
 
 export async function executeGroup(group, root = repositoryRoot, output = process.stdout) {
   if (!group.files.length) return 0;
-  const flags = ['BATTLE_PLAN_VIRTUAL_TAB_ONLY', 'BATTLE_PLAN_VIRTUAL_TAB_FULL'];
+  const flags = ['BATTLEPLAN_VIRTUAL_TAB_ONLY', 'BATTLEPLAN_VIRTUAL_TAB_FULL'];
   const previous = flags.map(flag => process.env[flag]);
   for (const flag of flags) {
     if (group.tabFull) process.env[flag] = '1';

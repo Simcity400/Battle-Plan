@@ -30,7 +30,7 @@ class Scan(unittest.TestCase):
         self.assertEqual(cmp.scan("a.sh", "/c/" + "Users/Player/x", []), [])
 
     def test_a_folder_that_merely_contains_the_words_is_not_a_machine_path(self):
-        self.assertEqual(cmp.scan("a.py", "my_hoi4_build_notes and the battle-plan repo", []), [])
+        self.assertEqual(cmp.scan("a.py", "my_hoi4_build_notes and the BattlePlan repo", []), [])
         self.assertEqual(cmp.scan("a.py", "$HOME/hoi4_build", []), [])
 
     def test_the_allow_file_exempts_one_kind_for_matching_files_only(self):

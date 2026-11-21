@@ -1681,7 +1681,7 @@ pub struct AtHead {
 fn judging() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_ACTORS").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_ACTORS"))
+        std::env::var_os("BATTLEPLAN_VIEWER_CHECK_ACTORS").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_ACTORS"))
             .and_then(|value| value.to_str().map(|value| value.trim().to_owned()))
             .is_some_and(|value| !value.is_empty() && value != "0")
     })

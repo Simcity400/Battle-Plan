@@ -1384,8 +1384,8 @@ mod tests {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(default)
         };
-        let countries = variable("BATTLE_PLAN_RAID_SCORE_COUNTRIES", 1_500);
-        let regions = variable("BATTLE_PLAN_RAID_SCORE_REGIONS", 305);
+        let countries = variable("BATTLEPLAN_RAID_SCORE_COUNTRIES", 1_500);
+        let regions = variable("BATTLEPLAN_RAID_SCORE_REGIONS", 305);
         let mut world = World::new(countries, regions);
         for country in (1..=countries).step_by(20) {
             for slot in (1..regions).step_by(regions / 10) {

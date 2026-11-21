@@ -4,7 +4,7 @@
 
 Points are the app window's client pixels, as the page measures them times its device pixel ratio.
 Pointer and key input goes through the viewer's suite input channel (crates/viewer/src/suite_input.rs,
-served at `--input`, which the suite set in the app's BATTLE_PLAN_E2E_INPUT): on a desktop of the suite's
+served at `--input`, which the suite set in the app's BATTLEPLAN_E2E_INPUT): on a desktop of the suite's
 own, where no cursor is, the windowing library would drop real pointer input. Points become client
 pixels of the map's window under them. The user's own input and cursor are never touched. Each reply
 carries the epoch milliseconds each event was sent at, the clock the viewer stamps its frames with.

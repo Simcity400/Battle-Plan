@@ -230,7 +230,7 @@ fn army_reach_bench() {
     assets.geometry = geometry;
     assets.paths = Ok(paths::PathSearch::new(graph));
     let sources = base_provinces();
-    let hours = std::env::var("BATTLE_PLAN_REACH_BENCH_HOURS").or_else(|_| std::env::var("HOI4_REACH_BENCH_HOURS"))
+    let hours = std::env::var("BATTLEPLAN_REACH_BENCH_HOURS").or_else(|_| std::env::var("HOI4_REACH_BENCH_HOURS"))
         .ok()
         .and_then(|hours| hours.parse().ok())
         .unwrap_or(HOURS);

@@ -125,7 +125,7 @@ fn normal_return(call: &NativeCall, count: usize) {
 }
 
 #[test]
-#[ignore = "parent-only native C++/SEH dispatch; requires BATTLE_PLAN_TAP_UNWIND_PROBE"]
+#[ignore = "parent-only native C++/SEH dispatch; requires BATTLEPLAN_TAP_UNWIND_PROBE"]
 fn naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks() {
     let _serial = probe::SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let _observation = Observation::new();

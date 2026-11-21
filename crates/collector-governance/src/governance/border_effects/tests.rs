@@ -323,7 +323,7 @@ fn demand_and_matching_seed_faults_withhold_only_decisions() {
 #[test]
 #[ignore = "synthetic demanded-decision capture and encoded delta costs"]
 fn border_effect_decision_seed_scale_bench() {
-    let countries = std::env::var("BATTLE_PLAN_EFFECT_COUNTRIES").or_else(|_| std::env::var("HOI4_EFFECT_COUNTRIES"))
+    let countries = std::env::var("BATTLEPLAN_EFFECT_COUNTRIES").or_else(|_| std::env::var("HOI4_EFFECT_COUNTRIES"))
         .ok()
         .map(|value| value.parse::<usize>().unwrap())
         .unwrap_or(193);

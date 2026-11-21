@@ -16,7 +16,7 @@ const FAILED: u8 = 3;
 
 pub fn requested() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_GPU_PASSES").or_else(|| std::env::var_os("HOI4_VIEWER_GPU_PASSES")).is_some())
+    *ENABLED.get_or_init(|| std::env::var_os("BATTLEPLAN_VIEWER_GPU_PASSES").or_else(|| std::env::var_os("HOI4_VIEWER_GPU_PASSES")).is_some())
 }
 
 pub fn record() {

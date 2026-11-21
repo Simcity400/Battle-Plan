@@ -93,7 +93,7 @@ fn temp_inherited_context_requires_proved_reads_even_inside_nested_checks() {
 #[test]
 fn temp_modulo_uses_integer_operands_and_guards() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = with_variables(variables_frame(), &[(1, 100, &[("bottom", i64::MIN)])]);
     with_world(&frame, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
@@ -129,7 +129,7 @@ fn temp_modulo_uses_integer_operands_and_guards() {
 #[test]
 fn temp_modulo_consumes_the_effect_reader_form() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let read = temp_effects(
         "body = { set_temp_variable = { n = 8.9 }
                   modulo_temp_variable = { var = n value = 2.5 }
@@ -157,7 +157,7 @@ fn temp_modulo_consumes_the_effect_reader_form() {
 #[test]
 fn temp_random_bare_scalar_keeps_the_counted_reader_refusal() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let read = temp_effects("body = { set_temp_variable_to_random = runtime_name }");
     let refusals: Vec<_> = read
         .misreads
@@ -178,7 +178,7 @@ fn temp_random_bare_scalar_keeps_the_counted_reader_refusal() {
 #[test]
 fn temp_modulo_caches_the_target_before_rhs_alias_mutations() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     with_world(
         &positive_variables_frame(),
         "ALI = { original_tag = GER set_temp_variable = { n = 9 } }",
@@ -207,7 +207,7 @@ fn temp_modulo_caches_the_target_before_rhs_alias_mutations() {
 #[test]
 fn temp_variables_follow_order_across_scripted_triggers_and_scopes() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     use content_reader_core::scripted_triggers::Template;
 
     let frame = positive_variables_frame();
@@ -256,7 +256,7 @@ fn temp_variables_follow_order_across_scripted_triggers_and_scopes() {
 #[test]
 fn temp_variables_use_fixed5_arithmetic() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = with_variables(variables_frame(), &[(1, 100, &[("huge", i64::MAX)])]);
     with_world(&frame, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
@@ -317,7 +317,7 @@ fn temp_variables_use_fixed5_arithmetic() {
 #[test]
 fn temp_variables_read_the_destination_after_rhs_alias_conditions() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     with_world(
         &positive_variables_frame(),
         "ALI = { original_tag = GER set_temp_variable = { n = 7 }
@@ -348,7 +348,7 @@ fn temp_variables_read_the_destination_after_rhs_alias_conditions() {
 #[test]
 fn temp_variables_override_caller_temps_and_reset_for_the_next_context() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = variables_frame();
     let scopes = Scopes {
         target_state: Some(64),
@@ -398,7 +398,7 @@ fn temp_variables_override_caller_temps_and_reset_for_the_next_context() {
 #[test]
 fn temp_variables_keep_pending_writers_expressions_and_residuals_named() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = variables_frame();
     with_world(&frame, "", Err("none"), |world| {
         let scopes = Scopes::of(Scope::Country(0));
@@ -454,7 +454,7 @@ fn temp_variables_keep_pending_writers_expressions_and_residuals_named() {
 #[test]
 fn format98_random_temp_trigger_and_mtth_share_the_seed_context() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = variables_frame();
     let TableView::Complete(TableRows::ScriptVariables(rows)) =
         &mut *frame.tables[TableId::ScriptVariables.index()]

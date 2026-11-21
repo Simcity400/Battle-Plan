@@ -136,7 +136,7 @@ impl TableDigest {
     }
 
     fn for_table(table: usize) -> Self {
-        let traced = std::env::var("BATTLE_PLAN_DIGEST_TRACE").or_else(|_| std::env::var("HOI4_DIGEST_TRACE")).is_ok_and(|name| name == format!("{:?}", TableId::ALL[table]));
+        let traced = std::env::var("BATTLEPLAN_DIGEST_TRACE").or_else(|_| std::env::var("HOI4_DIGEST_TRACE")).is_ok_and(|name| name == format!("{:?}", TableId::ALL[table]));
         Self { traced, ..Self::new() }
     }
 

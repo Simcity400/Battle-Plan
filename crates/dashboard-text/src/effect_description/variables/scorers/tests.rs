@@ -15,7 +15,7 @@ fn make_database(body: &[u8]) -> (KeyNames, Database) {
 #[test]
 fn scorer_highest_keeps_first_tie_sorted_replaces_later_score_and_uses_ties() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let (names, database) = make_database(b"sample={targets={targets={BBB AAA CCC} score={base=10}} targets={targets={BBB} score={base=3}}} ties={targets={targets={CCC BBB AAA} score={base=5}}}");
     fixture.with_renderer(&mut fresh(), Content { key_names: Some(&names), country_scorers: Some(&database), ..Default::default() }, |renderer| {
@@ -37,7 +37,7 @@ fn scorer_highest_keeps_first_tie_sorted_replaces_later_score_and_uses_ties() {
 #[test]
 fn scorer_filters_reverse_from_for_score_and_reads_shared_temporary_array() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let (names, database) = make_database(b"sample={targets={target_array=candidates targets={AAA BBB} target_root_trigger={tag=AAA} target_trigger={FROM={tag=BBB}} score={base=1 modifier={FROM={tag=AAA} add=2}}}} changing={targets={target_array=candidates target_trigger={set_temp_variable={var=candidates^1 value=CCC.id}} score={base=1 modifier={tag=CCC add=2}}}}");
     fixture.with_renderer(&mut fresh(), Content { key_names: Some(&names), country_scorers: Some(&database), ..Default::default() }, |renderer| {
@@ -62,7 +62,7 @@ fn scorer_filters_reverse_from_for_score_and_reads_shared_temporary_array() {
 #[test]
 fn invalid_scorer_is_noop_and_unknown_target_form_is_named_once() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let (names, database) = make_database(b"sample={targets={state_target=yes}}");
     let out = fixture.render_native(

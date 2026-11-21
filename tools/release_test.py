@@ -311,7 +311,7 @@ class TakenUp(unittest.TestCase):
     def test_a_release_whose_feed_failed_is_taken_up_only_with_the_installer_it_records(self):
         with tempfile.TemporaryDirectory() as temp:
             dist = Path(temp)
-            name = "battle-plan-1.4.3-x64-setup.exe"
+            name = "battleplan-1.4.3-x64-setup.exe"
             served = {name: b"signed", f"{name}.sig": b"sig",
                       "SHA256SUMS": f"{hashlib.sha256(b'signed').hexdigest()}  {name}".encode()}
 

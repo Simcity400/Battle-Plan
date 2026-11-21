@@ -162,6 +162,8 @@ def script_comments(language, source, scalar):
 def exempt(name, start, comment, source=b""):
     if start == 0 and comment.startswith(b"#!/") and language_of(name) in ("bash", "python"):
         return True
+    if start == 0 and name.endswith(".ps1") and re.match(rb"<#[ \t]*\n[ \t]*\.SYNOPSIS[ \t]*\n", comment, re.I):
+        return True
     if (name.endswith("/Cargo.toml") or name == "Cargo.toml") and comment in CARGO_GENERATED:
         return True
     if re.fullmatch(rb"// quarantine: #[1-9][0-9]* \S.*", comment):

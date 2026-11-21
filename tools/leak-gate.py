@@ -6,8 +6,8 @@ pull-request checks add git front ends over the same core, `Matcher.scan_bytes`.
 It looks, in bytes, UTF-8 and UTF-16, case-insensitively and for each kind on its own, for these kinds:
 - term: the private terms (names, home folders, private paths, private hosts), never kept in this
   repository. In order: the environment variable LEAK_GATE_TERMS (a JSON list, from the CI secret
-  of that name); else `[leak] terms` in the dev config at BATTLE_PLAN_DEV_CONFIG, or at
-  %LOCALAPPDATA%\\HOI4Replay\\dev\\config.toml ($XDG_CONFIG_HOME/hoi4replay/dev/config.toml
+  of that name); else `[leak] terms` in the dev config at BATTLEPLAN_DEV_CONFIG, or at
+  %LOCALAPPDATA%\\BattlePlan\\dev\\config.toml ($XDG_CONFIG_HOME/battleplan/dev/config.toml
   elsewhere); with none, it refuses to run;
 - user-path, steam-path: user folders on any drive, SteamLibrary folders;
 - email: addresses other than GitHub noreply ones;
@@ -58,12 +58,12 @@ ARCHIVES = {".exe", ".zip", ".7z", ".cab", ".gz", ".tar", ".xz"}
 
 
 def dev_config():
-    if configured := os.environ.get("BATTLE_PLAN_DEV_CONFIG") or os.environ.get("HOI4REPLAY_DEV_CONFIG"):
+    if configured := os.environ.get("BATTLEPLAN_DEV_CONFIG"):
         return Path(configured)
     if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
-        return Path(os.environ["LOCALAPPDATA"]) / "HOI4Replay" / "dev" / "config.toml"
+        return Path(os.environ["LOCALAPPDATA"]) / "BattlePlan" / "dev" / "config.toml"
     base = os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
-    return Path(base) / "hoi4replay" / "dev" / "config.toml"
+    return Path(base) / "battleplan" / "dev" / "config.toml"
 
 
 def private_terms():

@@ -179,7 +179,7 @@ pub(crate) mod tests {
 
     fn scratch() -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "battle-plan-recorder-targets-{}-{}",
+            "battleplan-recorder-targets-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

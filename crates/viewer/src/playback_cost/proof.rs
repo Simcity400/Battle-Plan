@@ -212,10 +212,10 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
 
 pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     let mut options = parse(args)?;
-    let captures = std::env::var_os("BATTLE_PLAN_CAPTURES").or_else(|| std::env::var_os("HOI4_CAPTURES")).ok_or_else(|| invalid("Set BATTLE_PLAN_CAPTURES to the folder --out must be under"))?;
+    let captures = std::env::var_os("BATTLEPLAN_CAPTURES").or_else(|| std::env::var_os("HOI4_CAPTURES")).ok_or_else(|| invalid("Set BATTLEPLAN_CAPTURES to the folder --out must be under"))?;
     let parent = fs::canonicalize(options.out.parent().ok_or_else(|| invalid("--out needs a parent"))?)?;
     if !parent.starts_with(fs::canonicalize(captures)?) {
-        return Err(invalid("--out must be a new directory under BATTLE_PLAN_CAPTURES"));
+        return Err(invalid("--out must be a new directory under BATTLEPLAN_CAPTURES"));
     }
     fs::create_dir(&options.out)?;
     let out = fs::canonicalize(&options.out)?;

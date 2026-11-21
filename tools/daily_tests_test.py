@@ -18,7 +18,7 @@ CI_DIR = os.path.abspath("runner")
 
 
 def setUpModule():
-    patch = mock.patch.dict(os.environ, {"BATTLE_PLAN_CI": CI_DIR})
+    patch = mock.patch.dict(os.environ, {"BATTLEPLAN_CI": CI_DIR})
     patch.start()
     unittest.addModuleCleanup(patch.stop)
     dt.configure(CI_DIR)
@@ -44,27 +44,27 @@ class GameDir(unittest.TestCase):
             os.chdir(here)
             try:
                 given = os.path.join(os.getcwd(), "game")
-                with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": ""}):
+                with mock.patch.dict(os.environ, {"BATTLEPLAN_GAME_DIR": ""}):
                     for command in ("install", "run"):
                         self.assertEqual(dt.parse([command, "--game-dir", "game"]).game_dir, given)
-                with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game"}):
+                with mock.patch.dict(os.environ, {"BATTLEPLAN_GAME_DIR": "game"}):
                     self.assertEqual(dt.parse(["run"]).game_dir, given)
-                with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game", "BATTLE_PLAN_CI": ""}):
+                with mock.patch.dict(os.environ, {"BATTLEPLAN_GAME_DIR": "game", "BATTLEPLAN_CI": ""}):
                     for command in ("install", "run"):
                         self.assertEqual(dt.parse([command, "--ci-dir", "ci"]).ci_dir, os.path.join(os.getcwd(), "ci"))
-                with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game", "BATTLE_PLAN_CI": "ci"}):
+                with mock.patch.dict(os.environ, {"BATTLEPLAN_GAME_DIR": "game", "BATTLEPLAN_CI": "ci"}):
                     self.assertEqual(dt.parse(["run"]).ci_dir, os.path.join(os.getcwd(), "ci"))
             finally:
                 os.chdir(previous)
 
     def test_an_empty_variable_names_no_game_dir(self):
-        with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": ""}), \
+        with mock.patch.dict(os.environ, {"BATTLEPLAN_GAME_DIR": ""}), \
                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             dt.parse(["run"])
 
     def test_an_empty_variable_names_no_runner_folder(self):
         for command in ("install", "run"):
-            with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game", "BATTLE_PLAN_CI": ""}), \
+            with mock.patch.dict(os.environ, {"BATTLEPLAN_GAME_DIR": "game", "BATTLEPLAN_CI": ""}), \
                     contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 dt.parse([command])
 
@@ -393,7 +393,7 @@ class Continuation(unittest.TestCase):
 
     def test_recorded_replies_reach_the_checked_out_runner_the_task_and_every_step_alone(self):
         replies = str(self.worktree / "replies.jsonl.gz")
-        with mock.patch.dict(os.environ, {"BATTLE_PLAN_RECORDED_REPLIES": ""}):
+        with mock.patch.dict(os.environ, {"BATTLEPLAN_RECORDED_REPLIES": ""}):
             args = dt.parse(["run", "--game-dir", self.args.game_dir, "--recorded-replies", replies])
             self.assertIsNone(dt.parse(["install", "--game-dir", self.args.game_dir]).recorded_replies)
         self.assertEqual(dt.fixtures(args), ["--recorded-replies", replies])
@@ -410,10 +410,10 @@ class Continuation(unittest.TestCase):
                 "--continue-run", self.commit, "2026-11-03T03:00:00", "200.0", str(folder),
             ])
             with mock.patch.object(dt, "steps", return_value=[("UI", "ui", ["npm"], None)]), \
-                    mock.patch.dict(os.environ, {"BATTLE_PLAN_RECORDED_REPLIES": "inherited"}):
+                    mock.patch.dict(os.environ, {"BATTLEPLAN_RECORDED_REPLIES": "inherited"}):
                 dt.run(child)
-        self.assertEqual(environments[0]["BATTLE_PLAN_RECORDED_REPLIES"], replies)
-        self.assertNotIn("BATTLE_PLAN_RECORDED_REPLIES", environments[1])
+        self.assertEqual(environments[0]["BATTLEPLAN_RECORDED_REPLIES"], replies)
+        self.assertNotIn("BATTLEPLAN_RECORDED_REPLIES", environments[1])
 
     def test_the_guarded_child_refuses_a_different_head(self):
         args = self.child_args()
@@ -1003,7 +1003,7 @@ class Acceptance(unittest.TestCase):
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.log = self.root / "e2e.log"
-        self.build = dt.Build(self.root / "target", self.root, {"BATTLE_PLAN_GAME_DIR": "G:/game"}, 1e9, "F:/fixture")
+        self.build = dt.Build(self.root / "target", self.root, {"BATTLEPLAN_GAME_DIR": "G:/game"}, 1e9, "F:/fixture")
 
     def reporting(self, code, report):
         def step(command, log, environment, seconds):
@@ -1015,10 +1015,10 @@ class Acceptance(unittest.TestCase):
         return mock.patch.object(dt, "run_step", side_effect=step)
 
     def test_the_fixture_reaches_the_checked_out_runner_and_the_task(self):
-        with mock.patch.dict(os.environ, {"BATTLE_PLAN_E2E_FIXTURE": ""}):
+        with mock.patch.dict(os.environ, {"BATTLEPLAN_E2E_FIXTURE": ""}):
             args = dt.parse(["run", "--game-dir", "game", "--fixture", "fixture"])
         self.assertEqual(args.fixture, os.path.abspath("fixture"))
-        with mock.patch.dict(os.environ, {"BATTLE_PLAN_E2E_FIXTURE": "named"}):
+        with mock.patch.dict(os.environ, {"BATTLEPLAN_E2E_FIXTURE": "named"}):
             self.assertEqual(dt.parse(["install", "--game-dir", "game"]).fixture, os.path.abspath("named"))
 
     def test_no_fixture_fails_the_step_by_name_without_running_it(self):

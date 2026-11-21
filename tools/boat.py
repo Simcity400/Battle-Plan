@@ -8,7 +8,7 @@
     python tools/boat.py build --out <dir> --profile release-lto -p collector --lib
     python tools/boat.py test -p replay-columnar --lib -- <test name>... [--exact] [--nocapture]
     python tools/boat.py reconcile
-    python tools/boat.py snapshot
+    python tools/boat.py snapshot [--from <snapshot>]
     python tools/boat.py wake check -p <crate>... --all-targets
 
 `wake`, given the arguments of the run that follows, starts resuming the VM that run would take, or clones
@@ -23,7 +23,7 @@ x86_64-pc-windows-msvc; `clippy` is `check` with Clippy's lints. Cargo's exit co
 exit 75 means Boat failed: run it again, never locally.
 
 `snapshot`, from a clean worktree at the head of the branch the image serves, re-saves SNAPSHOT
-from a VM of its own (cloned from SNAPSHOT, or from BASE_SNAPSHOT) that cleared its build outputs,
+from a VM of its own (cloned from SNAPSHOT or the image named by --from) that cleared its build outputs,
 checked that tree whole (WARM) and then kept only what a check reads, so clones fit a default
 machine; release and test builds start cold on each VM. Worth running again once the branch has changed crates many others
 depend on, its dependencies or its features. The VM stops at the end of its idle tail.
@@ -71,8 +71,7 @@ import time
 import uuid
 
 TOOLS = Path(__file__).resolve().parent
-SNAPSHOT = "battle-plan-check"
-BASE_SNAPSHOT = "hoi4-check"
+SNAPSHOT = "battleplan-check"
 WARM = [
     ("ui", []),
     ("check", ["check", "--keep-going", "--workspace", "--all-targets"]),
@@ -715,7 +714,7 @@ def choose(state, lane, size, passed=(), rebuilds=lambda vmid: (0, 0)):
 
 
 def clone(state, lane, size, allocator):
-    """Clones a VM from SNAPSHOT, each create spaced from every other, letting the allocator go while it creates; returns (vmid, its lock, its size)."""
+    """Clones a VM from SNAPSHOT, releasing the allocator before each spaced creation; returns (vmid, its lock, its size)."""
     for size in dict.fromkeys((size, "large")):
         allocator = allocator or state.allocator()
         now = time.time()
@@ -726,10 +725,10 @@ def clone(state, lane, size, allocator):
         allocator = None
         if slot > now:
             time.sleep(slot - now)
-        creation, events = boat("new", "--from", SNAPSHOT, "--type", size, "--name", "hoi4-check-pool-" + lane[:10], "--ttl", str(LEASE_SECONDS), "--no-env", check=False)
+        creation, events = boat("new", "--from", SNAPSHOT, "--type", size, "--name", "battleplan-check-pool-" + lane[:10], "--ttl", str(LEASE_SECONDS), "--no-env", check=False)
         vmid = next((event["id"] for event in events if event.get("event") == "created"), None)
         reason = "; ".join(event["error"] for event in events if event.get("error")) or creation.stderr.strip()
-        if vmid or "does not fit" not in reason:
+        if vmid or size == "large" or "does not fit" not in reason:
             break
         say(f"{SNAPSHOT} does not fit a {size} VM ({reason}); cloning a large one")
     if creation.returncode or not vmid:
@@ -1302,20 +1301,17 @@ def run_tests(worktree, folder, delivered, run, started):
     return worst - 2 ** 32 if worst >= 2 ** 31 else worst
 
 
-def make_snapshot(state, worktree, revision):
+def make_snapshot(state, worktree, revision, source):
     """Saves SNAPSHOT from a VM of its own that compiled this clean worktree as builders do (WARM)."""
     if git(worktree, "status", "--porcelain"):
         raise Failure("Refusing to save the image from a dirty worktree")
-    vmid = None
-    for base in dict.fromkeys((SNAPSHOT, BASE_SNAPSHOT)):
-        creation, events = boat("new", "--from", base, "--type", "large", "--name", "hoi4-image-" + SNAPSHOT, "--ttl", str(LEASE_SECONDS), "--no-env", check=False)
-        vmid = next((event["id"] for event in events if event.get("event") == "created"), None)
-        if vmid:
-            break
-        say(f"Could not clone {base} ({creation.returncode}): {(creation.stderr or creation.stdout).strip()[:300]}")
+    size = machine_size("snapshot", [])
+    creation, events = boat("new", "--from", source, "--type", size, "--name", "battleplan-image-" + SNAPSHOT, "--ttl", str(LEASE_SECONDS), "--no-env", check=False)
+    vmid = next((event["id"] for event in events if event.get("event") == "created"), None)
     if not vmid:
-        raise Failure("Could not clone a VM to build the image on")
-    say(f"Building {SNAPSHOT} from {revision} on {vmid}, cloned from {base}")
+        reason = "; ".join(event["error"] for event in events if event.get("error")) or (creation.stderr or creation.stdout).strip()
+        raise Failure(f"Could not clone {source} as a {size} VM to build {SNAPSHOT} ({creation.returncode}): {reason}")
+    say(f"Building {SNAPSHOT} from {revision} on {vmid} ({size}), cloned from {source}")
     lease = Lease(vmid)
     token, stage = uuid.uuid4().hex, None
     try:
@@ -1410,10 +1406,14 @@ def parse_test(rest):
 def parse(argv):
     """Returns (mode, cargo arguments, output directory, the test run)."""
     if not argv or argv[0] not in {"check", "clippy", "build", "test", "ui", "reconcile", "snapshot"}:
-        raise Failure("Usage: boat.py check|clippy <cargo args> | build --out <dir> --release|--profile <name> <cargo args> | test [--out <dir>] [--pdb] [--no-fail-fast] -p <crate> <cargo test args> [-- <test args>] | ui | reconcile | snapshot | wake <arguments of the run that follows>")
+        raise Failure("Usage: boat.py check|clippy <cargo args> | build --out <dir> --release|--profile <name> <cargo args> | test [--out <dir>] [--pdb] [--no-fail-fast] -p <crate> <cargo test args> [-- <test args>] | ui | reconcile | snapshot [--from <snapshot>] | wake <arguments of the run that follows>")
     mode, rest = argv[0], list(argv[1:])
     outdir, run = None, None
-    if mode in {"ui", "reconcile", "snapshot"}:
+    if mode == "snapshot":
+        if rest and (len(rest) != 2 or rest[0] != "--from" or not rest[1] or rest[1].startswith("-")):
+            raise Failure("snapshot takes an optional --from <snapshot>")
+        return mode, rest[1:], None, None
+    if mode in {"ui", "reconcile"}:
         if rest:
             raise Failure(f"{mode} takes no arguments")
         return mode, [], None, None
@@ -1441,7 +1441,7 @@ def machine_size(mode, cargo):
             raise Failure("BOAT_MACHINE_TYPE must be default or large")
         return os.environ["BOAT_MACHINE_TYPE"]
     packages = sum(arg in {"-p", "--package"} or arg.startswith("--package=") or (arg.startswith("-p") and len(arg) > 2) for arg in cargo)
-    return "default" if mode == "ui" or (mode in {"check", "clippy"} and packages == 1 and "--workspace" not in cargo) else "large"
+    return "default" if mode in {"ui", "snapshot"} or (mode in {"check", "clippy"} and packages == 1 and "--workspace" not in cargo) else "large"
 
 
 def wake_command(argv):
@@ -1483,7 +1483,7 @@ def run(argv):
             reconcile(state, listing())
         return 0
     if mode == "snapshot":
-        return make_snapshot(state, worktree, git(worktree, "rev-parse", "HEAD"))
+        return make_snapshot(state, worktree, git(worktree, "rev-parse", "HEAD"), cargo[0] if cargo else SNAPSHOT)
     cargo = member_features(worktree, cargo)
     runner, claim = [], None
     if mode == "test":

@@ -1,9 +1,9 @@
 const cp = require('node:child_process'), fs = require('node:fs');
 const { promisify } = require('node:util');
-if (!(process.env.BATTLE_PLAN_OWNED_JOB ?? process.env.HOI4_OWNED_JOB)) throw Error('Launch through owned_job.py');
+if (!(process.env.BATTLEPLAN_OWNED_JOB ?? process.env.HOI4_OWNED_JOB)) throw Error('Launch through owned_job.py');
 function check(command, args) {
   if (/taskkill(?:\.exe)?/i.test([command, ...args.filter(Array.isArray).flat()].join(' '))) {
-    fs.writeFileSync((process.env.BATTLE_PLAN_JOB_STOP_FILE ?? process.env.HOI4_JOB_STOP_FILE), 'Playwright PID tree-kill disabled');
+    fs.writeFileSync((process.env.BATTLEPLAN_JOB_STOP_FILE ?? process.env.HOI4_JOB_STOP_FILE), 'Playwright PID tree-kill disabled');
     throw Error('PID tree-kill disabled; terminating the owned Job');
   }
 }

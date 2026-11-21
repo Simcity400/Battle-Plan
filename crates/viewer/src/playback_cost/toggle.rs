@@ -107,9 +107,9 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
             .ok_or_else(|| invalid("Output needs a parent"))?,
     )?;
     let captures = std::env::var_os(CAPTURES)
-        .ok_or_else(|| invalid("Set BATTLE_PLAN_CAPTURES to the folder --out must be under"))?;
+        .ok_or_else(|| invalid("Set BATTLEPLAN_CAPTURES to the folder --out must be under"))?;
     if !parent.starts_with(fs::canonicalize(captures)?) {
-        return Err(invalid("--out must be a new directory under BATTLE_PLAN_CAPTURES"));
+        return Err(invalid("--out must be a new directory under BATTLEPLAN_CAPTURES"));
     }
     fs::create_dir(output)?;
     let output = fs::canonicalize(output)?;
@@ -156,7 +156,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
         return Err(invalid("Recording changed during the run"));
     }
     report["recording"] = json!({"path": recording, "sha256": hash(&recording)?});
-    report["commit"] = json!(option_env!("BATTLE_PLAN_PLAYBACK_COST_COMMIT"));
+    report["commit"] = json!(option_env!("BATTLEPLAN_PLAYBACK_COST_COMMIT"));
     let exe = std::env::current_exe()?;
     report["executable"] = json!({"path": exe, "sha256": hash(&exe)?});
     report["command"] = json!(

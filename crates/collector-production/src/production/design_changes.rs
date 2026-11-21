@@ -2864,7 +2864,7 @@ fn observe_walk(
 
 #[cfg(test)]
 fn isolated() -> bool {
-    const CHILD: &str = "BATTLE_PLAN_DESIGN_CHANGES_ISOLATED_TEST";
+    const CHILD: &str = "BATTLEPLAN_DESIGN_CHANGES_ISOLATED_TEST";
     let thread = std::thread::current();
     let name = thread.name().unwrap();
     if std::env::var_os(CHILD).as_deref() == Some(std::ffi::OsStr::new(name)) {

@@ -13,13 +13,13 @@ pub const SWEEP_START: u32 = 121;
 
 pub fn hz() -> f64 {
     static HZ: OnceLock<f64> = OnceLock::new();
-    *HZ.get_or_init(|| parse_hz(std::env::var("BATTLE_PLAN_VIEWER_PROFILE_HZ").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE_HZ")).ok().as_deref()))
+    *HZ.get_or_init(|| parse_hz(std::env::var("BATTLEPLAN_VIEWER_PROFILE_HZ").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE_HZ")).ok().as_deref()))
 }
 
 pub fn sweep() -> Range<u32> {
     static FRAMES: OnceLock<u32> = OnceLock::new();
     let frames = *FRAMES
-        .get_or_init(|| parse_sweep(std::env::var("BATTLE_PLAN_VIEWER_PROFILE_SWEEP").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE_SWEEP")).ok().as_deref()));
+        .get_or_init(|| parse_sweep(std::env::var("BATTLEPLAN_VIEWER_PROFILE_SWEEP").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE_SWEEP")).ok().as_deref()));
     sweep_range(frames)
 }
 

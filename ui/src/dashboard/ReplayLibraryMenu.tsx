@@ -17,7 +17,7 @@ import { Popover, PopoverHeading, usePopover } from '../components/Popover';
 import CountryPicker from '../components/CountryPicker';
 import { saveCampaignFlag, useCampaignFlags } from './campaignFlags';
 
-const LIBRARY_OPEN_KEY = 'hoi4-replay.sidebar.archive-open';
+const LIBRARY_OPEN_KEY = 'battleplan.sidebar.archive-open';
 const LIBRARY_FIRST_PAGE = 10;
 const LIBRARY_PAGE = 25;
 

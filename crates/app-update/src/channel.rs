@@ -31,7 +31,7 @@ fn path() -> Result<PathBuf, String> {
     let local = std::env::var_os("LOCALAPPDATA")
         .filter(|path| !path.is_empty())
         .ok_or("LOCALAPPDATA isn’t set, so the update channel has nowhere to be saved.")?;
-    Ok(Path::new(&local).join("HOI4Replay").join("updates.json"))
+    Ok(Path::new(&local).join("BattlePlan").join("updates.json"))
 }
 
 pub fn load() -> Result<Option<Channel>, String> {

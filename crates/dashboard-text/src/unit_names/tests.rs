@@ -154,7 +154,7 @@ fn only_equal_nonprogrammatic_bytes_certify_cross_language_literal_names() {
 #[test]
 fn only_historical_absence_uses_authored_name_selection() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let names = content_reader_division_names::division_names::parse(
         br#"G={ordered={2={"Generated %d"}}}"#,
         &Default::default(),

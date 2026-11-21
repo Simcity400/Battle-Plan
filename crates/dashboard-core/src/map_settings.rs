@@ -64,7 +64,7 @@ fn path() -> io::Result<PathBuf> {
         std::env::var_os("LOCALAPPDATA")
             .ok_or_else(|| crate::invalid("LOCALAPPDATA is not set"))?,
     )
-    .join("HOI4Replay")
+    .join("BattlePlan")
     .join("map-settings.json"))
 }
 
@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn imports_real_graphics_and_rejects_invalid_quality() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let settings = parse_game_graphics(b"template_counter=1 graphics={multi_sampling=0 shadows=no} mapRenderingOptions={draw_trees=no draw_shadows=yes texture_quality=2 draw_units=no high_gfx_shaders=no draw_water_reflections=no draw_sky=no draw_map_full_res=no}").unwrap();
         assert_eq!(settings.nato_counters, Some(true));
         assert_eq!(settings.samples, 1);
@@ -672,7 +672,7 @@ mod tests {
     #[test]
     fn imports_the_map_mode_choices_and_volumes() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let game = parse_game(
             b"hide_daynight_cycle=yes show_allied_plans=no master_volume=80.000000 \
               ambient_volume=50.4 sound_fx_volume=25 voice_volume=0 music_volume=49.6 \
@@ -717,7 +717,7 @@ mod tests {
     #[test]
     fn a_fresh_install_imports_as_the_defaults() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let fresh = parse_game(
             b"graphics={ shadows=no multi_sampling=4 }
               sound_fx_volume=100.000000 music_volume=75.000000 master_volume=100.000000
@@ -742,7 +742,7 @@ mod tests {
     #[test]
     fn map_shadow_option_is_independent_of_device_shadow_preference() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         for device in ["yes", "no"] {
             for (map, expected) in [("yes", true), ("no", false)] {
                 let input = format!(

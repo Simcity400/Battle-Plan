@@ -69,11 +69,11 @@ fn default_steps() -> u32 {
 }
 
 #[test]
-#[ignore = "offline content-reader integration; requires BATTLE_PLAN_CONTENT_SCENE_INPUT JSON"]
+#[ignore = "offline content-reader integration; requires BATTLEPLAN_CONTENT_SCENE_INPUT JSON"]
 fn content_stack_scene() -> io::Result<()> {
     content_reader_core::test_game::enter();
-    let path = std::env::var_os("BATTLE_PLAN_CONTENT_SCENE_INPUT").or_else(|| std::env::var_os("HOI4_CONTENT_SCENE_INPUT"))
-        .ok_or_else(|| io::Error::other("BATTLE_PLAN_CONTENT_SCENE_INPUT is required"))?;
+    let path = std::env::var_os("BATTLEPLAN_CONTENT_SCENE_INPUT").or_else(|| std::env::var_os("HOI4_CONTENT_SCENE_INPUT"))
+        .ok_or_else(|| io::Error::other("BATTLEPLAN_CONTENT_SCENE_INPUT is required"))?;
     let input: Input = serde_json::from_slice(&fs::read(path)?).map_err(io::Error::other)?;
     if input.output.exists() {
         return Err(io::Error::other("content-scene output already exists"));

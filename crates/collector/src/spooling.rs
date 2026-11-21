@@ -5215,7 +5215,7 @@ mod tests {
         use replay_data::scope::{self, CaptureMode};
         use replay_frame::frame::FrameDecoder;
         crate::spooling::keep_every_table();
-        const CHILD: &str = "BATTLE_PLAN_MAP_DISPATCH_EQUIVALENCE";
+        const CHILD: &str = "BATTLEPLAN_MAP_DISPATCH_EQUIVALENCE";
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "spooling::tests::a_map_session_holds_full_s_tables_for_every_table_map_records", "--nocapture"])
@@ -5478,7 +5478,7 @@ mod tests {
     fn spool_validation_detail_survives_ordinary_failure_and_detach() {
         const TEST: &str =
             "spooling::tests::spool_validation_detail_survives_ordinary_failure_and_detach";
-        const CHILD: &str = "BATTLE_PLAN_SPOOL_VALIDATION_DETAIL_TEST";
+        const CHILD: &str = "BATTLEPLAN_SPOOL_VALIDATION_DETAIL_TEST";
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])

@@ -285,7 +285,7 @@ fn encode(
 
 fn skip_present() -> bool {
     static SKIP: std::sync::LazyLock<bool> =
-        std::sync::LazyLock::new(|| std::env::var_os("BATTLE_PLAN_PERF_SKIP_MAP_PRESENT").or_else(|| std::env::var_os("HOI4_PERF_SKIP_MAP_PRESENT")).is_some());
+        std::sync::LazyLock::new(|| std::env::var_os("BATTLEPLAN_PERF_SKIP_MAP_PRESENT").or_else(|| std::env::var_os("HOI4_PERF_SKIP_MAP_PRESENT")).is_some());
     *SKIP
 }
 

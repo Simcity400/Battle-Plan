@@ -57,9 +57,9 @@ const Settings = loadable(() => import('./Settings').then(module => module.defau
 const SettingsNav = loadable(() => import('./Settings').then(module => module.SettingsNav));
 type Tab = 'map' | 'analytics' | 'settings';
 const TAB_NAMES: Record<Tab, string> = { map: 'the campaign map', analytics: 'Analytics', settings: 'Settings' };
-const PAGE_KEY = 'hoi4-replay.analytics-page.v1';
-const SIDEBAR_KEY = 'hoi4-replay.sidebar.v1';
-const SIDEBAR_WIDTH_KEY = 'hoi4-replay.sidebar-width.v1';
+const PAGE_KEY = 'battleplan.analytics-page.v1';
+const SIDEBAR_KEY = 'battleplan.sidebar.v1';
+const SIDEBAR_WIDTH_KEY = 'battleplan.sidebar-width.v1';
 const SIDEBAR_WIDTH = { initial: 232, min: 200, max: 400, mainMin: 640 } as const;
 const clampWidth = (width: number) => Math.round(Math.max(SIDEBAR_WIDTH.min, Math.min(SIDEBAR_WIDTH.max, window.innerWidth - SIDEBAR_WIDTH.mainMin, width)));
 

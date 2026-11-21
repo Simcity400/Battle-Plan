@@ -421,11 +421,7 @@ fn recording_file(path: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(path)
         .canonicalize()
         .map_err(|error| format!("Couldn’t find that recording: {path}: {error}"))?;
-    if !path.is_file()
-        || !path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("battleplan") || extension.eq_ignore_ascii_case("hoi4replay"))
-    {
+    if !path.is_file() || !replay::recording_files::is_recording(&path) {
         return Err("Choose a BattlePlan recording.".into());
     }
     Ok(plain_path(path))

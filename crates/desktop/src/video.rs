@@ -89,7 +89,7 @@ impl Default for VideoState {
 fn path() -> Result<PathBuf, String> {
     Ok(
         PathBuf::from(std::env::var_os("APPDATA").ok_or("User configuration folder unavailable")?)
-            .join("battle-plan")
+            .join("BattlePlan")
             .join("video.json"),
     )
 }

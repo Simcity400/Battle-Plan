@@ -42,8 +42,8 @@ pub(crate) struct Fixture {
 
 impl Fixture {
     pub(crate) fn load(name: &str) -> io::Result<Self> {
-        let path = std::env::var_os("BATTLE_PLAN_SCENE_FAILURE_INPUT").or_else(|| std::env::var_os("HOI4_SCENE_FAILURE_INPUT"))
-            .ok_or_else(|| io::Error::other("BATTLE_PLAN_SCENE_FAILURE_INPUT is required"))?;
+        let path = std::env::var_os("BATTLEPLAN_SCENE_FAILURE_INPUT").or_else(|| std::env::var_os("HOI4_SCENE_FAILURE_INPUT"))
+            .ok_or_else(|| io::Error::other("BATTLEPLAN_SCENE_FAILURE_INPUT is required"))?;
         let input: Input = serde_json::from_slice(&fs::read(path)?).map_err(io::Error::other)?;
         fs::create_dir_all(&input.output)?;
         let output = input.output.join(name);
@@ -228,7 +228,7 @@ const ISOLATED: [passes::Pass; 11] = [
 ];
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn a_window_scene_admits_unit_models_by_the_content_cutoffs() -> io::Result<()> {
     let fixture = Fixture::load("window_unit_cutoffs")?;
     let scene = crate::app::load_scene(
@@ -246,7 +246,7 @@ fn a_window_scene_admits_unit_models_by_the_content_cutoffs() -> io::Result<()> 
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn production_scene_preflight_matrix() -> io::Result<()> {
     let fixture = Fixture::load("preflight")?;
     let mut scene = fixture.scene()?;
@@ -331,7 +331,7 @@ fn production_scene_preflight_matrix() -> io::Result<()> {
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn production_scene_targets_and_post_recover() -> io::Result<()> {
     let fixture = Fixture::load("targets")?;
     let mut scene = fixture.scene()?;
@@ -440,7 +440,7 @@ fn production_scene_targets_and_post_recover() -> io::Result<()> {
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn production_scene_fatal_encoder_is_not_submitted() -> io::Result<()> {
     let fixture = Fixture::load("fatal")?;
     for point in [
@@ -528,7 +528,7 @@ fn production_scene_fatal_encoder_is_not_submitted() -> io::Result<()> {
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn near_names_fade_in_as_the_country_names_fade_out() -> io::Result<()> {
     use viewer_foundation::map::name_draw::next_generation;
     let fixture = Fixture::load("near-names")?;
@@ -559,7 +559,7 @@ fn near_names_fade_in_as_the_country_names_fade_out() -> io::Result<()> {
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn installed_names_handed_nothing_for_frames_are_drawn_when_handed_again() -> io::Result<()> {
     use viewer_foundation::map::name_draw::next_generation;
     let fixture = Fixture::load("names-handed-nothing")?;

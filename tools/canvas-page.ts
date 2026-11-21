@@ -96,7 +96,7 @@ type OwnedEdgeProcess = { pid: number; parentId: number };
 export async function ownedEdgeProcesses(profile: string, launcherPid: number | undefined, stop = false, browserPid: number | undefined = undefined, signal?: AbortSignal): Promise<OwnedEdgeProcess[]> {
   const script = `
 $ErrorActionPreference = 'Stop'
-$pattern = '(?:^|\\s)(?:"--user-data-dir={0}"|--user-data-dir="{0}"|--user-data-dir={0})(?:\\s|$)' -f [regex]::Escape($env:BATTLE_PLAN_CANVAS_PROFILE)
+$pattern = '(?:^|\\s)(?:"--user-data-dir={0}"|--user-data-dir="{0}"|--user-data-dir={0})(?:\\s|$)' -f [regex]::Escape($env:BATTLEPLAN_CANVAS_PROFILE)
 $all = @(Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'")
 $owned = [System.Collections.Generic.HashSet[uint32]]::new()
 foreach ($entry in $all) {
@@ -111,7 +111,7 @@ do {
 $handles = @{}
 $live = @(
   foreach ($entry in $all) {
-    if (-not $owned.Contains($entry.ProcessId) -and $entry.ProcessId -ne [uint32]$env:BATTLE_PLAN_CANVAS_LAUNCHER) { continue }
+    if (-not $owned.Contains($entry.ProcessId) -and $entry.ProcessId -ne [uint32]$env:BATTLEPLAN_CANVAS_LAUNCHER) { continue }
     $nativeProcess = Get-Process -Id $entry.ProcessId -ErrorAction SilentlyContinue
     if ($nativeProcess -and -not $nativeProcess.HasExited) {
       if (-not $owned.Contains($entry.ProcessId)) { throw 'Cannot verify the retained Edge launcher belongs to the owned profile' }
@@ -121,7 +121,7 @@ $live = @(
     }
   }
 )
-if ($env:BATTLE_PLAN_CANVAS_STOP -eq '1') {
+if ($env:BATTLEPLAN_CANVAS_STOP -eq '1') {
   $ids = [System.Collections.Generic.HashSet[uint32]]::new()
   foreach ($entry in $live) { $null = $ids.Add($entry.pid) }
   foreach ($root in $live) {
@@ -139,7 +139,7 @@ if ($env:BATTLE_PLAN_CANVAS_STOP -eq '1') {
     if (-not $stopper.WaitForExit(5000)) { $stopper.Kill(); throw 'Stopping owned Edge tree timed out' }
     $message = $stopper.StandardOutput.ReadToEnd() + $stopper.StandardError.ReadToEnd()
     if ($stopper.ExitCode -ne 0 -and -not $nativeRoot.HasExited) {
-      throw ('Stopping owned Edge tree ' + $root.pid + ' failed (' + $stopper.ExitCode + '), launcher ' + $env:BATTLE_PLAN_CANVAS_LAUNCHER + ', browser ' + $env:BATTLE_PLAN_CANVAS_BROWSER + ': ' + $message.Trim())
+      throw ('Stopping owned Edge tree ' + $root.pid + ' failed (' + $stopper.ExitCode + '), launcher ' + $env:BATTLEPLAN_CANVAS_LAUNCHER + ', browser ' + $env:BATTLEPLAN_CANVAS_BROWSER + ': ' + $message.Trim())
     }
   }
   foreach ($entry in @(Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'")) {
@@ -159,7 +159,7 @@ ConvertTo-Json -InputObject $live -Compress
     signal?.throwIfAborted();
     const query = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
       windowsHide: true,
-      env: { ...process.env, BATTLE_PLAN_CANVAS_PROFILE: profile, BATTLE_PLAN_CANVAS_LAUNCHER: String(launcherPid ?? 0), BATTLE_PLAN_CANVAS_STOP: stop ? '1' : '0', BATTLE_PLAN_CANVAS_BROWSER: String(browserPid ?? 0) },
+      env: { ...process.env, BATTLEPLAN_CANVAS_PROFILE: profile, BATTLEPLAN_CANVAS_LAUNCHER: String(launcherPid ?? 0), BATTLEPLAN_CANVAS_STOP: stop ? '1' : '0', BATTLEPLAN_CANVAS_BROWSER: String(browserPid ?? 0) },
     });
     const abort = () => { clearTimeout(timer); query.kill(); reject(signal!.reason); };
     signal?.addEventListener('abort', abort, { once: true });
@@ -302,10 +302,10 @@ export async function stopBrowser(child: ChildProcess, requestClose: CleanupWork
 }
 
 export async function canvasPage(code: string, gpu = false) {
-  const edge = (process.env.BATTLE_PLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
+  const edge = (process.env.BATTLEPLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
     .filter((directory): directory is string => Boolean(directory))
     .map(directory => resolve(directory, 'Microsoft/Edge/Application/msedge.exe')).find(existsSync);
-  assert.ok(edge && existsSync(edge), 'Headless Edge is required; set BATTLE_PLAN_CANVAS_BROWSER to its executable');
+  assert.ok(edge && existsSync(edge), 'Headless Edge is required; set BATTLEPLAN_CANVAS_BROWSER to its executable');
   const root = resolve('ui/src');
   const profile = await mkdtemp(resolve(tmpdir(), 'share-canvas-'));
   let finish!: (result: Record<string, unknown>) => void;

@@ -11,7 +11,7 @@ use std::{collections::BTreeSet, sync::Arc};
 #[test]
 fn effect_key_names_share_the_complete_cached_registry_after_a_source_disappears() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/test.lua",
@@ -90,7 +90,7 @@ fn effect_key_names_share_the_complete_cached_registry_after_a_source_disappears
 #[test]
 fn advisor_templates_and_idea_notes_share_one_read() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/test.lua",
@@ -191,7 +191,7 @@ fn advisor_templates_and_idea_notes_share_one_read() {
 #[test]
 fn effect_catalogues_remain_available_without_map_inputs() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/test.lua",
@@ -507,7 +507,7 @@ pub(super) fn synthetic_countries(count: u32) -> Vec<CountryRow> {
 #[test]
 fn native_country_targets_read_custom_target_fields() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     for body in [
         "puppet={target=BBB}",
@@ -529,7 +529,7 @@ fn native_country_targets_read_custom_target_fields() {
 #[test]
 fn equipment_and_autonomy_content_is_cached_with_reader_notes() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/test.lua",
@@ -589,7 +589,7 @@ fn country_target_fixture() -> Fixture {
 #[test]
 fn native_country_target_selected_states_return_their_owner() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = country_target_fixture();
     for (selector, name) in [
         ("THIS", "Alpha"),
@@ -624,7 +624,7 @@ fn native_country_target_selected_states_return_their_owner() {
 #[test]
 fn native_country_target_state_selector_bits_read_recorded_countries() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = country_target_fixture();
     for (selector, name) in [
         ("owner", "Alpha"),
@@ -661,7 +661,7 @@ fn native_country_target_state_selector_bits_read_recorded_countries() {
 #[test]
 fn native_country_target_capital_and_random_keep_country_zero() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = country_target_fixture();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
@@ -689,7 +689,7 @@ fn native_country_target_capital_and_random_keep_country_zero() {
 #[test]
 fn native_country_target_saved_probe_order_reads_separate_country_member() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = country_target_fixture();
     *fixture.frame.tables[TableId::GlobalSavedEventTargets.index()] =
         TableView::Complete(TableRows::GlobalSavedEventTargets(vec![
@@ -780,7 +780,7 @@ fn native_country_target_saved_probe_order_reads_separate_country_member() {
 #[test]
 fn native_effect_saved_state_reads_member_without_country_or_context_projection() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     for (state, country, live, expected) in [
         (2, 9999, 0, "Claim Two\n"),
@@ -815,7 +815,7 @@ fn native_effect_saved_state_reads_member_without_country_or_context_projection(
 #[test]
 fn native_country_target_refuses_unported_projection_and_repeated_selector_forms() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     for (body, object, reason) in [
         (
@@ -867,7 +867,7 @@ fn native_country_target_refuses_unported_projection_and_repeated_selector_forms
 #[test]
 fn state_leaves_refuse_unavailable_and_partial_rosters_before_invalid_state_logic() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     for (table, gap) in [
         (
@@ -922,7 +922,7 @@ fn state_leaves_refuse_unavailable_and_partial_rosters_before_invalid_state_logi
 #[test]
 fn unattached_else_and_final_else_continuations_are_named_once() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     for body in [
         "else={army_experience=9} army_experience=2",
@@ -966,7 +966,7 @@ fn unattached_else_and_final_else_continuations_are_named_once() {
 #[test]
 fn failed_context_layout_probe_counts_one_description_occurrence() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let out = fixture.render(
         "BBB={unported_effect=1} army_experience=2",
@@ -990,7 +990,7 @@ fn failed_context_layout_probe_counts_one_description_occurrence() {
 #[test]
 fn empty_own_generic_builder_keeps_children_and_multiple_probe() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let out = fixture.render("BBB={create_dynamic_country={original_tag=AAA copy_tag=BBB army_experience=2 add_political_power=3}}", &mut fresh(), Content::default());
     assert_eq!(out.text, "\u{12}BBBBeta:\n   XP2\n   PP3\n");
@@ -1012,7 +1012,7 @@ fn empty_own_generic_builder_keeps_children_and_multiple_probe() {
 #[test]
 fn doctrine_technology_is_named_instead_of_silently_dropped() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let mut doctrines = content_reader_core::doctrines::Database::default();
     doctrines.entries.insert(
@@ -1035,7 +1035,7 @@ fn doctrine_technology_is_named_instead_of_silently_dropped() {
 #[test]
 fn referenced_event_sole_title_uses_c_string_and_last_text_field() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let reference = |_: &[u8]| {
         let mut titles =
@@ -1066,7 +1066,7 @@ fn referenced_event_sole_title_uses_c_string_and_last_text_field() {
 #[test]
 fn evaluator_opened_after_custom_text_shares_then_cleans_its_session() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let text = ScriptedText::new(
         &fixture.frame,
@@ -1100,7 +1100,7 @@ fn evaluator_opened_after_custom_text_shares_then_cleans_its_session() {
 #[test]
 fn custom_only_completion_cleans_from_targets_without_world() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::Provinces.index()] = TableView::Unavailable {
         reason: "synthetic no World".into(),
@@ -1153,7 +1153,7 @@ fn custom_only_completion_cleans_from_targets_without_world() {
 #[test]
 fn generic_join_and_both_indent_operations_are_native() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
         indent_nonempty_lines("first\n\n \nlast", 2),
         "  first\n\n   \n  last"
@@ -1215,7 +1215,7 @@ fn generic_join_and_both_indent_operations_are_native() {
 #[test]
 fn branches_share_one_evaluator_and_description_does_not_execute_setters() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let out=fixture.render("set_country_flag=x if={limit={has_country_flag=x} army_experience=9} ignored_invalid=1 else_if={limit={check_variable={num_owned_states>4} any_owned_state={state=2}} add_political_power=2} else={army_experience=8} clear_variable=x clr_country_flag=x clr_state_flag=x",
         &mut fresh(),Content::default());
@@ -1226,7 +1226,7 @@ fn branches_share_one_evaluator_and_description_does_not_execute_setters() {
 #[test]
 fn numeric_operands_use_recorded_variables_and_state_values_remain_unvalidated() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
@@ -1259,7 +1259,7 @@ fn numeric_operands_use_recorded_variables_and_state_values_remain_unvalidated()
 #[test]
 fn native_description_probes_repeat_condition_temp_writes_in_one_session() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let result=fixture.render("BBB={if={limit={add_to_temp_variable={n=1} always=yes} add_political_power=n army_experience=n}}",&mut fresh(),Content::default());
     assert_eq!(result.text, "\u{12}BBBBeta:\n   PP2\n   XP2\n");
@@ -1272,7 +1272,7 @@ fn native_description_probes_repeat_condition_temp_writes_in_one_session() {
 #[test]
 fn every_state_lists_targets_but_describes_body_once_in_first_state() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     for (limit, expected) in [
         ("state=9", ""),
@@ -1299,7 +1299,7 @@ fn every_state_lists_targets_but_describes_body_once_in_first_state() {
 #[test]
 fn temporary_targets_use_root_ownership_from_lookup_and_exact_cleanup() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let out = fixture.render(
         "save_event_target_as=our event_target:our={army_experience=2}",
@@ -1343,7 +1343,7 @@ fn temporary_targets_use_root_ownership_from_lookup_and_exact_cleanup() {
 #[test]
 fn compatibility_absent_subjects_refuses_only_faction_effect() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
@@ -1367,7 +1367,7 @@ fn compatibility_absent_subjects_refuses_only_faction_effect() {
 #[test]
 fn reached_event_compositions_keep_scope_and_hidden_effect_behavior() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::GlobalSavedEventTargets.index()] =
         TableView::Complete(TableRows::GlobalSavedEventTargets(vec![
@@ -1520,7 +1520,7 @@ fn reached_event_compositions_keep_scope_and_hidden_effect_behavior() {
 #[test]
 fn native_leaf_conditions_and_missing_content_refusals_remain_local() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let out=fixture.render("annex_country=BBB add_state_claim=1 delete_unit_template_and_units={division_template=guard disband=yes disband=invalid} hidden_effect={add_equipment_to_stockpile={type=synthetic_missing amount=1}} army_experience=2",&mut fresh(),Content::default());
     assert_eq!(
@@ -1540,7 +1540,7 @@ fn native_leaf_conditions_and_missing_content_refusals_remain_local() {
 #[test]
 fn timed_idea_repeats_native_target_prefix_and_floors_duration_components() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let tokens = ["attack_bonus_against", "defense_bonus_against"];
     *fixture.frame.tables[TableId::LexicalTokens.index()] =
@@ -1609,7 +1609,7 @@ fn timed_idea_repeats_native_target_prefix_and_floors_duration_components() {
 #[test]
 fn country_event_random_block_is_described_as_a_native_child() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let names = content_reader_core::key_names::KeyNames::default();
     let reference = |_: &[u8]| {
@@ -1635,7 +1635,7 @@ fn country_event_random_block_is_described_as_a_native_child() {
 #[test]
 fn country_event_uses_title_only_fresh_from_root_and_advances_seed_lane() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let reference = |_: &[u8]| {
         Ok(Arc::new(content_reader_events::events::Event {
@@ -1684,7 +1684,7 @@ fn country_event_uses_title_only_fresh_from_root_and_advances_seed_lane() {
 #[test]
 fn wtt_shaped_immediate_and_option_keep_marker_links_and_recorded_flag_conditions() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::Clock.index()] =
         TableView::Complete(TableRows::Clock(vec![ClockRow::default()]));
@@ -1778,7 +1778,7 @@ fn wtt_shaped_immediate_and_option_keep_marker_links_and_recorded_flag_condition
 #[test]
 fn faction_names_in_effect_descriptions_use_bound_template_names_and_literals() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (

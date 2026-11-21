@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn peace_effect_targets_and_tooltip_overrides() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         check(&[
             ("white_peace=BBB", "Peace Beta AAA\n"),
             ("white_peace={tag=missing tooltip=SYN_TIP}", "Tip AAA\n"),

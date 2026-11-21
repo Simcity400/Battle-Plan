@@ -2975,7 +2975,7 @@ mod tests {
     #[test]
     fn naming_staging_that_cannot_grow_refuses_the_range_instead_of_aborting() {
         use crate::army_stat_changes::Watches;
-        const CHILD: &str = "BATTLE_PLAN_NAMING_STAGING_REFUSAL_TEST";
+        const CHILD: &str = "BATTLEPLAN_NAMING_STAGING_REFUSAL_TEST";
         if std::env::var_os(CHILD).is_none() {
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
@@ -3958,8 +3958,8 @@ mod tests {
             panic!("run the naming benchmark in release");
         }
         assert!(
-            std::env::var_os("BATTLE_PLAN_UNIT_VALIDATE").or_else(|| std::env::var_os("HOI4_UNIT_VALIDATE")).is_none(),
-            "unset BATTLE_PLAN_UNIT_VALIDATE to measure callback time"
+            std::env::var_os("BATTLEPLAN_UNIT_VALIDATE").or_else(|| std::env::var_os("HOI4_UNIT_VALIDATE")).is_none(),
+            "unset BATTLEPLAN_UNIT_VALIDATE to measure callback time"
         );
         for countries in [1_500, 5_000] {
             let shape = scale_fixture::Shape {

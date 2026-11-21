@@ -93,7 +93,7 @@ fn press(x: f32, y: f32, pressed: bool) -> egui::Event {
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
     let fixture = Fixture::load("viewer-picker-input")?;
     let request = fixture.request([MAP[0] as u32, MAP[1] as u32]);
@@ -284,7 +284,7 @@ fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn the_air_and_navy_modes_write_strategic_region_names() -> std::io::Result<()> {
     use viewer_world::map::map_mode::Stock;
     let fixture = Fixture::load("viewer-region-names")?;
@@ -307,7 +307,7 @@ fn the_air_and_navy_modes_write_strategic_region_names() -> std::io::Result<()> 
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn the_states_mode_names_its_live_category_or_refuses_the_line() -> std::io::Result<()> {
     use viewer_counter_products::map::province_tooltips::{Cache, ModeHover};
     let fixture = Fixture::load("viewer-state-category")?;
@@ -355,7 +355,7 @@ fn the_states_mode_names_its_live_category_or_refuses_the_line() -> std::io::Res
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn a_scripted_modes_hover_reads_the_viewer_and_the_hovered_state() -> std::io::Result<()> {
     use dashboard::scripted_text::{EventObject, EventScope, EventScopes, ScriptedText};
     use viewer_counter_products::map::province_tooltips::{Cache, ModeHover};
@@ -431,7 +431,7 @@ fn a_scripted_modes_hover_reads_the_viewer_and_the_hovered_state() -> std::io::R
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn the_resistance_hover_shows_the_recorded_strengths() -> std::io::Result<()> {
     use content_reader_localisation::localisation::Argument;
     use viewer_counter_products::map::province_tooltips::{Cache, ModeHover};
@@ -446,7 +446,7 @@ fn the_resistance_hover_shows_the_recorded_strengths() -> std::io::Result<()> {
         .iter()
         .find(|row| {
             row.active != 0
-                && std::env::var("BATTLE_PLAN_RESISTANCE_STATE").or_else(|_| std::env::var("HOI4_RESISTANCE_STATE"))
+                && std::env::var("BATTLEPLAN_RESISTANCE_STATE").or_else(|_| std::env::var("HOI4_RESISTANCE_STATE"))
                     .ok()
                     .is_none_or(|state| state.parse::<u32>().ok() == Some(row.state))
         })

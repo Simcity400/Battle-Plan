@@ -127,7 +127,7 @@ impl Fixture {
 #[test]
 #[ignore = "print-only guarded event snapshot bench on owned allocations; lead runs through build slot"]
 fn land_event_snapshot_scale() {
-    let variants: usize = std::env::var("BATTLE_PLAN_LAND_LOSS_VARIANTS").or_else(|_| std::env::var("HOI4_LAND_LOSS_VARIANTS"))
+    let variants: usize = std::env::var("BATTLEPLAN_LAND_LOSS_VARIANTS").or_else(|_| std::env::var("HOI4_LAND_LOSS_VARIANTS"))
         .map(|v| v.parse().unwrap())
         .unwrap_or(12);
     for countries in [1500, 5000] {

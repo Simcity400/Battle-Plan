@@ -102,7 +102,7 @@ fn content(
             std::env::var_os("LOCALAPPDATA")
                 .ok_or_else(|| io::Error::other("LOCALAPPDATA is not set"))?,
         )
-        .join("HOI4Replay")
+        .join("BattlePlan")
         .join("recorder"),
     };
     engine_executable::executable_tables::initialize(&options.game_dir)?;

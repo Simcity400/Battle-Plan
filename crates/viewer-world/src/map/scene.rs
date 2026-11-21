@@ -2997,7 +2997,7 @@ impl Scene {
             weather.begin_frame(camera, size, &actor_views, animation_time);
         }
         static PROFILE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *PROFILE.get_or_init(|| std::env::var_os("BATTLE_PLAN_ANIMATION_PROFILE").or_else(|| std::env::var_os("HOI4_ANIMATION_PROFILE")).is_some()) {
+        if *PROFILE.get_or_init(|| std::env::var_os("BATTLEPLAN_ANIMATION_PROFILE").or_else(|| std::env::var_os("HOI4_ANIMATION_PROFILE")).is_some()) {
             let mut effects = BTreeMap::<&str, usize>::new();
             for event in &self.sound_events {
                 *effects.entry(&event.effect).or_default() += 1;

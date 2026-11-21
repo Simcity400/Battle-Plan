@@ -27,20 +27,20 @@ static HELD: Mutex<egui::Modifiers> = Mutex::new(egui::Modifiers::NONE);
 
 pub(crate) fn capture_clock() -> Option<f32> {
     static CLOCK: OnceLock<Option<f32>> = OnceLock::new();
-    *CLOCK.get_or_init(|| std::env::var("BATTLE_PLAN_E2E_CAPTURE_CLOCK").or_else(|_| std::env::var("HOI4_E2E_CAPTURE_CLOCK")).ok()?.parse().ok())
+    *CLOCK.get_or_init(|| std::env::var("BATTLEPLAN_E2E_CAPTURE_CLOCK").or_else(|_| std::env::var("HOI4_E2E_CAPTURE_CLOCK")).ok()?.parse().ok())
 }
 
 fn enabled() -> bool {
     *ENABLED.get_or_init(|| {
-        let Some(address) = std::env::var("BATTLE_PLAN_E2E_INPUT").or_else(|_| std::env::var("HOI4_E2E_INPUT")).ok() else {
+        let Some(address) = std::env::var("BATTLEPLAN_E2E_INPUT").or_else(|_| std::env::var("HOI4_E2E_INPUT")).ok() else {
             return false;
         };
         let Ok(address) = address.parse::<SocketAddr>() else {
-            eprintln!("BATTLE_PLAN_E2E_INPUT {address}: not an address, ignored");
+            eprintln!("BATTLEPLAN_E2E_INPUT {address}: not an address, ignored");
             return false;
         };
         if !address.ip().is_loopback() {
-            eprintln!("BATTLE_PLAN_E2E_INPUT {address}: not a loopback address, ignored");
+            eprintln!("BATTLEPLAN_E2E_INPUT {address}: not a loopback address, ignored");
             return false;
         }
         let Ok(listener) = TcpListener::bind(address) else {
@@ -53,7 +53,7 @@ fn enabled() -> bool {
                     for line in BufReader::new(stream).lines().map_while(Result::ok) {
                         match serde_json::from_str::<Line>(&line) {
                             Ok(line) => PENDING.lock().unwrap_or_else(|error| error.into_inner()).push(line),
-                            Err(error) => eprintln!("BATTLE_PLAN_E2E_INPUT line refused: {error}"),
+                            Err(error) => eprintln!("BATTLEPLAN_E2E_INPUT line refused: {error}"),
                         }
                     }
                 }

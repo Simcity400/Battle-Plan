@@ -867,7 +867,7 @@ fn startup_country_offer_keeps_the_seed_epoch_and_observes_writes_at_scale() {
 
 #[test]
 fn denied_startup_country_offer_stays_uncertified_and_retries_without_stopping() {
-    const CHILD: &str = "BATTLE_PLAN_COUNTRY_BITMAP_OFFER_TEST";
+    const CHILD: &str = "BATTLEPLAN_COUNTRY_BITMAP_OFFER_TEST";
     if std::env::var_os(CHILD).is_none() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "country_input_changes::tests::denied_startup_country_offer_stays_uncertified_and_retries_without_stopping", "--nocapture"])

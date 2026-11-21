@@ -53,8 +53,8 @@ impl Family {
     pub(crate) const ALL: [Self; 5] = [Self::Counters, Self::Province, Self::Naval, Self::Occupation, Self::Capture];
 
     pub(crate) fn from_env() -> std::io::Result<Option<Self>> {
-        match std::env::var("BATTLE_PLAN_HOVER_FAMILY").or_else(|_| std::env::var("HOI4_HOVER_FAMILY")) {
-            Ok(name) if !name.trim().is_empty() => Self::ALL.into_iter().find(|family| family.name() == name.trim()).map(Some).ok_or_else(|| std::io::Error::other(format!("BATTLE_PLAN_HOVER_FAMILY: no hover family {name}"))),
+        match std::env::var("BATTLEPLAN_HOVER_FAMILY").or_else(|_| std::env::var("HOI4_HOVER_FAMILY")) {
+            Ok(name) if !name.trim().is_empty() => Self::ALL.into_iter().find(|family| family.name() == name.trim()).map(Some).ok_or_else(|| std::io::Error::other(format!("BATTLEPLAN_HOVER_FAMILY: no hover family {name}"))),
             _ => Ok(None),
         }
     }

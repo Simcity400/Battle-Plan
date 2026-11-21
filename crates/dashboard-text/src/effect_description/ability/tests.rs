@@ -47,7 +47,7 @@ fn render(fixture: &Fixture, definition: &Definition) -> Description {
 #[test]
 fn ability_body_order_and_raw_modifier_text_match_calls() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut definition = Definition::default();
     definition.modifiers[0] = modifiers::values(&items("custom_modifier_tooltip=RAW"));
     definition.modifiers[1] = modifiers::values(&items("custom_modifier_tooltip=TIP"));
@@ -63,7 +63,7 @@ fn ability_body_order_and_raw_modifier_text_match_calls() {
 #[test]
 fn ability_empty_body_has_no_leading_newline_or_effect_headings() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definition = Definition {
         adjusters: vec![Adjuster {
             key: "synthetic".into(),
@@ -77,7 +77,7 @@ fn ability_empty_body_has_no_leading_newline_or_effect_headings() {
 #[test]
 fn ability_adjuster_is_unindented_in_component_order() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definition = Definition {
         adjusters: vec![Adjuster {
             key: "synthetic".into(),
@@ -98,7 +98,7 @@ fn ability_adjuster_is_unindented_in_component_order() {
 #[test]
 fn ability_failed_accumulator_retains_other_fragments() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut definition = Definition::default();
     definition.modifiers[0] = modifiers::values(&items("political_power_gain=0.1"));
     definition.modifiers[1] = modifiers::values(&items("custom_modifier_tooltip=TIP"));
