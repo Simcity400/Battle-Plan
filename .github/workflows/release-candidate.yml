@@ -48,7 +48,7 @@ on:
 concurrency:
   group: candidate-${{ github.event_name == 'pull_request' && github.ref || format('{0}-{1}', inputs.channel || 'nightly', inputs.commit || github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-  queue: max
+  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
 permissions:
   contents: read

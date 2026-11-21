@@ -252,6 +252,13 @@ class Resolve(unittest.TestCase):
                          ("true", "b" * 40, "candidate-nightly-" + "b" * 40, "9", "false"))
 
 
+    def test_a_commit_whose_workflows_differ_from_mains_is_refused_before_anything_is_built(self):
+        with mock.patch.object(release, "git", return_value=".github/workflows/release.yml"):
+            with self.assertRaisesRegex(release.Refused, "workflows differ from main's"):
+                release.same_workflows("b" * 40)
+        with mock.patch.object(release, "git", return_value=""):
+            release.same_workflows("b" * 40)
+
     def test_only_a_stable_candidate_is_prepared(self):
         for channel in ("nightly", "preview"):
             args = argparse.Namespace(channel=channel, sha="", version="", scheduled=False, draft=False, prepare=True,

@@ -509,6 +509,15 @@ def on_main(commit, channel):
     return commit
 
 
+def same_workflows(commit):
+    """Refuses a commit whose workflows differ from main's: GitHub lets the workflow's token release
+    such a commit only with a workflow permission that token cannot hold."""
+    changed = git("diff", "--name-only", commit, "origin/main", "--", ".github/workflows").split()
+    if changed:
+        raise Refused(f"{commit[:12]}'s workflows differ from main's ({', '.join(changed)}), so GitHub refuses the "
+                      "release token a release of it; release main's head, or a commit with main's workflows.")
+
+
 def commit_version(channel, commit, stable=None):
     base = workspace_version(git("show", f"{commit}:Cargo.toml"))
     position = int(git("rev-list", "--count", "--first-parent", commit))
@@ -666,6 +675,7 @@ def resolve(args):
             raise Refused(f"{commit[:12]} is on no branch, and GitHub releases only commits a branch holds.")
         found.update(due="true", commit=commit, version=commit_version("preview", commit),
                      artifact=artifact_name("preview", commit), build="true", publish="true")
+    same_workflows(commit)
     say(f"A {args.channel} {'candidate' if args.prepare else 'release'} of {commit[:12]} is due.")
     outputs(found, args.github_output)
     return 0
@@ -771,6 +781,7 @@ def publish(args):
         raise Refused(f"The candidate is {chosen['version']} of {chosen['commit'][:12]}, not the "
                       f"{args.version or 'release'} of {args.commit[:12]} that was resolved.")
     git("fetch", "--quiet", "origin", "main")
+    same_workflows(args.commit)
     public_key = Path(args.public_key).read_text(encoding="utf-8") if args.public_key else chosen["updater_key"]
     with clock.step("Preflight"):
         preflight(draft, public_key)
