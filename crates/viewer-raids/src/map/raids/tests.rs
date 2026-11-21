@@ -4452,8 +4452,11 @@ fn custom_tooltips_and_is_subject_of() {
         eval(&frame, &wrapped("tag = GER tag = ENG")),
         script::Eval::False
     );
-    let formatted = "custom_override_tooltip = { tooltip = { localization_key = KEY } tag = GER }";
-    assert_eq!(eval(&frame, formatted), script::Eval::True);
+    let formatted = |tag: &str| {
+        format!("custom_override_tooltip = {{ tooltip = {{ localization_key = KEY }} tag = {tag} }}")
+    };
+    assert_eq!(eval(&frame, &formatted("GER")), script::Eval::True);
+    assert_eq!(eval(&frame, &formatted("ENG")), script::Eval::False);
     assert_eq!(
         eval(&frame, "custom_trigger_tooltip = { tooltip = KEY }"),
         script::Eval::True

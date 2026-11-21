@@ -236,6 +236,12 @@ pub fn enter_viewer() -> Tables {
                 0,
             )
             .trigger("armor", Combat.bit(), Reader::Assign, 0)
+            .trigger(
+                "custom_override_tooltip",
+                0,
+                Reader::Own(0x141446060),
+                0x141446C20,
+            )
             .trigger("synthetic_unported_trigger", 0, Reader::Assign, 0)
             .build()
     });
