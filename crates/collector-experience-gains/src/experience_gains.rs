@@ -63,8 +63,9 @@ impl Lanes {
         if table.is_null() {
             return Err("experience gain storage not prepared");
         }
-        // SAFETY: a published table is replaced only while the gate is closed
-        // with no lease, and released only after hook quiescence.
+        // SAFETY: a table is retired only while the gate is closed and freed once every reader that
+        // entered before the close has drained; a callback entering later sees the closed gate, or
+        // loads the replacement once the gate reopens.
         unsafe { &*table }.add(owner, source.branch, amount)
     }
 }

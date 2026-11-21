@@ -158,8 +158,10 @@ impl Touched {
     /// Publishes `next`, or no set, and frees the set it replaces.
     ///
     /// # Safety
-    /// Nothing may use the replaced set: every lease taken before the gate closed has drained, and
-    /// a callback that takes a lease afterwards sees `closed` and never loads the set.
+    /// No callback can still access the replaced set. Hook quiescence guarantees that at setup and
+    /// teardown; during capture the closed gate does, since every lease taken before it closed has
+    /// drained and a callback that takes one later sees `closed`, or loads the new set once the
+    /// gate reopens.
     unsafe fn replace(&self, next: Option<Box<Set>>) {
         self.slots.store(
             next.as_ref().map_or(0, |set| set.slots.len()),
