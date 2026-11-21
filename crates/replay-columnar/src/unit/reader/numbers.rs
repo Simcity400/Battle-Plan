@@ -8,7 +8,7 @@ use crate::{
 use std::io;
 
 #[inline(never)]
-fn long(bytes: &[u8], at: &mut usize, damaged: &mut bool) -> u128 {
+fn long(bytes: &[u8], at: &mut usize, damaged: &mut bool, width: u32) -> u128 {
     let (mut value, mut shift) = (0_u128, 0_u32);
     loop {
         let Some(&byte) = bytes.get(*at) else {
@@ -16,7 +16,7 @@ fn long(bytes: &[u8], at: &mut usize, damaged: &mut bool) -> u128 {
             return value;
         };
         *at += 1;
-        if shift < 128 {
+        if shift < width && u32::from(byte & 0x7f) >> (width - shift).min(7) == 0 {
             value |= u128::from(byte & 0x7f) << shift;
         } else {
             *damaged = true;
@@ -59,9 +59,7 @@ pub(super) fn varint(bytes: &[u8], at: &mut usize, damaged: &mut bool) -> u64 {
             return value;
         }
     }
-    let value = long(bytes, at, damaged);
-    *damaged |= value > u128::from(u64::MAX);
-    value as u64
+    long(bytes, at, damaged, 64) as u64
 }
 
 pub(super) fn skip(bytes: &[u8], mut at: usize, end: usize, mut count: usize) -> Option<usize> {
@@ -121,8 +119,7 @@ pub(super) fn code(bytes: &[u8], at: &mut usize, damaged: &mut bool) -> (u64, u6
             return (value >> 1, value & 1);
         }
     }
-    let value = long(bytes, at, damaged);
-    *damaged |= value >> 65 != 0;
+    let value = long(bytes, at, damaged, 65);
     ((value >> 1) as u64, (value & 1) as u64)
 }
 

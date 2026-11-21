@@ -48,7 +48,6 @@ pub struct Snapshot {
     pub first_hour: Option<i32>,
     pub saved_bytes: Option<u64>,
     pub spool_bytes: Option<u64>,
-    pub progress: Option<f64>,
     pub started_at: Option<u64>,
     pub stopping: bool,
     pub problem: Option<Problem>,
@@ -126,10 +125,6 @@ pub fn read_live(status: &Value) -> Live {
         build_warning: status["build"]["warning"].as_str().map(str::to_owned),
         behind: behind(status),
     }
-}
-
-pub fn saving_progress(records: u64, hours: u64) -> Option<f64> {
-    (hours > 0).then(|| (records as f64 / (hours as f64 * 4.0)).min(0.95))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -261,14 +256,6 @@ mod tests {
                 detail: "collector allocation failed".into()
             })
         );
-    }
-
-    #[test]
-    fn saving_progress_follows_work_and_never_claims_completion() {
-        assert_eq!(saving_progress(10, 0), None);
-        assert_eq!(saving_progress(0, 10), Some(0.0));
-        assert_eq!(saving_progress(20, 10), Some(0.5));
-        assert_eq!(saving_progress(1_000, 10), Some(0.95));
     }
 
     #[test]

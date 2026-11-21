@@ -191,7 +191,7 @@ pub(super) fn publications(hour: &Hour<'_>) -> io::Result<Logged<Publication>> {
         return Ok(Logged { backlog: hour.first, rows: Vec::new() });
     }
     let view = hour.table(table);
-    let mut raws: Vec<u32> = hour.written_rows(table, Columns::Every).into_iter().filter_map(|slot| view.key(slot)).map(|key| (key >> 32) as u32).collect();
+    let mut raws: Vec<u32> = hour.written_rows(table, Columns::Every).into_iter().filter_map(|slot| view.key(slot)).chain(hour.deleted_keys(table)).map(|key| (key >> 32) as u32).collect();
     raws.sort_unstable();
     raws.dedup();
     let mut rows = Vec::with_capacity(raws.len());
@@ -204,6 +204,11 @@ pub(super) fn publications(hour: &Hour<'_>) -> io::Result<Logged<Publication>> {
         rows.push(Publication { country, costs });
     }
     Ok(Logged { backlog: hour.first, rows })
+}
+
+pub(super) fn holds_no_costs(hour: &Hour<'_>, country: u32) -> io::Result<bool> {
+    let table = TableId::CountryPowerDailyCosts;
+    Ok(hour.complete(table) && keyed::<CountryPowerDailyCostRow>(&hour.table(table), u128::from(country) << 32)?.is_none())
 }
 
 pub(super) fn input_reason(hour: &Hour<'_>) -> Option<String> {

@@ -1748,10 +1748,52 @@ pub struct Strings {
     next: u32,
     pinned_from: Option<u32>,
     bytes: usize,
-    by_text: Option<HashMap<u64, u32, foldhash::fast::FixedState>>,
+    by_text: Option<TextIndex>,
+}
+
+#[derive(Default)]
+struct TextIndex {
+    first: HashMap<u64, u32, foldhash::fast::FixedState>,
+    more: HashMap<u64, Vec<u32>, foldhash::fast::FixedState>,
+}
+
+impl TextIndex {
+    fn add(&mut self, text: &[u8], id: u32) {
+        let digest = text_digest(text);
+        match self.first.entry(digest) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(id);
+            }
+            std::collections::hash_map::Entry::Occupied(_) => self.more.entry(digest).or_default().push(id),
+        }
+    }
+
+    fn find(&self, text: &[u8], held: &HashMap<u32, Box<[u8]>, foldhash::fast::FixedState>) -> Option<u32> {
+        let digest = text_digest(text);
+        let first = *self.first.get(&digest)?;
+        std::iter::once(first)
+            .chain(self.more.get(&digest).into_iter().flatten().copied())
+            .filter(|id| held.get(id).is_some_and(|held| **held == *text))
+            .min()
+    }
+
+    fn bytes(&self) -> usize {
+        self.first.capacity() * (size_of::<u64>() + size_of::<u32>() + 1)
+            + self.more.capacity() * (size_of::<u64>() + size_of::<Vec<u32>>() + 1)
+            + self.more.values().map(|ids| ids.capacity() * size_of::<u32>()).sum::<usize>()
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static COLLIDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn text_digest(text: &[u8]) -> u64 {
+    #[cfg(test)]
+    if COLLIDING.get() {
+        return 0;
+    }
     std::hash::BuildHasher::hash_one(&foldhash::fast::FixedState::default(), text)
 }
 
@@ -1791,7 +1833,7 @@ impl Strings {
         self.bytes += text.len();
         self.held.insert(self.next, text.into());
         if let Some(by_text) = &mut self.by_text {
-            by_text.entry(text_digest(text)).or_insert(self.next);
+            by_text.add(text, self.next);
         }
         self.next += 1;
     }
@@ -1800,11 +1842,7 @@ impl Strings {
         if self.by_text.is_none() {
             self.index_texts();
         }
-        let digest = text_digest(text);
-        let found = self.by_text.as_ref().and_then(|by_text| by_text.get(&digest).copied());
-        if let Some(id) = found
-            && self.held.get(&id).is_some_and(|held| **held == *text)
-        {
+        if let Some(id) = self.by_text.as_ref().and_then(|by_text| by_text.find(text, &self.held)) {
             return Ok(id);
         }
         if self.room() == 0 {
@@ -1818,11 +1856,10 @@ impl Strings {
 
     fn index_texts(&mut self) {
         let _label = label("strings: by text");
-        let mut by_text: HashMap<u64, u32, foldhash::fast::FixedState> = HashMap::default();
-        by_text.reserve(self.held.len());
+        let mut by_text = TextIndex::default();
+        by_text.first.reserve(self.held.len());
         for (&id, text) in &self.held {
-            let entry = by_text.entry(text_digest(text)).or_insert(id);
-            *entry = (*entry).min(id);
+            by_text.add(text, id);
         }
         self.by_text = Some(by_text);
     }
@@ -1842,7 +1879,7 @@ impl Strings {
         let text = source.text(id)?.ok_or_else(|| invalid(format!("String {id} is in neither the store nor its file")))?;
         self.bytes += text.len();
         if let Some(by_text) = &mut self.by_text {
-            by_text.entry(text_digest(&text)).or_insert(id);
+            by_text.add(&text, id);
         }
         self.held.insert(id, text.into_boxed_slice());
         Ok(())
@@ -1866,7 +1903,7 @@ impl Strings {
     fn held_bytes(&self) -> usize {
         self.bytes
             + (self.held.capacity() + self.pinned.capacity()) * (size_of::<u32>() + size_of::<Box<[u8]>>() + 1)
-            + self.by_text.as_ref().map_or(0, |by_text| by_text.capacity() * (size_of::<u64>() + size_of::<u32>() + 1))
+            + self.by_text.as_ref().map_or(0, TextIndex::bytes)
     }
 }
 

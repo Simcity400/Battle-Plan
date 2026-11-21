@@ -292,3 +292,35 @@ fn stepping_past_values_and_summing_keys_equal_reading_them_one_at_a_time() {
     }
     assert_eq!(numbers::skip(&raw, 0, ends[3], 4), None, "four values past an end after three");
 }
+
+#[test]
+fn a_number_wider_than_its_track_marks_the_track_damaged() {
+    let over = |groups: usize, last: u8| [vec![0x80; groups], vec![last]].concat();
+    for (bytes, value, damaged, code_damaged) in [
+        (over(9, 1), 1 << 63, false, false),
+        (over(9, 2), 0, true, false),
+        (over(9, 4), 0, true, true),
+        (over(10, 0), 0, true, true),
+        (over(18, 4), 0, true, true),
+    ] {
+        let (mut at, mut seen) = (0, false);
+        assert_eq!(numbers::varint(&bytes, &mut at, &mut seen), value);
+        assert_eq!((at, seen), (bytes.len(), damaged), "{bytes:02x?}");
+        let (mut at, mut seen) = (0, false);
+        numbers::code(&bytes, &mut at, &mut seen);
+        assert_eq!((at, seen), (bytes.len(), code_damaged), "{bytes:02x?} as a code");
+    }
+}
+
+#[test]
+fn an_event_code_past_its_track_width_is_refused_by_the_event_walk_as_by_the_reader() {
+    let mut events = vec![0];
+    events.extend([0x80; 10]);
+    events.push(0x00);
+    let (bytes, entry) = part_of(1, &[0, 2, events.len() as u8], &events);
+    let part = fetch(&bytes, &entry, BLOCK as u16 - 1, &[0], None).unwrap();
+    let refused = part.tracks(0, false, |_, _, _| {}).unwrap_err();
+    assert!(refused.to_string().contains("passes 65 bits"), "{refused}");
+    let damaged = advanced(&bytes, &entry).unwrap_err();
+    assert!(damaged.to_string().contains("damaged"), "{damaged}");
+}

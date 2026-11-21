@@ -265,3 +265,46 @@ fn a_read_of_some_columns_decodes_those_fields_alone() {
         assert_eq!(*some.tables[table.index()], TableView::Complete(TableRows::RaidAirScores(expected.clone())), "hour {hour}");
     }
 }
+
+#[test]
+fn readers_left_by_one_recording_are_not_taken_up_by_another_of_its_shape() {
+    use crate::columnar_frames::synthetic::{Input, Sample};
+    let table = TableId::Countries;
+    let shaped = |offset: i64| {
+        let (bytes, _) = fixtures::written(b"same shape", &[(1, 100, 2)], &[table], |synthetic, _, ordinal| {
+            let rows = [CountryRow { id: 1, stability_raw: offset + i64::from(ordinal), ..Default::default() }];
+            synthetic.table(table, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        });
+        bytes
+    };
+    let bytes = shaped(0);
+    let (first, second) = (Recording::open(bytes.clone()).unwrap(), Recording::open(shaped(1_000_000)).unwrap());
+    let reads = [Read::all(table)];
+    let held = first.run(0).unwrap();
+    assert_eq!(held.ordinals, second.run(0).unwrap().ordinals);
+    let hour = held.first_hour + 7;
+    let mut cursor = Cursor::new(&first, &reads).unwrap();
+    cursor.frame(0, hour).unwrap();
+
+    let mut elsewhere = Cursor::resume(&second, &reads, cursor.into_readers()).unwrap();
+    assert!(elsewhere.readers.is_none(), "another recording's readers are not taken");
+    assert_eq!(elsewhere.frame(0, hour).unwrap(), frame(&second, 0, hour, &reads).unwrap());
+    assert_ne!(frame(&first, 0, hour, &reads).unwrap(), frame(&second, 0, hour, &reads).unwrap());
+
+    let mut again = Cursor::new(&first, &reads).unwrap();
+    again.frame(0, hour).unwrap();
+    let mut home = Cursor::resume(&first, &reads, again.into_readers()).unwrap();
+    assert!(home.readers.is_some(), "the recording that left its readers takes them up");
+    assert_eq!(home.frame(0, hour).unwrap(), frame(&first, 0, hour, &reads).unwrap());
+
+    let copy = Recording::open(bytes).unwrap();
+    assert_eq!(copy.revision(), first.revision());
+    let copied = Cursor::resume(&copy, &reads, home.into_readers()).unwrap();
+    assert!(copied.readers.is_none(), "another opening of the same bytes reads its own frames");
+    let mut again = Cursor::new(&first, &reads).unwrap();
+    again.frame(0, hour).unwrap();
+    let mut narrower = first.selecting(&[table]).unwrap();
+    narrower.project(table, &[0]).unwrap();
+    let projected = Cursor::resume(&narrower, &reads, again.into_readers()).unwrap();
+    assert!(projected.readers.is_none(), "a recording projecting other default columns takes no reader of the wider ones");
+}

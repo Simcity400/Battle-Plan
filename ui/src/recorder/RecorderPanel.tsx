@@ -268,9 +268,7 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
       {notice}
       {buildNotice}
       {preparationNotice}
-      {shown.bar !== undefined && <div className={`recorder-bar${shown.bar == null ? ' is-open' : ''}`} role="progressbar" aria-label={shown.label ?? undefined}
-        aria-valuemin={0} aria-valuemax={100} aria-valuenow={shown.bar == null ? undefined : Math.round(shown.bar * 100)}>
-        <i style={shown.bar == null ? undefined : { width: `${shown.bar * 100}%` }} /></div>}
+      {shown.busy && <div className="recorder-bar" role="progressbar" aria-label={shown.label ?? undefined}><i /></div>}
       {shown.campaign && campaign && settings && <section className="recorder-section">
         <div className="recorder-label">This campaign</div>
         <Switch label="Record automatically" checked={recordsAutomatically(settings, campaign)} onChange={record => actions.campaign(campaign, { record })} />
@@ -343,7 +341,7 @@ function UnsavedRow({ row, actions, confirming }: { row: UnsavedRecording; actio
 }
 
 function SavedRow({ row, settings, actions }: { row: SavedRecording; settings: RecorderSettings | null; actions: PanelActions }) {
-  const kept = row.job?.state === 'kept';
+  const kept = row.job?.state === 'kept' || row.job?.state === 'unconfirmed';
   return <div className="recorder-item is-openable">
     <ItemFlag flag={row.flag} />
     <button type="button" className="recorder-item-name recorder-item-open" data-tooltip={`Open in Battle Plan · ${recordingFilename(row.path)}`}

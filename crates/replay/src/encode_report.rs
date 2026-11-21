@@ -56,6 +56,7 @@ pub struct Everything {
     pub facts: Option<Vec<u8>>,
     pub revisions: u64,
     pub committed: bool,
+    pub blocks: u64,
     pub pace: Option<(f64, u64)>,
     pub hours: u64,
     pub paced: Option<Instant>,
@@ -65,7 +66,7 @@ pub struct Everything {
 
 impl Everything {
     pub fn new(facts: Option<Vec<u8>>, pace: Option<(f64, u64)>) -> Self {
-        Self { facts, revisions: 0, committed: false, pace, hours: 0, paced: None, taken: Rc::default(), last: None }
+        Self { facts, revisions: 0, committed: false, blocks: 0, pace, hours: 0, paced: None, taken: Rc::default(), last: None }
     }
 }
 
@@ -101,9 +102,10 @@ impl Host for Everything {
         }
     }
 
-    fn committed(&mut self, _: &Committed) {
+    fn committed(&mut self, committed: &Committed) {
         self.revisions += 1;
         self.committed = true;
+        self.blocks += u64::from(committed.hours > 0);
     }
 }
 
@@ -156,8 +158,16 @@ pub fn revision_line(writer: &LiveWriter, revision: u64, hours: u64, started: In
     line
 }
 
-pub fn stopped_after(block: Option<u64>, hours: u64) -> bool {
-    if !block.is_some_and(|block| hours / 720 == block + 1) {
+pub fn recorded_blocks(path: &Path) -> io::Result<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let recording = crate::columnar_frames::Recording::open_path_as(path, crate::columnar_frames::Open::Newest)?;
+    Ok(recording.directories()?.iter().map(|run| u64::from(run.blocks())).sum())
+}
+
+pub fn stopped_after(block: Option<u64>, blocks: u64, hours: u64) -> bool {
+    if !block.is_some_and(|block| blocks == block + 1) {
         return false;
     }
     eprintln!("{}", json!({ "stopped_after_block": block, "hours": hours }));

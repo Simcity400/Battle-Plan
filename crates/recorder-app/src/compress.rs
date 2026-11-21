@@ -5,7 +5,7 @@ use std::{
     collections::{HashMap, VecDeque},
     ffi::OsString,
     io::{self, BufRead, BufReader, Write},
-    os::windows::{io::AsRawHandle, process::CommandExt},
+    os::windows::{fs::OpenOptionsExt, io::AsRawHandle, process::CommandExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Condvar, Mutex, MutexGuard},
@@ -36,6 +36,7 @@ pub enum Job {
     Queued,
     Compressing { units: u64, total: u64 },
     Kept { reason: String },
+    Unconfirmed { reason: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,6 +44,7 @@ pub enum Line {
     Progress { units: u64, total: u64 },
     Done,
     Kept(String),
+    Unconfirmed(String),
 }
 
 impl Line {
@@ -51,6 +53,7 @@ impl Line {
             Self::Progress { units, total } => format!("progress {units} {total}"),
             Self::Done => "done".into(),
             Self::Kept(reason) => format!("kept {reason}"),
+            Self::Unconfirmed(reason) => format!("unconfirmed {reason}"),
         }
     }
 
@@ -61,12 +64,15 @@ impl Line {
         if let Some(reason) = text.strip_prefix("kept ") {
             return Some(Self::Kept(reason.into()));
         }
+        if let Some(reason) = text.strip_prefix("unconfirmed ") {
+            return Some(Self::Unconfirmed(reason.into()));
+        }
         let (units, total) = text.strip_prefix("progress ")?.split_once(' ')?;
         Some(Self::Progress { units: units.parse().ok()?, total: total.parse().ok()? })
     }
 }
 
-pub fn job(path: &Path, below_normal: bool, mut tell: impl FnMut(Line)) -> Result<(), String> {
+pub fn job(path: &Path, below_normal: bool, mut tell: impl FnMut(Line)) -> Result<(), Job> {
     let mut shown = None;
     let result = recompress::recompress_file(path, LEVEL, below_normal, |progress| {
         let percent = progress.units * 100 / progress.total.max(1);
@@ -77,6 +83,10 @@ pub fn job(path: &Path, below_normal: bool, mut tell: impl FnMut(Line)) -> Resul
         true
     });
     match result {
+        Ok(recompress::Outcome::Replaced { unflushed: Some(reason), .. }) => {
+            tell(Line::Unconfirmed(reason.clone()));
+            Err(Job::Unconfirmed { reason })
+        }
         Ok(_) => {
             tell(Line::Done);
             Ok(())
@@ -84,7 +94,7 @@ pub fn job(path: &Path, below_normal: bool, mut tell: impl FnMut(Line)) -> Resul
         Err(kept) => {
             let reason = kept.to_string();
             tell(Line::Kept(reason.clone()));
-            Err(reason)
+            Err(Job::Kept { reason })
         }
     }
 }
@@ -137,8 +147,9 @@ impl Drop for Bound {
     }
 }
 
-fn run(path: &Path, bound: &Bound, mut tell: impl FnMut(Line)) -> Result<(), String> {
-    let program = std::env::current_exe().map_err(|error| format!("Battle Plan Recorder could not find itself to compress with: {error}"))?;
+fn run(path: &Path, bound: &Bound, mut tell: impl FnMut(Line)) -> Result<(), Job> {
+    let kept = |reason: String| Job::Kept { reason };
+    let program = std::env::current_exe().map_err(|error| kept(format!("Battle Plan Recorder could not find itself to compress with: {error}")))?;
     let mut child = Command::new(program)
         .arg(ARGUMENT)
         .arg(path)
@@ -147,11 +158,11 @@ fn run(path: &Path, bound: &Bound, mut tell: impl FnMut(Line)) -> Result<(), Str
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS)
         .spawn()
-        .map_err(|error| format!("the compress could not start: {error}"))?;
+        .map_err(|error| kept(format!("the compress could not start: {error}")))?;
     if let Err(error) = bound.bind(&child) {
         let _ = child.kill();
         let _ = child.wait();
-        return Err(format!("the compress could not be tied to Battle Plan Recorder: {error}"));
+        return Err(kept(format!("the compress could not be tied to Battle Plan Recorder: {error}")));
     }
     let mut ended = None;
     if let Some(output) = child.stdout.take() {
@@ -163,11 +174,16 @@ fn run(path: &Path, bound: &Bound, mut tell: impl FnMut(Line)) -> Result<(), Str
             }
         }
     }
-    let status = child.wait().map_err(|error| format!("the compress could not be waited for: {error}"))?;
+    let status = child.wait().map_err(|error| kept(format!("the compress could not be waited for: {error}")))?;
     match ended {
         Some(Line::Done) if status.success() => Ok(()),
-        Some(Line::Kept(reason)) => Err(reason),
-        _ => Err(format!("the compress stopped before it finished ({status})")),
+        Some(Line::Kept(reason)) => Err(Job::Kept { reason }),
+        Some(Line::Unconfirmed(reason)) => Err(Job::Unconfirmed { reason }),
+        _ => match recompress::level_of(path) {
+            Ok(Some(level)) if level == LEVEL => Err(Job::Unconfirmed { reason: format!("the compress ended before it confirmed the smaller file ({status})") }),
+            Ok(_) => Err(kept(format!("the compress stopped before it finished ({status})"))),
+            Err(error) => Err(Job::Unconfirmed { reason: format!("the compress ended without saying whether it replaced the recording, which could not be read: {error}") }),
+        },
     }
 }
 
@@ -181,7 +197,7 @@ pub struct Jobs {
 struct State {
     queue: VecDeque<PathBuf>,
     running: Option<(PathBuf, u64, u64)>,
-    kept: HashMap<PathBuf, String>,
+    ended: HashMap<PathBuf, Job>,
 }
 
 impl Jobs {
@@ -195,7 +211,7 @@ impl Jobs {
             return Err("Choose a .battleplan recording to compress".into());
         }
         let mut state = self.lock();
-        state.kept.remove(&path);
+        state.ended.remove(&path);
         if state.running.as_ref().is_some_and(|(running, ..)| *running == path) || state.queue.contains(&path) {
             return Ok(());
         }
@@ -222,7 +238,7 @@ impl Jobs {
         if state.queue.iter().any(|queued| queued == path) {
             return Some(Job::Queued);
         }
-        state.kept.get(path).map(|reason| Job::Kept { reason: reason.clone() })
+        state.ended.get(path).cloned()
     }
 
     fn next(&self) -> PathBuf {
@@ -242,24 +258,36 @@ impl Jobs {
         }
     }
 
-    fn ended(&self, path: &Path, result: Result<(), String>) {
+    fn ended(&self, path: &Path, result: Result<(), Job>) {
         let mut state = self.lock();
         state.running = None;
-        if let Err(reason) = result {
-            state.kept.insert(path.to_owned(), reason);
+        if let Err(job) = result {
+            state.ended.insert(path.to_owned(), job);
         }
     }
 
     pub fn take_up(&self, root: &Path, settings: &RecorderSettings) {
-        for path in crate::recordings::saved_files(root) {
-            let partial = recompress::partial_path(&path);
-            if !partial.exists() {
+        let saved = crate::recordings::saved_files(root);
+        for folder in crate::recordings::recording_folders(root) {
+            let recordings = saved.iter().filter(|path| path.parent() == Some(folder.as_path()));
+            let leftovers = recompress::leftovers(&folder).unwrap_or_default();
+            if leftovers.is_empty() {
                 continue;
             }
-            if auto(settings) {
-                let _ = self.request(&path);
-            } else {
-                let _ = std::fs::remove_file(&partial);
+            let recordings: HashMap<String, &PathBuf> = recordings.map(|path| (recompress::staging_digest(path), path)).collect();
+            let held = |staged: &Path| std::fs::OpenOptions::new().read(true).share_mode(0).open(staged).is_err_and(|error| error.raw_os_error() == Some(32));
+            let (live, stale): (Vec<_>, Vec<_>) = leftovers.into_iter().partition(|(staged, _)| held(staged));
+            let live: std::collections::HashSet<String> = live.into_iter().map(|(_, digest)| digest).collect();
+            let mut interrupted = std::collections::HashSet::new();
+            for (staged, digest) in stale {
+                if auto(settings) && !live.contains(&digest) && recordings.contains_key(&digest) {
+                    interrupted.insert(digest);
+                } else if !live.contains(&digest) {
+                    let _ = std::fs::remove_file(staged);
+                }
+            }
+            for digest in interrupted {
+                let _ = self.request(recordings[&digest]);
             }
         }
     }
@@ -304,7 +332,7 @@ mod tests {
 
     #[test]
     fn a_compress_child_s_lines_read_back_as_told() {
-        for line in [Line::Progress { units: 3, total: 400 }, Line::Done, Line::Kept("open in the desktop app or another program".into())] {
+        for line in [Line::Progress { units: 3, total: 400 }, Line::Done, Line::Kept("open in the desktop app or another program".into()), Line::Unconfirmed("the disk is full".into())] {
             assert_eq!(Line::read(&line.text()), Some(line));
         }
         assert_eq!(Line::read("progress 3"), None);
@@ -334,7 +362,7 @@ mod tests {
         assert_eq!(jobs.job(&path), Some(Job::Kept { reason: "open in the desktop app or another program".into() }));
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert_eq!(recompress::level_of(&path).unwrap(), Some(7), "kept at its live level, so Compress is offered");
-        assert!(!recompress::partial_path(&path).exists());
+        assert!(recompress::partials(&path).unwrap().is_empty());
         drop(desktop);
         jobs.request(&path).unwrap();
         assert_eq!(jobs.job(&path), Some(Job::Queued));

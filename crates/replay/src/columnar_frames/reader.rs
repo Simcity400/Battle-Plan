@@ -264,7 +264,7 @@ impl Recording {
             match recording.raw(extent).and_then(|raw| RunDirectory::read(&raw, extent, index)) {
                 Ok(directory) => {
                     if directory.hours > 0 {
-                        segments.push(Segment { branch: directory.branch, run: index, restart: None, first: 0, last: directory.hours - 1 });
+                        segments.push(Segment { branch: directory.branch, run: index, first: 0, last: directory.hours - 1 });
                     }
                     runs.push(Some(Arc::new(Run {
                         branch: directory.branch,
@@ -469,7 +469,7 @@ impl Recording {
     pub fn with_segments(mut self, segments: Vec<Segment>) -> io::Result<Self> {
         for segment in &segments {
             let held = self.recorded.iter().find(|held| held.run == segment.run);
-            if !held.is_some_and(|held| segment.restart.is_none() && segment.first <= segment.last && segment.last <= held.last) {
+            if !held.is_some_and(|held| segment.first <= segment.last && segment.last <= held.last) {
                 return Err(invalid("A segment the recording does not hold"));
             }
         }

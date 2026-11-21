@@ -77,6 +77,12 @@ fn cost(day_hour: i32, ordinal: u32, component: PowerDailyCostKind, amount: i64,
 }
 
 const NO_CAPTURE: i32 = 30;
+const WIDER: i32 = 50;
+const SHORTER: i32 = 51;
+const EMPTIED: i32 = 52;
+const RESTORED: i32 = 53;
+const REMOVED: i32 = 54;
+const ZEROED: i32 = 55;
 const NO_CHANGES: i32 = 26;
 
 fn edit(store: &mut Store, hour: i32) {
@@ -96,7 +102,8 @@ fn edit(store: &mut Store, hour: i32) {
     } else {
         complete(store, TableId::PoliticsCaptureCoverage);
         for country in [1, 2] {
-            let witness = Streams { country, epoch: 1, since_hour: 0, through_hour: hour, streams: Streams::ALL_STREAMS, ..Default::default() };
+            let since_hour = if hour >= RESTORED { hour - 1 } else { 0 };
+            let witness = Streams { country, epoch: 1, since_hour, through_hour: hour, streams: Streams::ALL_STREAMS, ..Default::default() };
             testing::put(store, TableId::PoliticsCaptureCoverage, &witness, TEXTS).unwrap();
         }
     }
@@ -145,6 +152,18 @@ fn edit(store: &mut Store, hour: i32) {
             testing::put(store, TableId::CountryPowerDaily, &daily(48, 2 * Q, Q / 2, 80), TEXTS).unwrap();
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(48, 0, PowerDailyCostKind::Relation, Q / 2, 80), TEXTS).unwrap();
         }
+        WIDER => {
+            testing::put(store, TableId::CountryPowerDaily, &daily(48, 2 * Q + Q / 10, Q / 2 + Q / 10, 80), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(48, 1, PowerDailyCostKind::MioResearch, Q / 10, 80), TEXTS).unwrap();
+        }
+        SHORTER => {
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+            testing::put(store, TableId::CountryPowerDaily, &daily(48, 2 * Q, Q / 2, 80), TEXTS).unwrap();
+        }
+        EMPTIED => testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32).unwrap(),
+        RESTORED => testing::put(store, TableId::CountryPowerDailyCosts, &cost(48, 0, PowerDailyCostKind::Relation, Q / 2, 80), TEXTS).unwrap(),
+        REMOVED => testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32).unwrap(),
+        ZEROED => testing::put(store, TableId::CountryPowerDaily, &daily(48, 2 * Q, 0, 80), TEXTS).unwrap(),
         _ => {}
     }
 }
@@ -317,6 +336,28 @@ fn the_open_days_parts_hold_what_was_spent_since_midnight_and_end_with_the_day()
     let (next, _) = through(0..=49);
     assert_eq!(cell::<Part>(&next, TableId::PowerDayParts, idea, "spent"), Some(2 * Q), "a later day's part starts from nothing");
     assert_eq!(cell::<Part>(&next, TableId::PowerDayParts, idea, "day"), Some(48));
+}
+
+#[test]
+fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_spending() {
+    let (store, _) = through(0..=25);
+    let costs = cost_items(&store);
+    let (relation, organisation, idea) = (part_key(10, POLITICAL, costs[0]), part_key(10, POLITICAL, costs[1]), part_key(10, POLITICAL, 0));
+    let (wider, _) = through(0..=WIDER);
+    assert_eq!(keys(&wider, TableId::PowerDayParts), [idea, relation, organisation]);
+    let (shorter, _) = through(0..=SHORTER);
+    assert_eq!(keys(&shorter, TableId::PowerDayParts), [idea, relation], "the withdrawn cost is no longer today's, and the idea paid today stays");
+    assert_eq!(cell::<Part>(&shorter, TableId::PowerDayParts, idea, "spent"), Some(2 * Q));
+    let (emptied, _) = through(0..=EMPTIED);
+    assert_eq!(keys(&emptied, TableId::PowerDayParts), [idea, relation], "a country left with no cost rows withdraws nothing");
+    let (removed, _) = through(0..=REMOVED);
+    assert_eq!(keys(&removed, TableId::PowerDayParts), [idea, relation], "rows gone before the application says why withdraw nothing");
+    let (zeroed, _) = through(0..=ZEROED);
+    assert_eq!(keys(&zeroed, TableId::PowerDayParts), [idea], "an application of no cost covered this hour then empties the batch");
+    let (next, _) = through(0..=72);
+    assert_eq!(spend(&next, 10, POLITICAL, costs[1], "days"), Some(1), "day 48 settles without the withdrawn cost");
+    assert_eq!(spend(&next, 10, POLITICAL, costs[1], "day_charge"), Some(Q / 10));
+    assert_eq!(spend(&next, 10, POLITICAL, costs[0], "days"), Some(1), "day 48's relation was withdrawn by its zero-cost application");
 }
 
 #[test]

@@ -223,7 +223,7 @@ fn install_offered() {
     if offered.is_null() {
         return;
     }
-    INSTALLED_LEN.store(OFFERED_LEN.swap(0, Ordering::SeqCst), Ordering::SeqCst);
+    INSTALLED_LEN.store(unsafe { &*offered }.statuses.len(), Ordering::SeqCst);
     let replaced = LOG.swap(offered, Ordering::SeqCst);
     DRAINING.store(replaced, Ordering::SeqCst);
     INSTALLS.fetch_add(1, Ordering::Relaxed);
@@ -239,13 +239,17 @@ pub fn offer(marks: usize) {
     else {
         return;
     };
-    if len <= INSTALLED_LEN.load(Ordering::SeqCst) || len <= OFFERED_LEN.load(Ordering::SeqCst) {
+    if len <= OFFERED_LEN.load(Ordering::SeqCst) {
         return;
     }
     let Some(log) = Log::new(len) else {
         return;
     };
     OFFERED_LEN.store(len, Ordering::SeqCst);
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(between) = OFFERING.with_borrow_mut(Option::take) {
+        between();
+    }
     free(OFFERED.swap(Box::into_raw(log), Ordering::SeqCst));
 }
 
@@ -267,6 +271,8 @@ fn release() {
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static BETWEEN_READS: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static OFFERING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -798,5 +804,33 @@ mod tests {
         assert_eq!(marks, Some(0));
         observe_for_test(false);
         assert_eq!(drain(&mut consumed, &mut output, &mut required), None);
+    }
+
+    #[test]
+    fn a_drain_taking_an_older_offer_while_a_larger_one_is_published_reports_each_ring() {
+        let _lock = test_lock();
+        observe_for_test(true);
+        install_for_test();
+        collect();
+        let drain_once = || {
+            let (mut consumed, mut output, mut required) = (cursor(), [Mark::default(); 1], 0);
+            drain(&mut consumed, &mut output, &mut required);
+        };
+        offer(2 * LEN);
+        OFFERING.with_borrow_mut(|between| *between = Some(Box::new(drain_once)));
+        offer(8 * LEN);
+        assert_eq!(installed().unwrap().statuses.len(), 32);
+        assert_eq!(INSTALLED_LEN.load(Ordering::SeqCst), 32, "the drain reports the ring it took");
+        drain_once();
+        assert_eq!(installed().unwrap().statuses.len(), 128);
+        assert_eq!(INSTALLED_LEN.load(Ordering::SeqCst), 128, "the larger ring is reported once installed");
+        let installs = INSTALLS.load(Ordering::SeqCst);
+        offer(8 * LEN);
+        assert!(OFFERED.load(Ordering::SeqCst).is_null(), "the installed ring already serves that demand");
+        drain_once();
+        assert_eq!(INSTALLS.load(Ordering::SeqCst), installs);
+        collect();
+        release();
+        observe_for_test(false);
     }
 }

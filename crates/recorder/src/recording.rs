@@ -905,14 +905,17 @@ fn recompress(args: &[OsString]) -> Result<(), String> {
         true
     });
     match outcome {
-        Ok(replay::recompress::Outcome::Replaced { before, after }) => {
+        Ok(replay::recompress::Outcome::Replaced { before, after, unflushed }) => {
             println!(
                 "{}: compressed at level {level}, {:.1} MB to {:.1} MB",
                 path.display(),
                 megabytes(before),
                 megabytes(after)
             );
-            Ok(())
+            match unflushed {
+                Some(error) => Err(format!("{}: the smaller file replaced the recording, but was not confirmed on disk: {error}", path.display())),
+                None => Ok(()),
+            }
         }
         Ok(replay::recompress::Outcome::AlreadyAt(level)) => {
             println!("{}: at level {level} already; left as it is", path.display());

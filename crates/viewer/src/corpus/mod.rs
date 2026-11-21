@@ -145,18 +145,15 @@ fn run(args: &[OsString]) -> io::Result<()> {
     }
     fs::create_dir_all(&options.out)?;
     let value_dir = options.out.join("values");
-    if options.values.is_some() {
-        if value_dir.exists() {
-            fs::remove_dir_all(&value_dir)?;
-        }
-        fs::create_dir_all(&value_dir)?;
+    if options.values.is_none() && value_dir.is_dir() {
+        values::Output::clear(&value_dir)?;
     }
+    let values = options.values.map(|_| values::Output::prepare(&value_dir)).transpose()?;
     let scratch = options.out.join("scratch");
     let cache = options
         .cache
         .clone()
         .unwrap_or_else(|| scratch.join("hashes"));
-    let dump_error = options.values.map(|_| Arc::new(Mutex::new(None)));
     let queue = Mutex::new(plans.iter());
     let reports = Mutex::new(BTreeMap::new());
     std::thread::scope(|scope| {
@@ -173,7 +170,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
                         plan,
                         &scratch,
                         &cache,
-                        dump_error.as_ref(),
+                        values.as_ref(),
                     );
                     eprintln!(
                         "mod-corpus: {} gathered in {} ms, read in {} ms: {} diagnostics{}",
@@ -196,9 +193,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
         }
     });
     let reports = reports.into_inner().unwrap_or_else(|e| e.into_inner());
-    if let Some(error) = dump_error
-        && let Some(error) = error.lock().unwrap().take()
-    {
+    if let Some(error) = values.as_ref().and_then(|values| values.take_error()) {
         return Err(error);
     }
     report::write_run(&options.out, &reports)?;
@@ -233,7 +228,7 @@ fn stack(
     plan: &stacks::Plan,
     scratch: &Path,
     cache: &Path,
-    dump_error: Option<&values::Error>,
+    output: Option<&Arc<values::Output>>,
 ) -> report::StackReport {
     let mut report = report::StackReport {
         stack: plan.id.clone(),
@@ -285,13 +280,7 @@ fn stack(
         })
         .collect();
     let started = Instant::now();
-    let values = dump_error.map(|error| {
-        values::Writer::new(
-            options.out.join("values").join(&plan.id),
-            Arc::clone(error),
-            options.values.unwrap(),
-        )
-    });
+    let values = output.zip(options.values).map(|(output, mode)| values::Writer::new(output, &plan.id, mode));
     let (runs, diagnostics, state_history) = if options.sounds_only {
         readers::run_sounds(content, values.clone())
     } else {

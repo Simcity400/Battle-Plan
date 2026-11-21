@@ -1067,10 +1067,9 @@ impl Recorder {
                     self.live(app, &target, session, status, names, probe);
                 }
             }
-            Stage::Saving { records } => self.update(app, |inner| {
+            Stage::Saving { .. } => self.update(app, |inner| {
                 inner.snapshot.phase = Phase::Saving;
                 inner.snapshot.problem = None;
-                inner.snapshot.progress = snapshot::saving_progress(records, inner.hours);
             }),
             Stage::SetAside { waiting, done } => self.set_aside_changed(app, waiting, done),
             Stage::Finished { result } => {
@@ -1217,7 +1216,6 @@ impl Recorder {
                 let snapshot = &mut inner.snapshot;
                 snapshot.phase = Phase::Discarded;
                 snapshot.stopping = false;
-                snapshot.progress = None;
                 snapshot.problem = outcome.failure_report.as_deref().map(discarded_failure);
                 snapshot.spool_bytes = None;
             });
@@ -1277,7 +1275,6 @@ impl Recorder {
                     snapshot.spool_bytes = None;
                     snapshot.continued = true;
                     snapshot.stopping = false;
-                    snapshot.progress = None;
                     snapshot.problem = kept.or(unrenamed);
                 });
             }
@@ -1287,7 +1284,6 @@ impl Recorder {
                 inner.set_aside.clear();
                 inner.snapshot.capture_mode = None;
                 inner.snapshot.stopping = false;
-                inner.snapshot.progress = None;
                 if unsaved {
                     inner.result = true;
                     inner.snapshot.phase = Phase::Unsaved;
@@ -1342,7 +1338,6 @@ impl Recorder {
             let snapshot = &mut inner.snapshot;
             snapshot.phase = Phase::NotRecording;
             snapshot.stopping = false;
-            snapshot.progress = None;
             snapshot.problem = Some(problem);
         });
     }
@@ -1369,7 +1364,6 @@ fn accept_stop(inner: &mut Inner, control: &Control, discard: bool) -> bool {
     inner.snapshot.stopping = true;
     if !discard {
         inner.snapshot.phase = Phase::Saving;
-        inner.snapshot.progress = None;
         inner.snapshot.problem = None;
     }
     true
@@ -1553,7 +1547,6 @@ mod tests {
         for warning in [false, true] {
             let mut inner = Inner::default();
             inner.snapshot.phase = Phase::Saved;
-            inner.snapshot.progress = None;
             inner.result = true;
             inner.unloading = true;
             inner.record_requested = true;
@@ -1574,7 +1567,6 @@ mod tests {
             assert!(!inner.unloading && !inner.capturing);
             assert!(inner.record_requested && inner.result);
             assert_eq!(inner.snapshot.phase, Phase::Saved);
-            assert_eq!(inner.snapshot.progress, None);
             if warning {
                 let problem = inner.snapshot.problem.unwrap();
                 assert_eq!(problem.text, "Earlier capture failure");

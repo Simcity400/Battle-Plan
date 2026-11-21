@@ -11,7 +11,7 @@ import type { RecorderSettings, Snapshot } from './status';
 const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, startWithWindows: false, startWithReplay: true, captureMode: 'full', liveCompression: 'low', autoCompress: true,
   campaigns: {}, effectiveSaveFolder: 'C:\\Recordings' };
 const snapshot: Snapshot = { phase: 'waiting', campaign: null, recording: null, name: null, continued: false, hour: null, firstHour: null,
-  savedBytes: null, spoolBytes: null, progress: null, startedAt: null, stopping: false, problem: null, automatic: true, session: null, flag: null,
+  savedBytes: null, spoolBytes: null, startedAt: null, stopping: false, problem: null, automatic: true, session: null, flag: null,
   captureMode: null };
 
 test('a panel clamped to a short screen scrolls its content and keeps its footer in reach', async () => {

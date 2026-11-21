@@ -1014,3 +1014,22 @@ fn a_kept_table_logs_each_older_cell_before_its_writes_and_each_deleted_row_s_ce
         store.end_hour(&mut crate::unit::Discard).unwrap();
     }
 }
+
+#[test]
+fn texts_sharing_a_digest_each_reuse_their_own_id_across_a_trim() {
+    COLLIDING.set(true);
+    let mut strings = Strings::default();
+    assert_eq!(strings.intern(b"first").unwrap(), 0);
+    assert_eq!(strings.intern(b"second").unwrap(), 1);
+    assert_eq!(strings.intern(b"second").unwrap(), 1, "the second text is found behind the first");
+    assert_eq!(strings.intern(b"first").unwrap(), 0);
+    let mut named = Flags::default();
+    named.set(1);
+    strings.retain(&named);
+    assert_eq!(strings.get(0), None);
+    assert_eq!(strings.intern(b"second").unwrap(), 1, "the rebuilt index still finds a held text");
+    assert_eq!(strings.intern(b"first").unwrap(), 2);
+    assert_eq!(strings.intern(b"first").unwrap(), 2);
+    assert_eq!(strings.next(), 3);
+    COLLIDING.set(false);
+}

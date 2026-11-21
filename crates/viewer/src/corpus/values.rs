@@ -11,7 +11,281 @@ use std::{
 #[cfg(test)]
 use viewer_foundation::debug_fields::sorted_set;
 
-pub(super) type Error = Arc<Mutex<Option<io::Error>>>;
+const OWNED: &str = ".mod-corpus-owned";
+const OWNED_HEADER: &str = "mod-corpus values";
+const NONE_COLLECTED: &str = "mod-corpus values: none collected";
+
+pub(super) struct Output {
+    root: PathBuf,
+    error: Mutex<Option<io::Error>>,
+    owned: Mutex<Owned>,
+}
+
+struct Owned {
+    manifest: fs::File,
+    written: BTreeSet<PathBuf>,
+    open: BTreeMap<PathBuf, fs::File>,
+}
+
+impl Output {
+    pub fn prepare(root: &Path) -> io::Result<Arc<Self>> {
+        use std::os::windows::fs::OpenOptionsExt;
+        const SHARE_READ: u32 = 0x1;
+        fs::create_dir_all(root)?;
+        unlinked(root)?;
+        let path = root.join(OWNED);
+        unlinked(&path)?;
+        let mut manifest = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .share_mode(SHARE_READ)
+            .open(&path)
+            .map_err(|error| match error.raw_os_error() {
+                Some(32) => io::Error::new(error.kind(), format!("another mod-corpus run is writing {}", root.display())),
+                _ => error,
+            })?;
+        let mut text = String::new();
+        manifest.read_to_string(&mut text)?;
+        let mut owned = Vec::new();
+        for (relative, identity) in owned_files(&path, &text)? {
+            if let Some(stack) = relative.parent().filter(|stack| !stack.as_os_str().is_empty())
+                && !unlinked(&root.join(stack))?
+            {
+                continue;
+            }
+            let report = root.join(&relative);
+            match (open_owned(&report)?, identity) {
+                (None, _) => {}
+                (Some(file), Some(identity)) if file_identity(&file)? == identity => owned.push((relative, file)),
+                (Some(_), _) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        format!("{} is from an earlier run that this drive cannot confirm; remove it or choose another --out", report.display()),
+                    ));
+                }
+            }
+        }
+        for (_, file) in owned {
+            delete_held(&file)?;
+        }
+        manifest.set_len(0)?;
+        manifest.seek(io::SeekFrom::Start(0))?;
+        writeln!(manifest, "{OWNED_HEADER}")?;
+        Ok(Arc::new(Self {
+            root: root.to_owned(),
+            error: Mutex::default(),
+            owned: Mutex::new(Owned { manifest, written: BTreeSet::new(), open: BTreeMap::new() }),
+        }))
+    }
+
+    pub fn clear(root: &Path) -> io::Result<()> {
+        if root.join(OWNED).is_file() {
+            drop(Self::prepare(root)?);
+        } else if !unlinked(root).unwrap_or(false) {
+            return Ok(());
+        }
+        let _ = fs::write(root.join(OWNED), format!("{NONE_COLLECTED}\n"));
+        Ok(())
+    }
+
+    pub fn take_error(&self) -> Option<io::Error> {
+        self.error.lock().unwrap().take()
+    }
+
+    fn open(&self, path: &Path) -> io::Result<fs::File> {
+        let mut owned = self.owned.lock().unwrap();
+        if owned.written.contains(path) {
+            return owned.open.get(path).ok_or_else(|| io::Error::other(format!("{} was already finished", path.display())))?.try_clone();
+        }
+        let name = path
+            .strip_prefix(&self.root)
+            .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+            .ok()
+            .filter(|name| owned_path(name).is_some())
+            .ok_or_else(|| io::Error::other(format!("{} is outside the values mod-corpus writes", path.display())))?;
+        if let Some(stack) = path.parent().filter(|stack| *stack != self.root)
+            && !unlinked(stack)?
+        {
+            return Err(io::Error::other(format!("{} is a link; mod-corpus writes only into its own folders", stack.display())));
+        }
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .append(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|error| match error.kind() {
+                io::ErrorKind::AlreadyExists => io::Error::new(
+                    error.kind(),
+                    format!("{} was not written by mod-corpus; move it or choose another --out", path.display()),
+                ),
+                _ => error,
+            })?;
+        let claimed = stable_identity(&file)
+            .and_then(|identity| match identity {
+                Some(identity) => writeln!(owned.manifest, "{name}\t{identity}"),
+                None => writeln!(owned.manifest, "{name}"),
+            })
+            .and_then(|()| owned.manifest.flush());
+        if let Err(error) = claimed {
+            drop(file);
+            let _ = fs::remove_file(path);
+            return Err(error);
+        }
+        owned.written.insert(path.to_owned());
+        owned.open.insert(path.to_owned(), file.try_clone()?);
+        Ok(file)
+    }
+
+    fn close(&self, stack: &Path) {
+        let mut owned = self.owned.lock().unwrap();
+        owned.open.retain(|path, _| path.parent() != Some(stack) && path.with_extension("") != stack);
+    }
+}
+
+fn unlinked(path: &Path) -> io::Result<bool> {
+    use std::os::windows::fs::MetadataExt;
+    const REPARSE_POINT: u32 = 0x400;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_attributes() & REPARSE_POINT != 0 => Err(io::Error::other(format!(
+            "{} is a link; mod-corpus does not follow links out of its output",
+            path.display()
+        ))),
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn file_identity(file: &fs::File) -> io::Result<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx};
+    let mut info: FILE_ID_INFO = unsafe { std::mem::zeroed() };
+    let size = size_of::<FILE_ID_INFO>() as u32;
+    if unsafe { GetFileInformationByHandleEx(file.as_raw_handle(), FileIdInfo, (&raw mut info).cast(), size) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut identity = format!("{:016x}", info.VolumeSerialNumber);
+    for byte in info.FileId.Identifier {
+        let _ = write!(identity, "{byte:02x}");
+    }
+    Ok(identity)
+}
+
+fn identity_text(text: &str) -> Option<String> {
+    (text.len() == 48 && text.bytes().all(|byte| byte.is_ascii_hexdigit())).then(|| text.to_ascii_lowercase())
+}
+
+fn stable_identity(file: &fs::File) -> io::Result<Option<String>> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::GetVolumeInformationByHandleW;
+    const SUPPORTS_OPEN_BY_FILE_ID: u32 = 0x0100_0000;
+    let mut flags = 0_u32;
+    let read = unsafe {
+        GetVolumeInformationByHandleW(
+            file.as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &raw mut flags,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if read == 0 || flags & SUPPORTS_OPEN_BY_FILE_ID == 0 {
+        return Ok(None);
+    }
+    file_identity(file).map(Some)
+}
+
+fn open_owned(path: &Path) -> io::Result<Option<fs::File>> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
+    match fs::OpenOptions::new()
+        .access_mode(DELETE | FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+    {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn delete_held(file: &fs::File) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FileDispositionInfo, FileDispositionInfoEx, SetFileInformationByHandle,
+    };
+    let info = FILE_DISPOSITION_INFO_EX { Flags: 0x1 | 0x2 };
+    let size = size_of::<FILE_DISPOSITION_INFO_EX>() as u32;
+    if unsafe { SetFileInformationByHandle(file.as_raw_handle(), FileDispositionInfoEx, (&raw const info).cast(), size) } != 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if !matches!(error.raw_os_error(), Some(1 | 50 | 87)) {
+        return Err(error);
+    }
+    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+    let size = size_of::<FILE_DISPOSITION_INFO>() as u32;
+    if unsafe { SetFileInformationByHandle(file.as_raw_handle(), FileDispositionInfo, (&raw const info).cast(), size) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn owned_files(manifest: &Path, text: &str) -> io::Result<Vec<(PathBuf, Option<String>)>> {
+    let mut lines = text.lines();
+    if !text.is_empty() && !matches!(lines.next(), Some(OWNED_HEADER | NONE_COLLECTED)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} was not written by mod-corpus; choose another --out", manifest.display()),
+        ));
+    }
+    lines
+        .map(|line| {
+            let (name, identity) = line.split_once('\t').map_or((line, None), |(name, identity)| (name, Some(identity)));
+            let identity = identity.map(identity_text);
+            owned_path(name)
+                .filter(|_| identity != Some(None))
+                .map(|file| (file, identity.flatten()))
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("{} names {line:?}, which mod-corpus never writes", manifest.display()),
+                    )
+                })
+        })
+        .collect()
+}
+
+fn listed(root: &Path) -> io::Result<Option<Vec<PathBuf>>> {
+    let manifest = root.join(OWNED);
+    match fs::read_to_string(&manifest) {
+        Ok(text) => owned_files(&manifest, &text).map(|files| Some(files.into_iter().map(|(file, _)| file).filter(|file| root.join(file).is_file()).collect())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn owned_path(line: &str) -> Option<PathBuf> {
+    let parts: Vec<&str> = line.split('/').collect();
+    let safe = |part: &str| {
+        !part.is_empty()
+            && part != "."
+            && part != ".."
+            && !part.contains(['\\', ':', '\0'])
+    };
+    let shaped = match parts.as_slice() {
+        [file] => file.ends_with(".sha256"),
+        [_, file] => file.ends_with(".txt"),
+        _ => false,
+    };
+    (shaped && parts.iter().all(|part| safe(part))).then(|| parts.iter().collect())
+}
 
 #[derive(Clone, Copy)]
 pub(super) enum Mode {
@@ -41,28 +315,25 @@ impl Write for Fingerprint {
 pub(super) struct Writer {
     dir: PathBuf,
     scratch: Vec<String>,
-    error: Error,
+    output: Arc<Output>,
     mode: Mode,
     digests: Arc<Mutex<BTreeMap<String, Fingerprint>>>,
 }
 
 impl Writer {
-    pub fn new(dir: PathBuf, error: Error, mode: Mode) -> Self {
-        let output = if matches!(mode, Mode::Text) {
-            dir.as_path()
-        } else {
-            dir.parent().unwrap()
-        };
-        if let Err(why) = fs::create_dir_all(output) {
-            error.lock().unwrap().get_or_insert(why);
+    pub fn new(output: &Arc<Output>, stack: &str, mode: Mode) -> Self {
+        let dir = output.root.join(stack);
+        if matches!(mode, Mode::Text)
+            && let Err(why) = fs::create_dir_all(&dir)
+        {
+            output.error.lock().unwrap().get_or_insert(why);
         }
-        let scratch = dir
-            .parent()
-            .unwrap()
+        let scratch = output
+            .root
             .parent()
             .unwrap()
             .join("scratch")
-            .join(dir.file_name().unwrap());
+            .join(stack);
         let mut prefixes = vec![scratch.to_string_lossy().into_owned()];
         if let Ok(absolute) = fs::canonicalize(&scratch) {
             let absolute = absolute.to_string_lossy();
@@ -86,7 +357,7 @@ impl Writer {
         Self {
             dir,
             scratch,
-            error,
+            output: Arc::clone(output),
             mode,
             digests: Arc::default(),
         }
@@ -95,10 +366,7 @@ impl Writer {
     pub fn write(&self, reader: &str, value: &impl Debug) {
         let result = (|| match self.mode {
             Mode::Text => {
-                let file = fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(self.dir.join(format!("{reader}.txt")))?;
+                let file = self.output.open(&self.dir.join(format!("{reader}.txt")))?;
                 self.write_to(io::BufWriter::new(file), value)
             }
             Mode::Digest => {
@@ -121,6 +389,7 @@ impl Writer {
 
     pub fn finish(&self) {
         if matches!(self.mode, Mode::Text) {
+            self.output.close(&self.dir);
             return;
         }
         let result = (|| {
@@ -128,7 +397,7 @@ impl Writer {
                 "{}.sha256",
                 self.dir.file_name().unwrap().to_string_lossy()
             ));
-            let mut file = io::BufWriter::new(fs::File::create(path)?);
+            let mut file = io::BufWriter::new(self.output.open(&path)?);
             for (reader, digest) in self.digests.lock().unwrap().iter() {
                 writeln!(
                     file,
@@ -139,12 +408,13 @@ impl Writer {
             }
             file.flush()
         })();
+        self.output.close(&self.dir);
         self.record(result);
     }
 
     fn record(&self, result: io::Result<()>) {
         if let Err(error) = result {
-            self.error.lock().unwrap().get_or_insert(error);
+            self.output.error.lock().unwrap().get_or_insert(error);
         }
     }
 }
@@ -280,6 +550,9 @@ fn changed(base: &Path, head: &Path) -> io::Result<Option<(usize, String, String
 
 fn files(dir: &Path) -> io::Result<BTreeSet<PathBuf>> {
     let mut files = BTreeSet::new();
+    if let Some(listed) = listed(dir)? {
+        return Ok(listed.into_iter().collect());
+    }
     for stack in fs::read_dir(dir)? {
         let stack = stack?;
         if stack.file_type()?.is_dir() {
@@ -323,11 +596,15 @@ pub(super) fn diff(base: &Path, head: &Path) -> io::Result<String> {
     if !base.is_dir() || !head.is_dir() {
         return Ok(String::new());
     }
+    if [&base, &head].into_iter().any(|side| fs::read_to_string(side.join(OWNED)).is_ok_and(|text| text.lines().next() == Some(NONE_COLLECTED))) {
+        return Ok(String::new());
+    }
     let (before, after) = (files(&base)?, files(&head)?);
     let mut out = String::new();
     for file in before.union(&after) {
         if file.extension().is_some_and(|ext| ext == "sha256") {
-            let (a, b) = (manifest(&base.join(file))?, manifest(&head.join(file))?);
+            let held = |side: &Path, files: &BTreeSet<PathBuf>| if files.contains(file) { manifest(&side.join(file)) } else { Ok(BTreeMap::new()) };
+            let (a, b) = (held(&base, &before)?, held(&head, &after)?);
             for reader in a.keys().chain(b.keys()).collect::<BTreeSet<_>>() {
                 let name = format!("{}/{reader}", file.file_stem().unwrap().to_string_lossy());
                 match (a.get(reader), b.get(reader)) {
@@ -402,13 +679,12 @@ mod tests {
     #[test]
     fn digest_matches_normalized_text_and_sorts_repeated_readers() -> io::Result<()> {
         let dir = scratch("corpus-digests");
-        let error = Error::default();
-        let digest = Writer::new(
-            dir.join("hash/values/stack.mod"),
-            error.clone(),
-            Mode::Digest,
+        let (hashed, texts) = (
+            Output::prepare(&dir.join("hash/values"))?,
+            Output::prepare(&dir.join("text/values"))?,
         );
-        let text = Writer::new(dir.join("text/values/stack.mod"), error.clone(), Mode::Text);
+        let digest = Writer::new(&hashed, "stack.mod", Mode::Digest);
+        let text = Writer::new(&texts, "stack.mod", Mode::Text);
         for (writer, root) in [(&digest, "hash"), (&text, "text")] {
             writer.write(
                 "z",
@@ -423,7 +699,7 @@ mod tests {
             writer.write("a", &());
             writer.finish();
         }
-        assert!(error.lock().unwrap().is_none());
+        assert!(hashed.take_error().is_none() && texts.take_error().is_none());
         let path = dir.join("hash/values/stack.mod.sha256");
         assert!(fs::read_to_string(&path)?.starts_with("a "));
         let entries = manifest(&path)?;
@@ -434,6 +710,7 @@ mod tests {
                 format!("{:x} {}", Sha256::digest(&bytes), bytes.len())
             );
         }
+        drop((digest, text, hashed, texts));
         fs::remove_dir_all(dir)
     }
 
@@ -441,8 +718,8 @@ mod tests {
     fn digest_diff_reports_changed_and_one_sided_readers_and_stacks() -> io::Result<()> {
         let dir = scratch("corpus-digest-diff");
         let (base, head) = (dir.join("base"), dir.join("head"));
-        let a = Writer::new(base.join("values/stack"), Error::default(), Mode::Digest);
-        let b = Writer::new(head.join("values/stack"), Error::default(), Mode::Digest);
+        let a = Writer::new(&Output::prepare(&base.join("values"))?, "stack", Mode::Digest);
+        let b = Writer::new(&Output::prepare(&head.join("values"))?, "stack", Mode::Digest);
         a.write("reader", &1);
         b.write("reader", &2);
         a.write("gone", &());
@@ -453,16 +730,19 @@ mod tests {
         assert!(text.contains("stack/reader: differs"));
         assert!(text.contains("stack/gone: only in base"));
         assert!(text.contains("stack/new: only in head"));
-        fs::copy(
-            base.join("values/stack.sha256"),
+        fs::write(
             head.join("values/stack.sha256"),
+            fs::read(base.join("values/stack.sha256"))?,
         )?;
         assert_eq!(diff(&base, &head)?, "values identical\n");
+        drop(a);
         fs::rename(
             base.join("values/stack.sha256"),
             base.join("values/other.sha256"),
         )?;
+        fs::write(base.join("values").join(OWNED), "mod-corpus values\nother.sha256\n")?;
         assert!(diff(&base, &head)?.contains("other/reader: only in base"));
+        drop(b);
         fs::remove_dir_all(dir)
     }
 
@@ -472,8 +752,8 @@ mod tests {
         let (base, head) = (dir.join("base"), dir.join("head"));
         assert_eq!(diff(&base, &head)?, "");
         let (a, b) = (
-            Writer::new(base.join("values/stack"), Arc::default(), Mode::Text),
-            Writer::new(head.join("values/stack"), Arc::default(), Mode::Text),
+            Writer::new(&Output::prepare(&base.join("values"))?, "stack", Mode::Text),
+            Writer::new(&Output::prepare(&head.join("values"))?, "stack", Mode::Text),
         );
         a.write("reader", &vec![1, 2]);
         b.write("reader", &vec![1, 3]);
@@ -501,11 +781,64 @@ mod tests {
             head.join("values/stack/reader.txt"),
             fs::read(base.join("values/stack/reader.txt"))?,
         )?;
+        drop(b);
         fs::rename(
             head.join("values/stack/new.txt"),
             head.join("values/stack/gone.txt"),
         )?;
-        assert_eq!(diff(&base, &head)?, "values identical\n");
+        fs::write(head.join("values").join(OWNED), "mod-corpus values\nstack/reader.txt\nstack/gone.txt\n")?;
+        fs::write(base.join("values/notes.md"), "not a value")?;
+        fs::write(head.join("values/stack/notes.txt"), "not a value either")?;
+        assert_eq!(diff(&base, &head)?, "values identical\n", "files no run wrote are not values");
+        drop(a);
+        fs::remove_dir_all(dir)
+    }
+
+    #[test]
+    fn a_reused_output_replaces_only_the_values_a_run_wrote() -> io::Result<()> {
+        let dir = scratch("corpus-owned");
+        let root = dir.join("values");
+        fs::create_dir_all(root.join("stack"))?;
+        fs::write(root.join("notes.md"), "kept")?;
+        fs::write(root.join("stack/mine.txt"), "kept")?;
+        let output = Output::prepare(&root)?;
+        let busy = Output::prepare(&root).err().expect("a second run into the same folder is refused");
+        assert!(busy.to_string().contains("another mod-corpus run"), "{busy}");
+        let text = Writer::new(&output, "stack", Mode::Text);
+        text.write("reader", &1);
+        text.write("reader", &2);
+        Writer::new(&output, "other", Mode::Digest).finish();
+        assert!(output.take_error().is_none());
+        assert_eq!(fs::read_to_string(root.join("stack/reader.txt"))?, "1\n2\n");
+        drop(text);
+        drop(output);
+
+        let output = Output::prepare(&root)?;
+        assert!(!root.join("stack/reader.txt").exists());
+        assert!(!root.join("other.sha256").exists());
+        assert_eq!(fs::read_to_string(root.join("notes.md"))?, "kept");
+        assert_eq!(fs::read_to_string(root.join("stack/mine.txt"))?, "kept");
+        let text = Writer::new(&output, "stack", Mode::Text);
+        text.write("reader", &3);
+        text.write("mine", &4);
+        let refused = output.take_error().expect("an unowned report is refused");
+        assert!(refused.to_string().contains("not written by mod-corpus"), "{refused}");
+        assert_eq!(fs::read_to_string(root.join("stack/reader.txt"))?, "3\n");
+        assert_eq!(fs::read_to_string(root.join("stack/mine.txt"))?, "kept");
+        drop(text);
+        drop(output);
+
+        fs::rename(root.join("stack/reader.txt"), root.join("stack/moved.txt"))?;
+        fs::write(root.join("stack/reader.txt"), "the user's")?;
+        let unconfirmed = Output::prepare(&root).err().expect("a report that is not the one written is refused, not replaced");
+        assert!(unconfirmed.to_string().contains("cannot confirm"), "{unconfirmed}");
+        assert_eq!(fs::read_to_string(root.join("stack/reader.txt"))?, "the user's", "a file put where a report was is not the report");
+
+        fs::write(root.join(OWNED), "mod-corpus values\nnotes.md\n")?;
+        assert!(Output::prepare(&root).is_err());
+        fs::write(root.join(OWNED), "someone else's\n")?;
+        assert!(Output::prepare(&root).is_err());
+        assert_eq!(fs::read_to_string(root.join("notes.md"))?, "kept");
         fs::remove_dir_all(dir)
     }
 

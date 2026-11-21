@@ -294,6 +294,7 @@ struct Pending {
     items: Vec<(Item, ItemId)>,
     fresh: HashMap<(u32, u64), Vec<usize>>,
     parts: BTreeMap<u128, Part>,
+    withdrawn: Vec<u128>,
     holds: Vec<HoldRow>,
     costs: HashMap<u32, CostHour>,
     raws: HashMap<u32, RawHour>,
@@ -323,6 +324,10 @@ impl PowerLedger {
             return NONE;
         }
         self.links.get(&raw).copied().unwrap_or(NONE)
+    }
+
+    fn sole(&self, holder: u32, raw: u32) -> bool {
+        holder != NONE && self.aliases.get(&holder).is_some_and(|raws| raws.as_slice() == [raw])
     }
 
     fn read_identities(&mut self, hour: &Hour<'_>) {
@@ -446,7 +451,10 @@ impl PowerLedger {
         let total = Self::item_total(own, pending, part.holder, part.currency, part.ordinal)?;
         if !item.charged {
             for _ in 0..part.payments {
-                tally::count(total, true);
+                match part.spent {
+                    Recorded::Value(_) => tally::count(total, true),
+                    Recorded::NotRecorded => tally::unknown(total),
+                }
             }
             return Ok(());
         }
@@ -576,8 +584,23 @@ impl PowerLedger {
         }
         let publications = inputs::publications(hour)?;
         if !publications.backlog {
+            let published: HashSet<u32> = publications.rows.iter().map(|publication| publication.country).collect();
             for publication in publications.rows {
                 self.publish(hour, own, witnesses, pending, run_first, &publication)?;
+            }
+            let today = midnight(hour.hour);
+            let open: Vec<u32> = self
+                .parts
+                .iter()
+                .filter(|(_, (day, keys))| *day == today && !keys.is_empty())
+                .filter(|(holder, _)| **holder != NONE)
+                .flat_map(|(holder, _)| self.aliases.get(holder).into_iter().flatten().copied())
+                .filter(|raw| !published.contains(raw))
+                .collect();
+            for raw in open {
+                if inputs::holds_no_costs(hour, raw)? {
+                    self.publish(hour, own, witnesses, pending, run_first, &inputs::Publication { country: raw, costs: Vec::new() })?;
+                }
             }
         }
         for (holder, raw) in std::mem::take(&mut pending.daily) {
@@ -616,6 +639,22 @@ impl PowerLedger {
         let raw = publication.country;
         let holder = self.slot(raw);
         let daily = inputs::daily(hour, raw)?;
+        let today = midnight(at);
+        let sole = self.sole(holder, raw);
+        let mut replaced: HashSet<u64> = publication.costs.iter().filter(|cost| midnight(cost.day_hour) == today).map(|cost| cost.pp_sequence).collect();
+        if publication.costs.is_empty()
+            && let Some(daily) = &daily
+            && midnight(daily.day_hour) == today
+            && daily.pp_cost_raw == Some(0)
+            && let Some(sequence) = daily.pp_sequence
+            && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(daily.epoch, at, Streams::PP_DAILY_COSTS, at))
+        {
+            replaced.insert(sequence);
+            if sole {
+                self.steady.remove(&holder);
+            }
+        }
+        let mut produced = HashSet::new();
         let mut applications: BTreeMap<(u64, i32, u64), Vec<&CountryPowerDailyCostRow>> = BTreeMap::new();
         for cost in &publication.costs {
             applications.entry((cost.epoch, cost.day_hour, cost.pp_sequence)).or_default().push(cost);
@@ -655,10 +694,10 @@ impl PowerLedger {
                 entry.2 = entry.2.min(cost.ordinal);
             }
             let day = midnight(day_hour);
-            let today = day == midnight(at);
+            let opens = day == today;
             for (ordinal, (sum, payments, first)) in items {
                 let key = part_key(holder, POLITICAL, ordinal);
-                let held = if today { Self::held_part(own, pending, key, day)? } else { None };
+                let held = if opens { Self::held_part(own, pending, key, day)? } else { None };
                 let part = Part {
                     holder,
                     currency: POLITICAL,
@@ -671,11 +710,44 @@ impl PowerLedger {
                     cost_ordinal: Some(first),
                     read: held.as_ref().map_or(at, |held| held.read),
                 };
-                if today {
+                if opens {
+                    produced.insert(key);
                     self.open_part(pending, part);
                 } else {
                     Self::settle(own, pending, &part)?;
                 }
+            }
+        }
+        if !replaced.is_empty() && holder != NONE {
+            self.withdraw(own, pending, holder, today, &replaced, &produced, sole)?;
+        }
+        Ok(())
+    }
+
+    fn withdraw(&mut self, own: &Rows<'_>, pending: &mut Pending, holder: u32, today: i32, replaced: &HashSet<u64>, produced: &HashSet<u128>, sole: bool) -> io::Result<()> {
+        let Some((_, open)) = self.parts.get(&holder) else { return Ok(()) };
+        let mut dropped = Vec::new();
+        for &key in open.iter().filter(|key| !produced.contains(*key)) {
+            if let Some(part) = Self::held_part(own, pending, key, today)?
+                && part.cost_ordinal.is_some()
+                && part.sequence.is_some_and(|sequence| replaced.contains(&sequence))
+            {
+                dropped.push(part);
+            }
+        }
+        if sole {
+            if let Some((_, open)) = self.parts.get_mut(&holder) {
+                open.retain(|key| dropped.iter().all(|part| part.key() != *key));
+            }
+            for part in dropped {
+                pending.parts.remove(&part.key());
+                pending.withdrawn.push(part.key());
+            }
+        } else {
+            for mut part in dropped {
+                part.covered = false;
+                part.spent = Recorded::NotRecorded;
+                pending.parts.insert(part.key(), part);
             }
         }
         Ok(())
@@ -960,6 +1032,9 @@ impl Writer for PowerLedger {
         for (key, part) in &pending.parts {
             let cells = cells(part, out)?;
             out.set(TableId::PowerDayParts, *key, cells);
+        }
+        for &key in &pending.withdrawn {
+            out.delete(TableId::PowerDayParts, key);
         }
         partial(hour, out);
         self.idle = !current && self.holds.is_empty();

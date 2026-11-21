@@ -9,7 +9,7 @@ mod tests;
 
 use super::{
     BLOCK, FrameEntry, LIFETIMES, MISSING, PartEntry, RAW, READ, RUNS, SECOND, STRINGS, TOUCHED, TableEntry, UNRECORDED, column_stream, get_status,
-    get_varint, get_wide, lists, unzig, unzig_wide,
+    get_code, get_varint, get_wide, lists, unzig, unzig_wide,
 };
 use crate::{
     invalid,
@@ -1385,7 +1385,7 @@ impl Part {
                         events.push((hour, Event::List(form, &raw[start + 1..cursor])));
                     }
                 } else {
-                    let code = get_wide(raw, &mut cursor)?;
+                    let code = get_code(raw, &mut cursor)?;
                     let repeats = if opened.model == RUNS { get_varint(raw, &mut cursor)?.min(u64::from(BLOCK)) } else { 0 };
                     for repeat in 0..=repeats {
                         if repeat > 0 {
