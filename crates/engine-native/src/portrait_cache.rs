@@ -2,7 +2,7 @@ use std::{
     marker::PhantomData,
     sync::{
         OnceLock,
-        atomic::{Ordering, fence},
+        atomic::{AtomicUsize, Ordering, fence},
     },
 };
 
@@ -79,8 +79,57 @@ impl<'a> HolderImage<'a> {
     }
 }
 
+pub struct Readers(AtomicUsize);
+
+impl Readers {
+    pub const fn new() -> Self {
+        Self(AtomicUsize::new(0))
+    }
+
+    pub fn enter(&self) -> Reader<'_> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Reader(self)
+    }
+
+    pub fn idle(&self) -> bool {
+        self.0.load(Ordering::SeqCst) == 0
+    }
+}
+
+impl Default for Readers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct Reader<'a>(&'a Readers);
+
+impl Drop for Reader<'_> {
+    fn drop(&mut self) {
+        self.0.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+pub struct Reading<'a> {
+    _reader: Reader<'a>,
+    image: HolderImage<'a>,
+}
+
+impl<'a> Reading<'a> {
+    pub fn new(reader: Reader<'a>, image: HolderImage<'a>) -> Self {
+        Self {
+            _reader: reader,
+            image,
+        }
+    }
+
+    pub fn image(&self) -> HolderImage<'_> {
+        self.image
+    }
+}
+
 pub trait PreImages: Sync {
-    fn image(&self, array: usize) -> Option<Result<HolderImage<'_>, &'static str>>;
+    fn image(&self, array: usize) -> Option<Result<Reading<'_>, &'static str>>;
 }
 
 static PRE_IMAGES: OnceLock<&'static dyn PreImages> = OnceLock::new();
@@ -97,7 +146,7 @@ pub fn settled<T>(
     fence(Ordering::SeqCst);
     match PRE_IMAGES.get().and_then(|images| images.image(array)) {
         None => live,
-        Some(Ok(holder)) => image(holder),
+        Some(Ok(reading)) => image(reading.image()),
         Some(Err(reason)) => Err(reason),
     }
 }
@@ -111,13 +160,15 @@ pub(crate) mod test_images {
         static IMAGE: Cell<Option<(usize, HolderImage<'static>)>> = const { Cell::new(None) };
     }
 
+    static READERS: Readers = Readers::new();
+
     struct ThreadImages;
     impl PreImages for ThreadImages {
-        fn image(&self, array: usize) -> Option<Result<HolderImage<'_>, &'static str>> {
+        fn image(&self, array: usize) -> Option<Result<Reading<'_>, &'static str>> {
             IMAGE
                 .get()
                 .filter(|(at, _)| *at == array)
-                .map(|(_, image)| Ok(image))
+                .map(|(_, image)| Ok(Reading::new(READERS.enter(), image)))
         }
     }
 
