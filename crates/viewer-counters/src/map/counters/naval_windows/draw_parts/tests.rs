@@ -1,6 +1,6 @@
 use super::*;
 use crate::map::counters::gui_windows;
-use installed_content_core::gui::native;
+use content_reader_core::gui::native;
 use std::sync::Arc;
 use viewer_foundation::map::{
     native_gui::{
@@ -58,7 +58,7 @@ fn reference_place(
 
 fn native_asset() -> Arc<library::Effect> {
     let program =
-        installed_content_core::pdxshader::program::read_with(b"gfx/FX/naval_draw_fixture.lua", &|_| {
+        content_reader_core::pdxshader::program::read_with(b"gfx/FX/naval_draw_fixture.lua", &|_| {
             Some(b"PixelShader={MainCode P [[ ]]}".to_vec())
         })
         .unwrap();

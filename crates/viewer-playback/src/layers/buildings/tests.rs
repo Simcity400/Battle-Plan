@@ -8,7 +8,7 @@ use crate::{
     },
     playhead_host::{MapSide, open, units::Units},
 };
-use installed_content_core::{
+use content_reader_core::{
     buildings::{BuildingType, Buildings as Types},
     positions::BuildingPosition,
 };

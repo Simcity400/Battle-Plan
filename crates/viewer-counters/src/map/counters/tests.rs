@@ -258,9 +258,9 @@ fn layout_gui(bytes: &[u8]) -> native::Guis {
 
 #[test]
 fn port_slots_are_is_port_types_and_their_redirects() {
-    let definitions = installed_content_core::buildings::parse(
+    let definitions = content_reader_core::buildings::parse(
         b"buildings={Port={is_port=yes spawn_point=Harbour} depot={}} spawn_points={Harbour={}}",
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     )
     .unwrap();
     assert_eq!(
@@ -1542,7 +1542,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
         wing_types: Ok(Arc::new(Default::default())),
         mission_content: Err("not needed".into()),
         port_mission_defines: viewer_foundation::map::port_mission_defines::Defines::read(
-            &installed_content_core::defines::Defines::new().unwrap(),
+            &content_reader_core::defines::Defines::new().unwrap(),
         ),
         anchors: Arc::new(Default::default()),
         default_anchors: Arc::new(Default::default()),
@@ -4018,7 +4018,7 @@ fn counter_cutoffs_preserve_visibility_and_limit_zoom_lift() {
 
 #[test]
 fn counter_defines_read_each_define_through_its_native_getter() {
-    let defines = installed_content_core::defines::Defines::new().unwrap();
+    let defines = content_reader_core::defines::Defines::new().unwrap();
     let others = PriorityTable::ALL[1..]
         .iter()
         .enumerate()
@@ -4700,7 +4700,7 @@ fn flag_fixture<const N: usize>(names: [&str; N]) -> Arc<LazyFlags> {
         .into();
     let pages = atlas_pages::CellPages::plan([10, 7], 8192, "flags").unwrap();
     let read: FlagReader = Arc::new(|_: &str| {
-        Some(installed_content_image::Rgba8Image {
+        Some(content_reader_image::Rgba8Image {
             width: 10,
             height: 7,
             pixels: vec![9; 280],
@@ -4725,7 +4725,7 @@ fn hour_flag_warming_uses_recorded_candidates_at_all_three_sizes() {
                 let calls = Arc::clone(&reads);
                 let read: FlagReader = Arc::new(move |key| {
                     calls.lock().unwrap().push((cell, key.to_owned()));
-                    (key != "COS_group").then(|| installed_content_image::Rgba8Image {
+                    (key != "COS_group").then(|| content_reader_image::Rgba8Image {
                         width: cell[0],
                         height: cell[1],
                         pixels: vec![7; (cell[0] * cell[1] * 4) as usize],
@@ -4992,7 +4992,7 @@ fn an_icon_wholly_outside_the_viewport_and_its_pad_is_dropped() {
 
 #[test]
 fn air_base_icons_hide_only_on_an_answered_no() {
-    use installed_content_core::map::MapData;
+    use content_reader_core::map::MapData;
     let map = MapData {
         width: 4,
         height: 3,
@@ -5090,7 +5090,7 @@ fn air_base_icons_hide_only_on_an_answered_no() {
 
 #[test]
 fn province_lookup_truncates_and_rejects_what_is_not_a_province() {
-    use installed_content_core::map::MapData;
+    use content_reader_core::map::MapData;
     use std::collections::BTreeMap;
     let map = MapData {
         width: 4,

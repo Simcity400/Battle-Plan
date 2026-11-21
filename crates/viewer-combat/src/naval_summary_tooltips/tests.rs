@@ -254,7 +254,7 @@ fn weapon_damage_summary_includes_piercing_in_native_order() {
         original_health: 400_000,
         ..Default::default()
     };
-    let defines = installed_content_naval_combat_defines::naval_combat_defines::Defines {
+    let defines = content_reader_naval_combat_defines::naval_combat_defines::Defines {
         summary_fixed: [0; 14],
         summary_integer: [0; 3],
         silhouette_planes: [0; 6],
@@ -263,7 +263,7 @@ fn weapon_damage_summary_includes_piercing_in_native_order() {
         sortie_stance_ratios: vec![100_000],
         base_carrier_sortie_efficiency: 0,
         selected_sortie_initial_time: 0,
-        piercing: Ok(installed_content_naval_combat_defines::naval_combat_defines::Piercing {
+        piercing: Ok(content_reader_naval_combat_defines::naval_combat_defines::Piercing {
             thresholds: vec![40_000, 60_000],
             critical_values: vec![10_000, 20_000],
         }),
@@ -363,7 +363,7 @@ fn positioning_hovers_list_the_side_sources_and_refuse_without_trees() {
         &definitions,
         crate::naval_labels::english(),
     );
-    let defines = installed_content_naval_combat_defines::naval_combat_defines::Defines {
+    let defines = content_reader_naval_combat_defines::naval_combat_defines::Defines {
         summary_fixed: [0; 14],
         summary_integer: [0; 3],
         silhouette_planes: [0; 6],
@@ -553,7 +553,7 @@ fn screen_box_prefixes_the_country_correction_only_on_its_correction_branch() {
     .map(|(key, value)| (key.to_owned(), value.to_owned()))
     .collect();
     loc.language = "english".into();
-    let defines = installed_content_naval_combat_defines::naval_combat_defines::Defines {
+    let defines = content_reader_naval_combat_defines::naval_combat_defines::Defines {
         summary_fixed: [0; 14],
         summary_integer: [0; 3],
         silhouette_planes: [0; 6],
@@ -600,7 +600,7 @@ fn screening_hovers_keep_complete_submarine_counts_and_bonuses_without_unneeded_
             ..Default::default()
         })
         .collect::<Vec<_>>();
-    let defines = installed_content_naval_combat_defines::naval_combat_defines::Defines {
+    let defines = content_reader_naval_combat_defines::naval_combat_defines::Defines {
         summary_fixed: {
             let mut values = [0; 14];
             values[7] = 50_000;
@@ -690,8 +690,8 @@ fn screening_hovers_keep_complete_submarine_counts_and_bonuses_without_unneeded_
         &[(b"sortie_bonus", 1), (b"retreat_bonus", 2)],
         None,
     );
-    let authored = installed_content_core::parser::parse(b"sortie_bonus=0.1 retreat_bonus=0.2").unwrap();
-    let authored = installed_content_core::modifiers::targeted(&authored.items).modifiers;
+    let authored = content_reader_core::parser::parse(b"sortie_bonus=0.1 retreat_bonus=0.2").unwrap();
+    let authored = content_reader_core::modifiers::targeted(&authored.items).modifiers;
     assert_eq!(
         screening_description(true, &census, &screening, &defines, "", Ok(&authored), Ok(&definitions), &NoIcons, &loc).unwrap(),
         (concat!("Battle Line: \u{11}H100%\u{11}!\nCombined: \u{11}H100%\u{11}!\n\n",

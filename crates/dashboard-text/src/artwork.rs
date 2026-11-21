@@ -1,6 +1,6 @@
 
 use base64::Engine;
-use installed_content_image::Rgba8Image;
+use content_reader_image::Rgba8Image;
 use std::{
     collections::{HashMap, HashSet},
     fmt, fs, io,

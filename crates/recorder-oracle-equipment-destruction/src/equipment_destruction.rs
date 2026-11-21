@@ -1,5 +1,5 @@
 use super::{Report, complete, country_context, invalid, required_country_tag};
-use installed_content_save::Save;
+use content_reader_save::Save;
 use replay::{campaign::Replay, campaign::SeekResult};
 use replay_data::{
     rows::CountryRow, rows::DivisionDeletionDisposition, rows::EquipmentDestructionCause,

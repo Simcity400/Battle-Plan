@@ -1,4 +1,4 @@
-use installed_content_core::{province_geometry::Bounds, province_geometry::ProvinceGeometry};
+use content_reader_core::{province_geometry::Bounds, province_geometry::ProvinceGeometry};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RegionGeometry {

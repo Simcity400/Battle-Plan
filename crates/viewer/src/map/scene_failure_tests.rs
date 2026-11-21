@@ -74,7 +74,7 @@ impl Fixture {
         })?;
         let document = crate::document::Document::load(
             &input.replay,
-            &installed_content_core::ResolveOptions {
+            &content_reader_core::ResolveOptions {
                 game_dir: input.game.clone(),
                 user_dir: input.user.clone(),
                 cache_dir: input.cache.clone(),

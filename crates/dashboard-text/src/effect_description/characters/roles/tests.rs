@@ -518,7 +518,7 @@ fn advisor_role_expands_modifiers_only_after_wrapper_substitution() {
             ]
             .map(|(key, value)| (key.into(), value.into())),
         )
-        .collect::<installed_content_localisation::localisation::Localisation>();
+        .collect::<content_reader_localisation::localisation::Localisation>();
     localisation.language = fixture.catalogue.localisation.language.clone();
     fixture.catalogue.localisation = localisation.into();
     let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =

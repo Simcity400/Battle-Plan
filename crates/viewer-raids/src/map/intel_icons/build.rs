@@ -1,8 +1,8 @@
 
 use super::values::{self, ONE};
 use super::*;
-use installed_content_country_names::country_names::CountryNames;
-use installed_content_localisation::localisation::Argument as Arg;
+use content_reader_country_names::country_names::CountryNames;
+use content_reader_localisation::localisation::Argument as Arg;
 use replay_data::{
     rows::CharacterOperativeRow, rows::PORTRAIT_LARGE, rows::ProvinceRow, rows::Recorded,
     rows::StrategicOperativeRow, rows::portrait_entry,
@@ -722,7 +722,7 @@ impl<'h, 'f> Hour<'h, 'f> {
                     .into_iter()
                     .find(|(handle, _)| *handle == row.id)
                     .ok_or("the operative is not among its target's recorded counteroperatives")?;
-                Ok(installed_content_core::fixed5::fixed5_to_string(contribution.1, 2))
+                Ok(content_reader_core::fixed5::fixed5_to_string(contribution.1, 2))
             }
             ROOT_OUT => {
                 let key = (
@@ -992,7 +992,7 @@ impl<'h, 'f> Hour<'h, 'f> {
     pub fn definition(
         &self,
         row: &OperationRow,
-    ) -> Result<&'h installed_content_core::intelligence::Operation, String> {
+    ) -> Result<&'h content_reader_core::intelligence::Operation, String> {
         let spelling =
             super::super::raids::spelling(self.world, row.definition_token, "operation")?;
         self.assets
@@ -1047,7 +1047,7 @@ impl<'h, 'f> Hour<'h, 'f> {
 }
 
 pub(super) fn running_duration_text(
-    localisation: &installed_content_localisation::localisation::Localisation,
+    localisation: &content_reader_localisation::localisation::Localisation,
     remaining: i32,
 ) -> Result<String, String> {
     let number = values::coloured('G', &remaining.to_string());

@@ -1,7 +1,7 @@
 
 use super::{Carried, Settling, Dirty, Inputs, Layer, List, Num, Text, Upstream, View};
 use crate::playhead_host::mirror::{Cell, Mirror, Mirrors};
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use map_display_data::landscape::{LabelCandidate, LabelName, Labels as Display};
 use playhead::Step;
 use replay_columnar::manifest::Status;

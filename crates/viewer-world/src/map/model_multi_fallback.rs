@@ -11,7 +11,7 @@ use {
     super::equipment_graphics::bridge, super::equipment_graphics::context,
     super::equipment_graphics::legacy, super::model_labels, super::model_labels::Label,
     super::model_selection, super::model_selection::Group, super::model_selection::Template,
-    installed_content_equipment_graphics::equipment_graphics::countries::ModelCountry,
+    content_reader_equipment_graphics::equipment_graphics::countries::ModelCountry,
 };
 
 pub const LABEL_ORDERING: &str = "equipment model option labels unavailable";

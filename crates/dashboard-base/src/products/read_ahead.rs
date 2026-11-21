@@ -60,7 +60,7 @@ fn read(source: &Weak<Source>, mut options: ContentOptions) {
 
 pub(crate) fn warm_guis(catalogue: &Catalogue) {
     if catalogue.content.layers.presentation().shows_visual_mods() {
-        installed_content_core::content::strict(|| drop(catalogue.guis()));
+        content_reader_core::content::strict(|| drop(catalogue.guis()));
     } else {
         drop(catalogue.guis());
     }

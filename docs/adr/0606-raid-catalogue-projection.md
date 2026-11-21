@@ -10,4 +10,4 @@ Map and dashboard joins share the same raid target priorities. For country, use 
 
 Raid unit and ship names use the same name-group database as divisions. Compare groups without case, merge repeated declarations, and apply each group's prefix to both entry lists. A refusal keeps the corresponding group and member names unavailable.
 
-[Raid definitions](../../crates/installed-content-raids/src/raids.rs) · [Raid field reader](../../crates/installed-content-raids/src/raids/reader.rs) · [Target resolution](../../crates/installed-content-raids/src/raids/target.rs) · [Raid names](../../crates/installed-content-raids/src/raids/names.rs) · [Hover formulas](../../crates/installed-content-raids/src/raids/tooltips.rs)
+[Raid definitions](../../crates/content-reader-raids/src/raids.rs) · [Raid field reader](../../crates/content-reader-raids/src/raids/reader.rs) · [Target resolution](../../crates/content-reader-raids/src/raids/target.rs) · [Raid names](../../crates/content-reader-raids/src/raids/names.rs) · [Hover formulas](../../crates/content-reader-raids/src/raids/tooltips.rs)

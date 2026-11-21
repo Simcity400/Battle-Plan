@@ -14,12 +14,12 @@ pub(super) mod hover;
 pub(super) const UNKNOWN: &str = "naval mission operands are undecided (see named input gaps)";
 
 type RegionTopology = (
-    BTreeMap<u32, Vec<installed_content_naval_path::naval_path::RegionEdge>>,
+    BTreeMap<u32, Vec<content_reader_naval_path::naval_path::RegionEdge>>,
     BTreeSet<u32>,
 );
 
 pub(super) struct Content {
-    terrain: installed_content_core::terrain::TerrainDefinitions,
+    terrain: content_reader_core::terrain::TerrainDefinitions,
     pub(super) allegiance_group_cutoff: f32,
     naval_terrain: BTreeMap<u32, Vec<u8>>,
     efficiencies: derive::Defines,
@@ -31,15 +31,15 @@ pub(super) struct Content {
     underway_factor: i64,
     distance_factor: i64,
     edges: OnceLock<RegionTopology>,
-    distances: OnceLock<Mutex<installed_content_naval_path::naval_path::Distances>>,
+    distances: OnceLock<Mutex<content_reader_naval_path::naval_path::Distances>>,
 }
 
 impl Content {
     pub(super) fn read(
-        terrain: installed_content_core::terrain::TerrainDefinitions,
+        terrain: content_reader_core::terrain::TerrainDefinitions,
         layers: &ResolvedLayers,
-        regions: &BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
-        defines: &installed_content_core::defines::Defines,
+        regions: &BTreeMap<u32, content_reader_regions::regions::StrategicRegion>,
+        defines: &content_reader_core::defines::Defines,
     ) -> io::Result<Self> {
         Ok(Self {
             allegiance_group_cutoff: defines.number(
@@ -71,7 +71,7 @@ impl Content {
         })
     }
 
-    fn terrain(&self, region: Option<u32>) -> Fact<&installed_content_core::terrain::TerrainCategory> {
+    fn terrain(&self, region: Option<u32>) -> Fact<&content_reader_core::terrain::TerrainCategory> {
         let at = region
             .and_then(|id| self.naval_terrain.get(&id))
             .and_then(|name| self.terrain.category(name))
@@ -86,8 +86,8 @@ fn data<T: TableSchema>(frame: &DecodedFrame) -> Fact<&[T::Row]> {
 }
 
 type Topology<'a> = Fact<(
-    &'a installed_content_core::province_graph::ProvinceGraph,
-    &'a installed_content_core::province_geometry::ProvinceGeometry,
+    &'a content_reader_core::province_graph::ProvinceGraph,
+    &'a content_reader_core::province_geometry::ProvinceGeometry,
 )>;
 
 pub(super) struct Hour<'a> {
@@ -105,7 +105,7 @@ pub(super) struct Hour<'a> {
     ships: OnceLock<Fact<HashMap<u64, Vec<&'a ShipRow>>>>,
     fleets: Fact<HashMap<u64, &'a FleetRow>>,
     flags: OnceLock<Fact<HashMap<u64, u64>>>,
-    own_distances: Mutex<Option<installed_content_naval_path::naval_path::Distances>>,
+    own_distances: Mutex<Option<content_reader_naval_path::naval_path::Distances>>,
     definitions: Fact<HashMap<u32, &'a ModifierDefinitionRow>>,
     names: Fact<TokenNames<'a>>,
     features: Option<u32>,
@@ -308,7 +308,7 @@ impl<'a> Hour<'a> {
         let key_name = names
             .name(definition.token)
             .map_err(|error| error.to_string())?;
-        let raw = |block: &installed_content_core::modifiers::Modifiers| -> Fact<Option<i64>> {
+        let raw = |block: &content_reader_core::modifiers::Modifiers| -> Fact<Option<i64>> {
             if let Some(reason) = block.unheld.cause() {
                 return Err(format!(
                     "terrain {} modifier {key_name}: {reason}",
@@ -741,7 +741,7 @@ impl<'a> Hour<'a> {
 
     fn admits(&self, name: &str, owner: u32, submarine: bool) -> Fact<bool> {
         let (graph, _) = self.topology.as_ref().map_err(Clone::clone)?;
-        let rule = installed_content_core::adjacency_rules::find(&graph.rules, name)
+        let rule = content_reader_core::adjacency_rules::find(&graph.rules, name)
             .ok_or_else(|| format!("naval adjacency rule {name} is undefined"))?;
         self.moves
             .as_ref()
@@ -838,7 +838,7 @@ impl<'a> Hour<'a> {
         }
         let (edges, sea_regions) = self.content.edges.get_or_init(|| {
             (
-                installed_content_naval_path::naval_path::region_edges(
+                content_reader_naval_path::naval_path::region_edges(
                     graph,
                     geometry,
                     &self.anchors.region_provinces,
@@ -856,7 +856,7 @@ impl<'a> Hour<'a> {
                     .collect(),
             )
         });
-        if !installed_content_naval_path::naval_path::region_reaches(
+        if !content_reader_naval_path::naval_path::region_reaches(
             edges,
             sea_regions,
             from,
@@ -882,7 +882,7 @@ impl<'a> Hour<'a> {
             .content
             .distances
             .get_or_init(|| {
-                Mutex::new(installed_content_naval_path::naval_path::Distances::new(
+                Mutex::new(content_reader_naval_path::naval_path::Distances::new(
                     geometry, ports,
                 ))
             });
@@ -894,7 +894,7 @@ impl<'a> Hour<'a> {
         let mut own = self.own_distances.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let distances = match shared.as_deref_mut() {
             Some(shared) => shared,
-            None => own.get_or_insert_with(|| installed_content_naval_path::naval_path::Distances::new(geometry, ports)),
+            None => own.get_or_insert_with(|| content_reader_naval_path::naval_path::Distances::new(geometry, ports)),
         };
         for province in sea {
             for &base in std::iter::once(&fleet.home_base).chain(hubs.iter()) {

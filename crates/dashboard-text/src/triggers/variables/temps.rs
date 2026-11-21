@@ -1,7 +1,7 @@
 use crate::triggers::Failure;
 
 use super::*;
-use installed_content_core::parser::Value as ParsedValue;
+use content_reader_core::parser::Value as ParsedValue;
 
 enum Right<'v> {
     Scalar(Box<ScopedVariable>),
@@ -394,7 +394,7 @@ impl Evaluator<'_, '_> {
         }
         let destination = self.mutable_temp(&var, scopes, None)?;
         let random = self.next_variable_random(scopes)?;
-        let integer = installed_content_core::parser::read_bool_field(
+        let integer = content_reader_core::parser::read_bool_field(
             item.value.items().unwrap_or_default(),
             "integer",
             false,
@@ -431,7 +431,7 @@ impl Evaluator<'_, '_> {
         }
         let destination = self.mutable_temp(&var, scopes, None)?;
         self.store_description_temp(destination.clone(), 0);
-        let need = installed_content_core::parser::read_bool_field(
+        let need = content_reader_core::parser::read_bool_field(
             item.value.items().unwrap_or_default(),
             "need",
             false,

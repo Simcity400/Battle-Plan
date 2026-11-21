@@ -6,7 +6,7 @@ use crate::map::native_windows::NativeWindows;
 use std::collections::BTreeSet;
 use std::collections::{BTreeMap, HashMap};
 
-use installed_content_core::gui::native;
+use content_reader_core::gui::native;
 
 use super::{
     native_gui::{

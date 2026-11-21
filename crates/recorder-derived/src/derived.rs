@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use installed_content_core::ResolveOptions;
+use content_reader_core::ResolveOptions;
 use replay::campaign::Replay;
 use replay_data::rows::TABLE_COUNT;
 use replay_data::{
@@ -57,7 +57,7 @@ struct Content {
     clocks: BTreeMap<u32, ProvinceClock>,
     temperature: Result<replay_data::temperature::Content, String>,
     terrains: Result<Vec<i64>, String>,
-    layers: installed_content_core::ResolvedLayers,
+    layers: content_reader_core::ResolvedLayers,
 }
 
 fn recorded_stack(sessions: &[SessionStart]) -> io::Result<&Identity> {
@@ -106,13 +106,13 @@ fn content(
         .join("recorder"),
     };
     engine_executable::executable_tables::initialize(&options.game_dir)?;
-    let resolved = installed_content_core::resolve(identity, &options)?.exact()?;
-    let defines = installed_content_core::defines::read(&resolved.layers)?;
+    let resolved = content_reader_core::resolve(identity, &options)?.exact()?;
+    let defines = content_reader_core::defines::read(&resolved.layers)?;
     let defines = day_night::Defines::read(
         |section, name| defines.int32(section, name),
         |section, name| defines.fixed5(section, name),
     )?;
-    let geometry = installed_content_core::province_geometry::ProvinceGeometry::read(&resolved.layers)?;
+    let geometry = content_reader_core::province_geometry::ProvinceGeometry::read(&resolved.layers)?;
     let map = [geometry.width, geometry.height];
     let clocks = geometry
         .centroids
@@ -126,9 +126,9 @@ fn content(
         map[1],
         defines
     );
-    let temperature = installed_content_weather::weather::temperature::read(&resolved.layers)
+    let temperature = content_reader_weather::weather::temperature::read(&resolved.layers)
         .map_err(|error| error.to_string());
-    let terrains = installed_content_core::terrain::read_definitions(&resolved.layers)
+    let terrains = content_reader_core::terrain::read_definitions(&resolved.layers)
         .map(|terrain| {
             terrain
                 .categories

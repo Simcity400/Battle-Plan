@@ -1,10 +1,10 @@
-pub use installed_content_equipment_graphics::equipment_graphics::*;
+pub use content_reader_equipment_graphics::equipment_graphics::*;
 use std::cell::RefCell;
 pub mod bridge;
 pub mod context;
 pub mod legacy;
 
-use installed_content_core::parser::Item;
+use content_reader_core::parser::Item;
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone, Copy)]

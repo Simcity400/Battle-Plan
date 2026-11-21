@@ -5,7 +5,7 @@ use std::{
 };
 mod market;
 
-use installed_content_save::{Save, economy};
+use content_reader_save::{Save, economy};
 use replay_data::{rows::CountryResourceRow, rows::CountryRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
@@ -1180,7 +1180,7 @@ fn compare_purchases(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_core::parser;
+    use content_reader_core::parser;
     use replay_data::{
         rows::CountryExperienceRow, rows::CountryFuelConsumerRow, rows::CountryFuelRow,
         rows::CountryResourceRow, rows::HubMotorizationRow, rows::LexicalTokenRow,
@@ -1243,7 +1243,7 @@ mod tests {
 
     #[test]
     fn failed_economy_tables_preserve_independent_diagnostics_and_strict_result() {
-        let saved = installed_content_save::parse(
+        let saved = content_reader_save::parse(
             br#"HOI4txt
             date=1942.9.6.2 game_unique_id=test version=test game_unique_seed=1 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
             countries={} states={} provinces={}

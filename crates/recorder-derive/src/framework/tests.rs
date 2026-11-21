@@ -1192,7 +1192,7 @@ impl Writer for Thresholds {
 }
 
 fn thresholds() -> Definitions {
-    let needs = installed_content_core::unit_leader::needs::SubUnitNeeds {
+    let needs = content_reader_core::unit_leader::needs::SubUnitNeeds {
         needs: [("infantry".to_owned(), vec![("infantry_equipment".to_owned(), 10_000_000)])].into(),
         dropped: Vec::new(),
     };
@@ -1659,7 +1659,7 @@ fn synthetic_inputs(writers: &[Box<dyn Writer>]) -> Vec<TableId> {
 fn synthetic_definitions(writers: &[Box<dyn Writer>]) -> Definitions {
     let mut held = Definitions::read_none()
         .with_areas(Ok(vec![1_000; 16]))
-        .with_needs(Ok(installed_content_core::unit_leader::needs::SubUnitNeeds::default()))
+        .with_needs(Ok(content_reader_core::unit_leader::needs::SubUnitNeeds::default()))
         .with_regions(Ok(definitions::ProvinceRegions::new([(1, &[0, 1, 2, 3, 4][..]), (2, &[4, 5, 6, 7, 8][..])])));
     for uses in writers.iter().flat_map(|writer| writer.definitions()) {
         if let Definition::Define(define) = uses.definition {

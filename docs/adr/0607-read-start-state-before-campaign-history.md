@@ -16,4 +16,4 @@ Register each resource block name by its C-string prefix and keep entries in ord
 
 State categories compare names with an ASCII-folded identity and retain first-declaration spelling and order. A repeat reuses the object. Localise category descriptions from the effect operand. The colour reader starts from white and applies subsequent authored reads to the existing components, even across files. An unread colour stays absent and the map mode names the states that cannot be coloured. A fully specified later value replaces a prior packed-colour refusal, while a partial value does not.
 
-[State reader](../../crates/installed-content-states/src/states.rs) · [State recovery tests](../../crates/installed-content-states/src/states/tests.rs) · [Category registry](../../crates/installed-content-state-categories/src/state_categories.rs)
+[State reader](../../crates/content-reader-states/src/states.rs) · [State recovery tests](../../crates/content-reader-states/src/states/tests.rs) · [Category registry](../../crates/content-reader-state-categories/src/state_categories.rs)

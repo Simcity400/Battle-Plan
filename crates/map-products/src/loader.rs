@@ -1,5 +1,5 @@
 use crate::{ProductContent, ProductInputs};
-use installed_content_core::ResolvedLayers;
+use content_reader_core::ResolvedLayers;
 pub use map_content::loader::*;
 use std::{io, path::Path, sync::Arc};
 use viewer_foundation::map::{

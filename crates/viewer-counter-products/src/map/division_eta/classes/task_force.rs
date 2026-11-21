@@ -1,7 +1,7 @@
 
 use super::fresh_search::{Inputs, available};
 use game_model::movement::unit::eta_ratio;
-use installed_content_unit_path::unit_path::Fact;
+use content_reader_unit_path::unit_path::Fact;
 use replay_data::{
     rows::FreshTaskForceCounterEta, rows::TaskForceMapMotionRow, rows::TaskForceRow,
 };
@@ -168,7 +168,7 @@ fn remaining(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_core::{
+    use content_reader_core::{
         movement::MovementDefines, movement::MovementMap, movement::Neighbour,
         movement::ProvinceTerrain,
     };

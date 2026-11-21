@@ -179,20 +179,20 @@ fn read_game_settings<T>(read: impl FnOnce(&Path) -> io::Result<T>) -> Result<T,
 }
 fn game_settings() -> Result<VideoSettings, String> {
     parse_game_display(&read_game_settings(
-        installed_content_settings::settings::read_keys,
+        content_reader_settings::settings::read_keys,
     )?)
 }
 fn game_map_ui_scale() -> Option<f64> {
-    let display = read_game_settings(installed_content_settings::settings::read_display).ok()?;
-    let scale = display.screen_scale(&installed_content_settings::settings::desktops().ok()?)?;
+    let display = read_game_settings(content_reader_settings::settings::read_display).ok()?;
+    let scale = display.screen_scale(&content_reader_settings::settings::desktops().ok()?)?;
     dashboard::protocol::MAP_UI_SCALE_RANGE
         .contains(&scale)
         .then(|| (f64::from(scale) * 100.0).round())
 }
 fn parse_game_display(
-    keys: &installed_content_settings::settings::SettingsKeys,
+    keys: &content_reader_settings::settings::SettingsKeys,
 ) -> Result<VideoSettings, String> {
-    use installed_content_settings::settings::constructed;
+    use content_reader_settings::settings::constructed;
     if !keys.is_absent() && !keys.has(&["graphics"]) {
         return Err("Missing graphics block in game settings".to_owned());
     }
@@ -516,7 +516,7 @@ mod tests {
     fn game_display_defaults_keep_scale_and_vsync_without_resizing() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let keys = installed_content_settings::settings::SettingsKeys::read(b"graphics={size={x=2048 y=1152} gui_scale=1.125 fullScreen=no borderless=yes VSync=no}");
+        let keys = content_reader_settings::settings::SettingsKeys::read(b"graphics={size={x=2048 y=1152} gui_scale=1.125 fullScreen=no borderless=yes VSync=no}");
         let settings = parse_game_display(&keys).unwrap();
         assert_eq!(settings.ui_scale, 112.5);
         assert!(settings.use_game_settings && !settings.vsync);
@@ -536,7 +536,7 @@ mod tests {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let parse = |text: &str| {
-            parse_game_display(&installed_content_settings::settings::SettingsKeys::read(
+            parse_game_display(&content_reader_settings::settings::SettingsKeys::read(
                 text.as_bytes(),
             ))
         };

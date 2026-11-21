@@ -25,7 +25,7 @@ Anything the recording didn't capture is shown as missing, never as zero.
 - Hearts of Iron IV, at the exact supported version. The recorder checks the executable's size and hash and refuses anything else.
 - A graphics card for the map. Software rendering works, with a notice.
 
-No installed content are included; the app reads them from your own installation.
+Battle Plan includes nothing from the game: at run time it reads what it needs from your own installation.
 
 The installer puts five files in one folder, with the licence files: `replay-desktop.exe` (the app, which draws the map itself), `battle-plan-recorder.exe` (the tray recorder), `collector.dll` (which the recorder loads into the game), and Microsoft's DirectX shader compiler, `dxcompiler.dll` and `dxil.dll`. The command-line recorder, `recorder.exe`, is built from source.
 
@@ -91,7 +91,7 @@ An editable dashboard of widgets: ranked races, line charts, exact tables, timel
 
 - The recording remembers the exact base game, DLC and mod list it was made with, and playback uses that list, not whatever your launcher has selected. You need the same mods installed for full detail.
 - You can pick visual mods for artwork, interface, fonts and models. They change how things look, never the recorded facts.
-- Shared recordings hold no installed content or file paths, only content identities and hashes. A mismatch is reported, not ignored.
+- Shared recordings hold no copies of your game or mod files and no file paths, only content identities and hashes. A mismatch is reported, not ignored.
 - Recordings from other people are treated as untrusted. Readers check every size and count, and damaged parts become named gaps.
 
 ## Diagnostics and recovery
@@ -114,4 +114,4 @@ Battle Plan is free software under the [MIT License](LICENSE).
 
 This software is based in part on the work of the Independent JPEG Group. It uses the Rust `image` library for several texture formats and includes a modified Rust adaptation of PhysicsFS in the archive reader. The refresh icon is from Lucide. Third-party notices are in [LICENSES](LICENSES/).
 
-Battle Plan is an unofficial project and is not affiliated with or endorsed by Paradox Interactive. Hearts of Iron IV is a trademark of Paradox Interactive AB. The repository contains no installed content, assets, or original game code from the game. The app reads the content it needs from your own installation.
+Battle Plan is an unofficial project and is not affiliated with or endorsed by Paradox Interactive. Hearts of Iron IV is a trademark of Paradox Interactive AB. The repository contains no data, assets or code from the game. At run time the app reads what it needs from your own installation.

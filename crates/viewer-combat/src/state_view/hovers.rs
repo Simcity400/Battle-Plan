@@ -2,8 +2,8 @@ use super::{loc, paths_named, province::Facts};
 use crate::binding::Bindings;
 use crate::modifier_text::{Block, Definitions};
 use crate::tooltips::{hover_text, refuse_hovers, set_hover};
-use installed_content_core::gui::native;
-use installed_content_localisation::localisation::Argument;
+use content_reader_core::gui::native;
+use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{Recorded, tables};
 use replay_frame::frame::DecodedFrame;
 use viewer_foundation::map::perspective::{SharingUnknown, Vision};
@@ -200,7 +200,7 @@ fn region_weather(content: &super::Content, frame: &DecodedFrame, province: u32)
     let definitions = crate::modifier_text::Definitions::read(frame, &content.modifier_names)
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
-    let block = |modifiers: &installed_content_core::modifiers::Modifiers| {
+    let block = |modifiers: &content_reader_core::modifiers::Modifiers| {
         crate::modifier_text::Block::build(&definitions, modifiers).map(|(block, _)| block).map_err(|e| e.to_string())
     };
     let mut sum = crate::modifier_text::Block::default();
@@ -238,7 +238,7 @@ fn region_weather(content: &super::Content, frame: &DecodedFrame, province: u32)
 fn province(content: &super::Content, frame: &DecodedFrame, facts: &Facts) -> Result<String, String> {
     let controller = facts.slot(facts.province.controller)?;
     let key = if facts.slot(facts.state.owner)? == controller { "STATE_PROVINCE_DESC" } else { "STATE_PROVINCE_OCCUPIED_DESC" };
-    let names = installed_content_country_names::country_names::CountryNames::read(frame, &content.localisation);
+    let names = content_reader_country_names::country_names::CountryNames::read(frame, &content.localisation);
     loc(content, key, &[("CONTROLLER", Argument::Text(&names.name(controller)?))])
 }
 

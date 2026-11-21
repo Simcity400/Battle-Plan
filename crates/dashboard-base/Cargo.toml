@@ -11,7 +11,7 @@ doctest = false
 
 [features]
 export-types = []
-test-support = ["replay-frame/test-support", "dashboard-core/test-support", "dashboard-text/test-support", "installed-content-abilities/test-support", "installed-content-core/test-support", "installed-content-country-names/test-support", "installed-content-equipment-graphics/test-support", "installed-content-focus/test-support", "installed-content-gfx/test-support", "installed-content-image/test-support", "installed-content-localisation/test-support", "installed-content-province-area/test-support", "installed-content-regions/test-support", "installed-content-settings/test-support", "installed-content-states/test-support"]
+test-support = ["replay-frame/test-support", "dashboard-core/test-support", "dashboard-text/test-support", "content-reader-abilities/test-support", "content-reader-core/test-support", "content-reader-country-names/test-support", "content-reader-equipment-graphics/test-support", "content-reader-focus/test-support", "content-reader-gfx/test-support", "content-reader-image/test-support", "content-reader-localisation/test-support", "content-reader-province-area/test-support", "content-reader-regions/test-support", "content-reader-settings/test-support", "content-reader-states/test-support"]
 
 [dependencies]
 replay-columnar.workspace = true
@@ -28,18 +28,18 @@ engine-executable.workspace = true
 engine-native.workspace = true
 engine-production.workspace = true
 engine-research.workspace = true
-installed-content-abilities.workspace = true
-installed-content-core.workspace = true
-installed-content-country-names.workspace = true
-installed-content-equipment-graphics.workspace = true
-installed-content-focus.workspace = true
-installed-content-gfx.workspace = true
-installed-content-image.workspace = true
-installed-content-localisation.workspace = true
-installed-content-province-area.workspace = true
-installed-content-regions.workspace = true
-installed-content-settings.workspace = true
-installed-content-states.workspace = true
+content-reader-abilities.workspace = true
+content-reader-core.workspace = true
+content-reader-country-names.workspace = true
+content-reader-equipment-graphics.workspace = true
+content-reader-focus.workspace = true
+content-reader-gfx.workspace = true
+content-reader-image.workspace = true
+content-reader-localisation.workspace = true
+content-reader-province-area.workspace = true
+content-reader-regions.workspace = true
+content-reader-settings.workspace = true
+content-reader-states.workspace = true
 replay-data.workspace = true
 replay-derive.workspace = true
 replay-frame.workspace = true
@@ -60,18 +60,18 @@ zstd = "0.13"
 [dev-dependencies]
 playhead = { path = "../playhead" }
 engine-heap.workspace = true
-installed-content-abilities = { workspace = true, features = ["test-support"] }
-installed-content-core = { workspace = true, features = ["test-support"] }
-installed-content-country-names = { workspace = true, features = ["test-support"] }
-installed-content-equipment-graphics = { workspace = true, features = ["test-support"] }
-installed-content-focus = { workspace = true, features = ["test-support"] }
-installed-content-gfx = { workspace = true, features = ["test-support"] }
-installed-content-image = { workspace = true, features = ["test-support"] }
-installed-content-localisation = { workspace = true, features = ["test-support"] }
-installed-content-province-area = { workspace = true, features = ["test-support"] }
-installed-content-regions = { workspace = true, features = ["test-support"] }
-installed-content-settings = { workspace = true, features = ["test-support"] }
-installed-content-states = { workspace = true, features = ["test-support"] }
+content-reader-abilities = { workspace = true, features = ["test-support"] }
+content-reader-core = { workspace = true, features = ["test-support"] }
+content-reader-country-names = { workspace = true, features = ["test-support"] }
+content-reader-equipment-graphics = { workspace = true, features = ["test-support"] }
+content-reader-focus = { workspace = true, features = ["test-support"] }
+content-reader-gfx = { workspace = true, features = ["test-support"] }
+content-reader-image = { workspace = true, features = ["test-support"] }
+content-reader-localisation = { workspace = true, features = ["test-support"] }
+content-reader-province-area = { workspace = true, features = ["test-support"] }
+content-reader-regions = { workspace = true, features = ["test-support"] }
+content-reader-settings = { workspace = true, features = ["test-support"] }
+content-reader-states = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }

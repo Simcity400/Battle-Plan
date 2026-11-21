@@ -3,7 +3,7 @@ use super::{
     RaidAssets, TypeToken,
     script::{Eval, Scope, Scopes, World},
 };
-use installed_content_raids::raids::RaidType;
+use content_reader_raids::raids::RaidType;
 use replay_data::rows::tables;
 
 pub fn launch_triggers(

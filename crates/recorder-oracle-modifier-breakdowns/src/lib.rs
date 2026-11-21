@@ -1,4 +1,4 @@
-use installed_content_save as save;
+use content_reader_save as save;
 use recorder_oracle_support::report::Report;
 use recorder_oracle_support::support::*;
 #[cfg(test)]

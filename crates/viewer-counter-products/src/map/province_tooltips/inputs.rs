@@ -1,5 +1,5 @@
-use installed_content_country_names::country_names::CountryNames;
-use installed_content_localisation::localisation::Localisation;
+use content_reader_country_names::country_names::CountryNames;
+use content_reader_localisation::localisation::Localisation;
 use replay_data::{
     rows::WeatherProvinceRow,
     rows::tables,

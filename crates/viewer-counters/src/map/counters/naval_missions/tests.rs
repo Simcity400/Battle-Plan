@@ -439,7 +439,7 @@ fn synthetic_with(from: &str, to: &str) -> String {
 
 struct Res {
     font: Font,
-    localisation: installed_content_localisation::localisation::Localisation,
+    localisation: content_reader_localisation::localisation::Localisation,
     text_colors: native::fonts::TextColors,
     undefined: Vec<&'static str>,
     vertical: Vec<&'static str>,
@@ -533,7 +533,7 @@ impl native_gui::Resources for Res {
     fn font(&self, _: &[u8]) -> Option<&Font> {
         Some(&self.font)
     }
-    fn localisation(&self) -> &installed_content_localisation::localisation::Localisation {
+    fn localisation(&self) -> &content_reader_localisation::localisation::Localisation {
         &self.localisation
     }
     fn text_colors(&self) -> &native::fonts::TextColors {
@@ -1232,7 +1232,7 @@ fn inline_icons_in_mission_texts_are_acquired() {
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = synthetic_with("text = \"100%\"", "text = \"EFFICIENCY_KEY\"");
     let windows = windows_of(&source);
-    let localisation: installed_content_localisation::localisation::Localisation =
+    let localisation: content_reader_localisation::localisation::Localisation =
         [("EFFICIENCY_KEY".to_owned(), "£mission_icon 5".to_owned())]
             .into_iter()
             .collect();

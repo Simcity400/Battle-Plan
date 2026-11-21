@@ -1,7 +1,7 @@
 
 use std::{collections::BTreeMap, io};
 
-use installed_content_save::{IntelEntry, Save};
+use content_reader_save::{IntelEntry, Save};
 use replay_data::{rows::CountryRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
@@ -214,7 +214,7 @@ fn compare_volunteer_hosts(
 
 fn volunteer_theatres(
     saved: &Save,
-) -> io::Result<BTreeMap<u64, &installed_content_save::naval_history::LandTheatre>> {
+) -> io::Result<BTreeMap<u64, &content_reader_save::naval_history::LandTheatre>> {
     let Some(countries) = &saved.naval_history.theatre_countries else {
         return Err(invalid(
             "save has no theatre roster; volunteer theatre scope cannot be established",
@@ -753,7 +753,7 @@ fn show(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::test_support::frame;
-    use installed_content_save::parse;
+    use content_reader_save::parse;
     use replay_data::{
         rows::AirBaseCarrierInputs, rows::AirBaseCountryOccurrence,
         rows::AirBaseRegistrationCarrierInputs, rows::AirBaseRegistrationRow, rows::AirBaseRow,
@@ -767,7 +767,7 @@ mod tests {
     const RAILWAY_GUN: u64 = (7_u64 << 32) | 74;
     const THEATRE: u64 = (5_u64 << 32) | 67;
 
-    fn saved() -> installed_content_save::Save {
+    fn saved() -> content_reader_save::Save {
         parse(
             br#"HOI4txt
 date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
@@ -787,7 +787,7 @@ states={} provinces={}"#,
         .unwrap()
     }
 
-    fn railway_saved() -> installed_content_save::Save {
+    fn railway_saved() -> content_reader_save::Save {
         parse(
             br#"HOI4txt
 date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
@@ -1123,17 +1123,17 @@ states={} provinces={}"#,
         carrier_registration(&mut frame).fuel_demand_raw = Recorded::Value(Some(-3));
         carrier_registration(&mut frame).fuel_allocated_raw = Recorded::Value(Some(123456));
         let mut save = saved();
-        save.air.bases.push(installed_content_save::air::AirBase {
+        save.air.bases.push(content_reader_save::air::AirBase {
             id: carrier_base(&mut frame).id,
             state: Some(4),
             host: None,
             capacity: 0,
             kind: 0,
             containers: vec![
-                installed_content_save::air::AirBaseCountry {
+                content_reader_save::air::AirBaseCountry {
                     country: b"GER".to_vec(),
-                    fuel_demand: installed_content_save::Decimal::parse(b"-0.00003").unwrap(),
-                    fuel_allocated: installed_content_save::Decimal::parse(b"1.23456").unwrap(),
+                    fuel_demand: content_reader_save::Decimal::parse(b"-0.00003").unwrap(),
+                    fuel_allocated: content_reader_save::Decimal::parse(b"1.23456").unwrap(),
                 };
                 2
             ],

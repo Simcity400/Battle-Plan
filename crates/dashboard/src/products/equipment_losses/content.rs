@@ -29,9 +29,9 @@ pub struct InterfaceKeys {
 }
 
 impl InterfaceKeys {
-    pub fn read(guis: &installed_content_core::gui::native::Guis, warnings: &mut Vec<String>) -> Self {
+    pub fn read(guis: &content_reader_core::gui::native::Guis, warnings: &mut Vec<String>) -> Self {
         let mut resolve = |window: &str, texts: &[(&str, &str)]| -> Vec<Option<String>> {
-            match installed_content_core::gui::native::window_texts(guis, window, texts, warnings) {
+            match content_reader_core::gui::native::window_texts(guis, window, texts, warnings) {
                 Ok(keys) => keys.into_iter().map(|key| key.map_err(|reason| warnings.push(format!("A loss cause is unnamed: {reason}"))).ok()).collect(),
                 Err(error) => {
                     warnings.push(format!("Loss causes from {window} are unnamed: {error}"));
@@ -122,7 +122,7 @@ fn retention_unknown(months: i32) -> String {
 pub struct Content {
     pub catalogue: Option<Arc<Catalogue>>,
     pub keys: InterfaceKeys,
-    pub units: Option<Arc<installed_content_core::equipment::Database>>,
+    pub units: Option<Arc<content_reader_core::equipment::Database>>,
     pub retained_months: Option<i32>,
     pub names: names::Context,
     pub warnings: Vec<String>,
@@ -140,7 +140,7 @@ impl Content {
         };
         let units = catalogue.as_ref().and_then(|catalogue| catalogue::equipment_units(catalogue).map_err(|error| warnings.push(format!("Equipment types are unavailable: {error}"))).ok());
         let retained_months = (land == LandSource::CombatLog).then_some(catalogue.as_ref()).flatten().and_then(|catalogue| {
-            installed_content_core::defines::read(&catalogue.content.layers)
+            content_reader_core::defines::read(&catalogue.content.layers)
                 .and_then(|defines| defines.int32("NGame", "COMBAT_LOG_MAX_MONTHS"))
                 .map_err(|error| warnings.push(format!("The Combat Log's retention is unavailable: {error}")))
                 .ok()

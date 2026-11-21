@@ -252,7 +252,7 @@ pub(super) fn compare_raid_equipment(
 
 fn compare_raid_archetype_totals(
     row: &replay_data::rows::RaidEquipmentRow,
-    saved: &[installed_content_save::production::Equipment],
+    saved: &[content_reader_save::production::Equipment],
     archetype_of: &BTreeMap<u64, u32>,
     label: &str,
     report: &mut Report,
@@ -314,8 +314,8 @@ fn compare_raid_archetype_totals(
 pub fn compare_raid_tooltip_operands(
     frame: &DecodedFrame,
     pack: &saved::Pack,
-    divisions: &BTreeMap<u64, installed_content_save::Division>,
-    air: &installed_content_save::air::Pack,
+    divisions: &BTreeMap<u64, content_reader_save::Division>,
+    air: &content_reader_save::air::Pack,
     report: &mut Report,
 ) -> io::Result<()> {
     use engine_native::raid_tooltip_operands::*;
@@ -437,7 +437,7 @@ pub fn compare_raid_tooltip_operands(
 fn compare_raid_wing_names(
     rows: &[replay_data::rows::RaidTooltipOperandRow],
     expected: &RaidCensus<'_>,
-    air: &installed_content_save::air::Pack,
+    air: &content_reader_save::air::Pack,
     report: &mut Report,
 ) -> io::Result<()> {
     use engine_native::raid_tooltip_operands::*;
@@ -1062,8 +1062,8 @@ pub(super) fn compare_raid_target_statuses(
 }
 
 pub type RaidGraph = (
-    installed_content_core::province_graph::ProvinceGraph,
-    installed_content_core::province_geometry::ProvinceGeometry,
+    content_reader_core::province_graph::ProvinceGraph,
+    content_reader_core::province_geometry::ProvinceGeometry,
 );
 
 pub fn compare_raid_paths(
@@ -1071,7 +1071,7 @@ pub fn compare_raid_paths(
     (graph, geometry): &RaidGraph,
     report: &mut Report,
 ) -> io::Result<()> {
-    use installed_content_core::{province_graph::RaidPath, province_graph::raid_distance};
+    use content_reader_core::{province_graph::RaidPath, province_graph::raid_distance};
     use replay_data::rows::RaidPathDispatcher;
     let rows = complete::<tables::RaidPathDistances>(frame)?;
     let mut compared = 0;

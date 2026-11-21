@@ -136,7 +136,7 @@ impl FrameClock {
             self.elapsed = next;
         }
         self.frame = Some(if self.elapsed < duration {
-            installed_content_core::crt::truncate_f32(self.elapsed / duration * frame_count + 1.0)
+            content_reader_core::crt::truncate_f32(self.elapsed / duration * frame_count + 1.0)
         } else {
             1
         });

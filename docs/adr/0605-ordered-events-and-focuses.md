@@ -8,4 +8,4 @@ National and continuous focuses keep separate registries. Each reads its own roo
 
 Focuses use the authored cost before modifiers and consume coordinates only in supported forms. Fixed-length inlay points must match the native token consumption. Refuse malformed points and unknown style fields that would prevent proven continuation. The completion-tooltip scope differs from other focus effects, which use country scope. The evaluated defines give the positive point duration if available. Focus-tree buttons attempt country and token qualified sprites only when any icon field was authored, including an empty block. Summaries and notification thumbnails can also attempt those names directly. Alternate icon choices depend on window mode. Without that operand, an identical normalized choice stays known while distinct choices are refused. The ordinary icon can still be selected without the alternate mode.
 
-[Events](../../crates/installed-content-events/src/events.rs) · [Focuses](../../crates/installed-content-focus/src/focus.rs)
+[Events](../../crates/content-reader-events/src/events.rs) · [Focuses](../../crates/content-reader-focus/src/focus.rs)

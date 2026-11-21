@@ -6,8 +6,8 @@ use crate::{
         MapSide, open,
     },
 };
-use installed_content_core::buildings::Buildings;
-use installed_content_localisation::localisation::Localisation;
+use content_reader_core::buildings::Buildings;
+use content_reader_localisation::localisation::Localisation;
 use map_display_data::{MapTextResult, PopupResult};
 use playhead::Settings;
 use replay_columnar::{manifest::Status, state::Cell, store::Store};

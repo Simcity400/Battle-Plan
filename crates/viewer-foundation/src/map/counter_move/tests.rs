@@ -2,7 +2,7 @@ use super::*;
 use crate::map::province_map::WATER_HEIGHT;
 use crate::movement_timing::Etas;
 use crate::movement_timing::MovementContent;
-use installed_content_core::{movement::Neighbour, movement::ProvinceTerrain};
+use content_reader_core::{movement::Neighbour, movement::ProvinceTerrain};
 
 const W: f32 = 5632.0;
 
@@ -474,7 +474,7 @@ fn routes_mark_which_stack_kinds_are_native() {
             outer_scale: 100_000,
             ..Default::default()
         },
-        rail: Ok(installed_content_core::movement::RailMovementDefines {
+        rail: Ok(content_reader_core::movement::RailMovementDefines {
             speed: [0; 4],
             maximum_level: 0,
         }),

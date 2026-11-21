@@ -4,10 +4,10 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::{collections::BTreeSet, io};
 
-use installed_content_core::{
+use content_reader_core::{
     ResolvedLayers, gui::native::fonts, gui::native::fonts::GlyphSet, gui::native::resources,
 };
-use installed_content_image::dds;
+use content_reader_image::dds;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GlyphBox {
@@ -485,7 +485,7 @@ pub fn strip_color_codes(text: &str) -> String {
 }
 
 pub fn unsupported_control(text: &str) -> Option<String> {
-    use installed_content_localisation::{localisation::Piece, localisation::pieces};
+    use content_reader_localisation::{localisation::Piece, localisation::pieces};
     pieces(text)
         .into_iter()
         .find(|piece| !matches!(piece, Piece::Text(_) | Piece::Colour(_) | Piece::Control14))
@@ -565,7 +565,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_core::gui::native::fonts::Glyph;
+    use content_reader_core::gui::native::fonts::Glyph;
     use std::collections::BTreeMap;
 
     fn font() -> Font {
@@ -654,11 +654,11 @@ mod tests {
             std::fs::write(&file, bytes).unwrap();
         }
         let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        let registry = installed_content_core::gui::native::resources::Registry::load(&layers).unwrap();
+        let registry = content_reader_core::gui::native::resources::Registry::load(&layers).unwrap();
         let interface = super::super::sprites::Interface {
-            sprites: installed_content_gfx::gfx::SpriteSet::new(&registry.files),
+            sprites: content_reader_gfx::gfx::SpriteSet::new(&registry.files),
             registry,
-            decode: installed_content_image::native::Decode::default(),
+            decode: content_reader_image::native::Decode::default(),
         };
         (root, layers, interface)
     }
@@ -811,29 +811,29 @@ path=\"{art}\"
             .as_bytes(),
         );
         std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
-        let options = installed_content_core::ResolveOptions {
+        let options = content_reader_core::ResolveOptions {
             game_dir: root.join("steamapps/common/Game"),
             user_dir: root.join("user"),
             cache_dir: root.join("cache"),
         };
         let base = root.join("base");
         let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
-        let selected = [installed_content_core::content::visual::Choice {
+        let selected = [content_reader_core::content::visual::Choice {
             id: "mod/art.mod".into(),
             name: "Art".into(),
         }];
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        installed_content_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
+        content_reader_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
             .unwrap();
         let presentation = layers.presentation().clone();
         assert!(presentation.shows_visual_mods());
         let registry =
-            installed_content_core::gui::native::resources::Registry::load(&presentation).unwrap();
+            content_reader_core::gui::native::resources::Registry::load(&presentation).unwrap();
         assert!(registry.fonts.get_or_fallback(b"").is_none());
         let interface = super::super::sprites::Interface {
-            sprites: installed_content_gfx::gfx::SpriteSet::new(&registry.files),
+            sprites: content_reader_gfx::gfx::SpriteSet::new(&registry.files),
             registry,
-            decode: installed_content_image::native::Decode::default(),
+            decode: content_reader_image::native::Decode::default(),
         };
         let load = |layers: &ResolvedLayers| {
             Fonts::load(
@@ -1017,7 +1017,7 @@ path=\"{art}\"
     #[test]
     fn colour_codes_are_stripped_and_the_text_between_them_kept() {
         let stored = |authored: &str| {
-            let loc: installed_content_localisation::localisation::Localisation =
+            let loc: content_reader_localisation::localisation::Localisation =
                 [("K".to_owned(), authored.to_owned())]
                     .into_iter()
                     .collect();

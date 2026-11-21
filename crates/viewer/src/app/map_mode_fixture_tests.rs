@@ -433,7 +433,7 @@ fn a_scripted_modes_hover_reads_the_viewer_and_the_hovered_state() -> std::io::R
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
 fn the_resistance_hover_shows_the_recorded_strengths() -> std::io::Result<()> {
-    use installed_content_localisation::localisation::Argument;
+    use content_reader_localisation::localisation::Argument;
     use viewer_counter_products::map::province_tooltips::{Cache, ModeHover};
     let fixture = Fixture::load("viewer-resistance-hover")?;
     let document = &fixture.document;

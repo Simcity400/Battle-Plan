@@ -1,7 +1,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use installed_content_core::defines::Defines;
+use content_reader_core::defines::Defines;
 use viewer_foundation::map::free_icons::{Place, Track};
 
 #[derive(Clone, Copy, Debug, PartialEq)]

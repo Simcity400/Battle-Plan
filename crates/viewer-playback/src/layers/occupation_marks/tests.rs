@@ -8,7 +8,7 @@ use crate::{
     },
     playhead_host::{MapSide, open, shared_maps_tests::Reads, units::Units},
 };
-use installed_content_core::occupation_modifiers::Definitions;
+use content_reader_core::occupation_modifiers::Definitions;
 use playhead::{Settings, Timeline, pages::{Pages, Run}};
 use replay_columnar::{manifest::Status, store::Store, unit::{Encoder, Settings as Writing}};
 use replay_data::rows::{CountryLinkRow, CountryRow, Recorded, StateResistanceRow, StateRow, TableId, TableRows, tables};

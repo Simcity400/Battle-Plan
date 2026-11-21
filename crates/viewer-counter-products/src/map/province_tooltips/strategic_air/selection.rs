@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn installed_reason_arguments_keep_signed_counts_and_ordinary_prefixes() {
-        let loc: installed_content_localisation::localisation::Localisation = [
+        let loc: content_reader_localisation::localisation::Localisation = [
             ("AIR_REGION_RIGHT_CLICK", "Assign"),
             ("AIR_REGION_RIGHT_CLICK_NOT_ALL", "Some blocked"),
             (

@@ -68,7 +68,7 @@ pub(super) fn combat_tint(
 }
 
 fn progress_text(
-    localisation: &installed_content_localisation::localisation::Localisation,
+    localisation: &content_reader_localisation::localisation::Localisation,
     value: i64,
 ) -> Result<String, String> {
     const KEY: &str = "COMBAT_ICON_PROGRESS";
@@ -77,7 +77,7 @@ fn progress_text(
             KEY.as_bytes(),
             &[(
                 "VAL",
-                installed_content_localisation::localisation::Argument::Fixed5(value),
+                content_reader_localisation::localisation::Argument::Fixed5(value),
             )],
         )
         .map_err(|refusal| refusal.to_string())
@@ -782,7 +782,7 @@ mod tests {
 
     #[test]
     fn the_progress_box_localises_its_fixed_point_value() {
-        let localisation: installed_content_localisation::localisation::Localisation =
+        let localisation: content_reader_localisation::localisation::Localisation =
             [("COMBAT_ICON_PROGRESS", "§Y$VAL|1$§! pct")]
                 .into_iter()
                 .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -792,7 +792,7 @@ mod tests {
             progress_text(&localisation, value).as_deref(),
             Ok("\u{11}Y45.6\u{11}! pct")
         );
-        let empty = installed_content_localisation::localisation::Localisation::default();
+        let empty = content_reader_localisation::localisation::Localisation::default();
         assert_eq!(
             progress_text(&empty, value).as_deref(),
             Ok("COMBAT_ICON_PROGRESS")

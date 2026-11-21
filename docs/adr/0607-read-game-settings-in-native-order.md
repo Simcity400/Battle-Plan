@@ -20,4 +20,4 @@ Exclusive full screen models the aspect-preserving stretch as the smaller ratio 
 
 The Win32 calls rely on `cb` and `dmSize` initialization, the device name termination guaranteed by enumeration, writable DPI outputs and the display position arm of the mode union. Window refresh obtains the extended monitor info with its full structure size before passing its terminated device name back to the mode API.
 
-[Settings reader and tests](../../crates/installed-content-settings/src/settings.rs)
+[Settings reader and tests](../../crates/content-reader-settings/src/settings.rs)

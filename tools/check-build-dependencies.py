@@ -59,7 +59,7 @@ def path_to(graph, start, forbidden):
 
 def check(normal, all_targets):
     failures = []
-    facades = {"engine", "installed-content"}
+    facades = {"engine", "content-reader"}
     for name, dependencies in all_targets.items():
         for dependency in sorted(dependencies & facades):
             failures.append(f"{name} -> {dependency}: depend on the owning libraries")
@@ -75,7 +75,7 @@ def check(normal, all_targets):
         "replay-frame": {"replay-derive", "replay"},
         "replay-derive": {"replay"},
     }
-    content = {name for name in all_targets if name.startswith("installed-content")}
+    content = {name for name in all_targets if name.startswith("content-reader")}
     for name, forbidden in layers.items():
         path = path_to(all_targets, name, forbidden | content)
         if path:

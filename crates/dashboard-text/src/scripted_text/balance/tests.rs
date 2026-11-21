@@ -126,7 +126,7 @@ fn nested_balance_effects_keep_the_viewer_nato_preference() {
     ));
     let content = catalogue.scripted_content().unwrap();
     let effects = content.effects().unwrap();
-    let items = installed_content_core::parser::parse(b"custom_effect_tooltip=ENTRY_TOOLTIP")
+    let items = content_reader_core::parser::parse(b"custom_effect_tooltip=ENTRY_TOOLTIP")
         .unwrap()
         .items;
     for nato in [false, true] {
@@ -163,7 +163,7 @@ fn balance_effect_sessions_keep_nesting_active_history_and_large_stack() {
     let mut scopes = ExpansionScopes::new(&graph);
     scopes.on_large_stack = true;
     scopes.fresh_depth.set(MAX_SCRIPTED_NESTING);
-    let effects = installed_content_core::parser::parse(b"custom_effect_tooltip=ACTIVATION")
+    let effects = content_reader_core::parser::parse(b"custom_effect_tooltip=ACTIVATION")
         .unwrap()
         .items;
     let why = text
@@ -180,7 +180,7 @@ fn balance_effect_sessions_keep_nesting_active_history_and_large_stack() {
         assert!(scopes.on_large_stack);
     }
     assert_eq!(scopes.scopes.borrow().len(), 1);
-    let effects = installed_content_core::parser::parse(b"custom_effect_tooltip=LOOP")
+    let effects = content_reader_core::parser::parse(b"custom_effect_tooltip=LOOP")
         .unwrap()
         .items;
     let mut refused = Vec::new();

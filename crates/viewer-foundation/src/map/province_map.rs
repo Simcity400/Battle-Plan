@@ -1,6 +1,6 @@
 
 use crate::errors::invalid;
-use installed_content_core::map::MapData;
+use content_reader_core::map::MapData;
 use std::io;
 
 #[derive(Clone, Copy, Debug)]

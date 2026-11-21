@@ -34,7 +34,7 @@ fn skipped_zero_wing_owner_witness_keeps_override_fallback_and_failure_independe
     let id = 7_u64 << 32 | 69;
     saved.air_wings.insert(
         id,
-        installed_content_save::AirWing {
+        content_reader_save::AirWing {
             government_in_exile_tag: None,
             manpower: None,
 
@@ -177,7 +177,7 @@ fn ordinary_fleet_saved_name_must_be_present_even_when_empty() {
         .insert(b"GER".to_vec(), vec![id]);
     saved.fleets.insert(
         id,
-        installed_content_save::Fleet {
+        content_reader_save::Fleet {
             id,
             owner: b"GER".to_vec(),
             home_base: None,
@@ -226,7 +226,7 @@ fn fresh_cached_demand_save_witness_detects_signed_difference_and_rejects_held_d
         .insert(b"GER".to_vec(), vec![id]);
     saved.divisions.insert(
         id,
-        installed_content_save::Division {
+        content_reader_save::Division {
             id,
             roster_owner: b"GER".to_vec(),
             logical_owner: b"GER".to_vec(),
@@ -235,11 +235,11 @@ fn fresh_cached_demand_save_witness_detects_signed_difference_and_rejects_held_d
             template: None,
             alternate_template: None,
             separate_counter: false,
-            hit_points: installed_content_save::Decimal::parse(b"0").unwrap(),
-            organisation: installed_content_save::Decimal::parse(b"0").unwrap(),
+            hit_points: content_reader_save::Decimal::parse(b"0").unwrap(),
+            organisation: content_reader_save::Decimal::parse(b"0").unwrap(),
             country_intel: Vec::new(),
-            presentation: installed_content_save::DivisionPresentation {
-                fuel_requested: Some(installed_content_save::Decimal::parse(b"-0.00001").unwrap()),
+            presentation: content_reader_save::DivisionPresentation {
+                fuel_requested: Some(content_reader_save::Decimal::parse(b"-0.00001").unwrap()),
                 ..Default::default()
             },
         },

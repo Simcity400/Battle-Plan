@@ -3,7 +3,7 @@ use crate::{
     catalogue::tests::folder_catalogue,
     triggers::{Combat, ContentFacts, Eval, World},
 };
-use installed_content_core::trigger_keys::TriggerNames;
+use content_reader_core::trigger_keys::TriggerNames;
 use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::frame::TableView;
 use std::{
@@ -94,13 +94,13 @@ fn run_at(source: &str, scripted: &str, entries: &str, extra: &str, at: Option<(
         }
     }
     let names = TriggerNames {
-        scripted: installed_content_core::scripted_triggers::read(&content.layers.layers).unwrap(),
+        scripted: content_reader_core::scripted_triggers::read(&content.layers.layers).unwrap(),
         counts: Some(Default::default()),
     };
     let dlcs = BTreeSet::new();
     let aliases = Arc::default();
     let roles = crate::triggers::LeaderRoles::new(
-        installed_content_core::characters::leader_templates(&content.layers.layers).unwrap(),
+        content_reader_core::characters::leader_templates(&content.layers.layers).unwrap(),
     );
     let mut facts = ContentFacts::content_only(&dlcs, &names, &aliases);
     facts.leader_roles = Ok(&roles);
@@ -108,7 +108,7 @@ fn run_at(source: &str, scripted: &str, entries: &str, extra: &str, at: Option<(
     let side = Side::default();
     let evaluator = Evaluator::new(&world, Some(&side));
     let text = ScriptedText::new(&frame, &catalogue.localisation, content, 0);
-    let items = installed_content_core::parser::parse(source.as_bytes())
+    let items = content_reader_core::parser::parse(source.as_bytes())
         .unwrap()
         .items;
     let mut refusals = BTreeMap::new();

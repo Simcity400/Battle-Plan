@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, io};
 
-use installed_content_save::{PartialMapMembership, ProvinceMembership, Save};
+use content_reader_save::{PartialMapMembership, ProvinceMembership, Save};
 use replay_data::{rows::CountryGameScoreInputRow, rows::CountryRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 

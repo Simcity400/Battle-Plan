@@ -1,10 +1,10 @@
 use viewer_foundation::map::gpu_contract::Targets;
 use eframe::wgpu::{self, util::DeviceExt};
-use installed_content_core::{
+use content_reader_core::{
     ResolvedLayers, pdxshader::DepthStencilState, pdxshader::RasterizerState,
     pdxshader::program::Stage,
 };
-use installed_content_image::native::Decode;
+use content_reader_image::native::Decode;
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 use std::{collections::BTreeMap, io, sync::Arc};
 

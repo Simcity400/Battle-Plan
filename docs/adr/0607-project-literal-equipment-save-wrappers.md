@@ -16,4 +16,4 @@ Use the wrapper and subtype witnessed by a caller. A production line projection 
 
 Persistent unit bonuses in `deployment.unit_modifiers` are read per country. A missing list is empty and a malformed list refuses only its owning country's result. Preserve saved list order and direct target keys, with exact targets written before categories and no serialized discriminator. Keep repeated targets, nonzero stats and ordered battalion multipliers. Preserve source kind and number, with absent ID for the `none` token and absent localisation key for an empty string. Requirements, terrain and other adjusters, priority and sprite fields do not certify corresponding recording rows. Refuse a new array in a wrapper whose expected arrays have been identified.
 
-[Production save](../../crates/installed-content-save/src/production.rs) · [Persistent unit bonuses](../../crates/installed-content-save/src/production/unit_bonuses.rs)
+[Production save](../../crates/content-reader-save/src/production.rs) · [Persistent unit bonuses](../../crates/content-reader-save/src/production/unit_bonuses.rs)

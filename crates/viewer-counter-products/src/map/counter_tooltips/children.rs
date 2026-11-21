@@ -488,7 +488,7 @@ mod tests {
         frame: &'a DecodedFrame,
         loc: &'a Localisation,
         vision: &'a Vision,
-        names: &'a installed_content_division_names::division_names::Database,
+        names: &'a content_reader_division_names::division_names::Database,
         units: &'a Result<units::Content, String>,
     ) -> Context<'a> {
         Context {
@@ -533,7 +533,7 @@ mod tests {
                 .collect(),
         ));
         let vision = Vision::sharing(1, []);
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let hover = CounterHover {
             control: CounterControl::InvalidOrders,
@@ -647,7 +647,7 @@ mod tests {
             ]),
         );
         let vision = Vision::sharing(1, []);
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let context = Context {
             dig_in_factor: Ok(876_543),
@@ -738,7 +738,7 @@ mod tests {
                     .collect(),
             ),
         );
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let vision = Vision::sharing(1, []);
         let input = CounterHover {
@@ -857,7 +857,7 @@ mod tests {
             ]),
         );
         let vision = Vision::sharing(1, []);
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let context = context(&frame, &loc, &vision, &names, &units);
         let mut hover = CounterHover {
@@ -928,7 +928,7 @@ mod tests {
         .into_iter()
         .collect();
         let vision = Vision::sharing(1, []);
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let mut frame = test_frame(0);
         put(

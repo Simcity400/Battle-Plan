@@ -70,7 +70,7 @@ fn shown() -> Option<f64> {
     let read = if at != 0 && now.saturating_sub(at) < REREAD_MS {
         read
     } else {
-        let read = u64::from(installed_content_settings::settings::display_refresh_hz((window != 0).then_some(window)).unwrap_or(0));
+        let read = u64::from(content_reader_settings::settings::display_refresh_hz((window != 0).then_some(window)).unwrap_or(0));
         FOLLOWED.set((window, read, now));
         if window != 0
             && let Some(held) = windows().iter_mut().find(|(held, _)| *held == window)

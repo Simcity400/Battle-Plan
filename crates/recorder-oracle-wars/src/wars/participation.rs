@@ -189,7 +189,7 @@ pub(super) fn compare_participation(
 }
 fn compare_scores(
     row: &WarParticipationRow,
-    saved: &installed_content_save::war_participation::Ledger,
+    saved: &content_reader_save::war_participation::Ledger,
     label: &str,
     report: &mut Report,
 ) {

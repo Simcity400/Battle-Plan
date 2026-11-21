@@ -1,7 +1,7 @@
 
 use super::native_gui;
 use crate::errors::invalid;
-use installed_content_core::{ResolvedLayers, gui::native};
+use content_reader_core::{ResolvedLayers, gui::native};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::{io, sync::Arc};
@@ -167,7 +167,7 @@ impl NativeWindows {
 
     pub fn assets(
         &self,
-        localisation: &installed_content_localisation::localisation::Localisation,
+        localisation: &content_reader_localisation::localisation::Localisation,
     ) -> native_gui::Assets {
         let mut all = native_gui::Assets::default();
         for window in [

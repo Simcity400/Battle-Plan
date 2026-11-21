@@ -41,7 +41,7 @@ fn thermal_identifier_notes_reach_province_content_warnings() {
         members: Default::default(),
         impassable: Default::default(),
         neighbors: Ok(Default::default()),
-        temperature: Ok(installed_content_weather::weather::TemperatureRanges {
+        temperature: Ok(content_reader_weather::weather::TemperatureRanges {
             ranges: Default::default(),
             notes: vec!["fixture modifier: unsupported identifier field (1 modifier)".into()],
         }),
@@ -169,7 +169,7 @@ fn navy_hover_rebuilds_when_prepared_source_coverage_finishes_without_an_hour_ch
 
 #[test]
 fn a_land_province_gives_the_delayed_click_footer_and_water_does_not() {
-    use installed_content_core::map::ProvinceKind;
+    use content_reader_core::map::ProvinceKind;
     let loc: Localisation = [("PROVINCE_CLICK_VIEW", "Click to view State")]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))

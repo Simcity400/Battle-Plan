@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_core::map::{CountryColors, ProvinceDefinition};
+use content_reader_core::map::{CountryColors, ProvinceDefinition};
 
 fn map(width: u32, height: u32, province: impl Fn(u32, u32) -> u32) -> MapData {
     let mut province_ids = Vec::new();

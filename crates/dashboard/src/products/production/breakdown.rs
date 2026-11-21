@@ -52,7 +52,7 @@ pub struct RawModifierRun {
     pub line: ProductionLineModifiersRow,
     pub run: RawRun,
     pub organisation: Option<String>,
-    pub localisation: Option<Arc<installed_content_localisation::localisation::Localisation>>,
+    pub localisation: Option<Arc<content_reader_localisation::localisation::Localisation>>,
     pub recorded_language: Arc<str>,
 }
 impl RawModifierRun {
@@ -179,7 +179,7 @@ fn sources(
     key: u32,
     depth: i32,
     scale: impl Fn(i64) -> i64,
-    localisation: Option<&installed_content_localisation::localisation::Localisation>,
+    localisation: Option<&content_reader_localisation::localisation::Localisation>,
     recorded_language: &str,
     warnings: &mut BTreeSet<String>,
 ) -> Vec<ProductionModifierPart> {
@@ -1187,7 +1187,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let mut localisation = installed_content_localisation::localisation::Localisation::default();
+        let mut localisation = content_reader_localisation::localisation::Localisation::default();
         localisation.language = "english".into();
         let mut warnings = BTreeSet::new();
         let parts = sources(
@@ -1257,7 +1257,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let mut localisation = installed_content_localisation::localisation::Localisation::default();
+        let mut localisation = content_reader_localisation::localisation::Localisation::default();
         localisation.language = "english".into();
         let raw = RawModifierRun {
             first_hour: 0,
@@ -1313,9 +1313,9 @@ mod tests {
             }],
             ..Default::default()
         };
-        let mut english = installed_content_localisation::localisation::Localisation::default();
+        let mut english = content_reader_localisation::localisation::Localisation::default();
         english.language = "english".into();
-        let mut german = installed_content_localisation::localisation::Localisation::default();
+        let mut german = content_reader_localisation::localisation::Localisation::default();
         german.language = "german".into();
         let mut warnings = BTreeSet::new();
         let rows = sources(

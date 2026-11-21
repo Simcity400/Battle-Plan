@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_core::{movement::Neighbour, movement::ProvinceTerrain};
+use content_reader_core::{movement::Neighbour, movement::ProvinceTerrain};
 use replay_data::{
     rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryMovementModifiers,
     rows::DivisionMovementRow, rows::DivisionMovementStats, rows::DivisionPanelStatsRow,
@@ -1175,10 +1175,10 @@ fn restricted_estimate(frame: &DecodedFrame, map: &MovementContent) -> Result<(i
         .map_err(str::to_owned)
 }
 
-fn sub_unit_database() -> std::sync::Arc<installed_content_core::unit_leader::SubUnits> {
+fn sub_unit_database() -> std::sync::Arc<content_reader_core::unit_leader::SubUnits> {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
-    let mut units = installed_content_core::unit_leader::SubUnits::default();
+    let mut units = content_reader_core::unit_leader::SubUnits::default();
     units.read(
         b"sub_units={ light_armor={type=armor} marine={special_forces=yes type=infantry} infantry={type=infantry} }",
         "common/units/test.txt",

@@ -1,7 +1,7 @@
 use super::counter_content;
-use installed_content_country_names::country_names::CountryNames;
-use installed_content_localisation::localisation::{Argument as Arg, Localisation};
-use installed_content_regions::regions::StrategicRegion;
+use content_reader_country_names::country_names::CountryNames;
+use content_reader_localisation::localisation::{Argument as Arg, Localisation};
+use content_reader_regions::regions::StrategicRegion;
 use replay_data::rows::{FactionTheatreRow, Recorded, tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;

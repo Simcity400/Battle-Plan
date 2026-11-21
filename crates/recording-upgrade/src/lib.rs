@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use installed_content_core::content::{ResolveOptions, facts, proof};
+use content_reader_core::content::{ResolveOptions, facts, proof};
 use replay::campaign::{Replay, writer};
 
 const SHARING_VIOLATION: i32 = 32;
@@ -149,7 +149,7 @@ fn add_facts(replay: &Replay, path: &Path, folders: &Folders) -> io::Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_core::{GatherOptions, gather};
+    use content_reader_core::{GatherOptions, gather};
     use replay::spool::Record;
     use replay_data::{identity::CaptureMode, identity::SampleBoundary, identity::SessionStart, rows::CampaignRow, rows::TableId, rows::TableRows};
     use replay_frame::{branches::BranchReason, branches::BranchStart, branches::Parentage, frame::Frame, frame::Metrics, frame::TableUpdate};

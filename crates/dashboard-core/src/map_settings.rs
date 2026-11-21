@@ -262,12 +262,12 @@ pub struct Reply {
     #[ts(
         type = "{ id: string, name: string, recordedId: string, source: string, problem: string | null }[]"
     )]
-    pub mods: Vec<installed_content_core::content::visual::InstalledMod>,
+    pub mods: Vec<content_reader_core::content::visual::InstalledMod>,
     #[doc = " The mods the recording was made with, which every scope shows beneath visual mods."]
     pub recorded_mods: Vec<RecordedMod>,
     #[doc = " The resolved selection's mods in the engine's mount order, lowest precedence first."]
     #[ts(type = "{ id: string, name: string }[]")]
-    pub applied_mods: Vec<installed_content_core::content::visual::Choice>,
+    pub applied_mods: Vec<content_reader_core::content::visual::Choice>,
     #[doc = " Selected mods that are not shown, and why."]
     pub applied_notes: Vec<String>,
     #[doc = " The map renderer's anti-aliasing sample counts; `None` until a renderer has said, when"]
@@ -284,13 +284,13 @@ pub struct Reply {
 }
 
 pub fn catalogue(
-    options: &installed_content_core::ResolveOptions,
+    options: &content_reader_core::ResolveOptions,
     cancel: &AtomicBool,
-) -> io::Result<Vec<installed_content_core::content::visual::InstalledMod>> {
-    installed_content_core::content::visual::installed(options, cancel)
+) -> io::Result<Vec<content_reader_core::content::visual::InstalledMod>> {
+    content_reader_core::content::visual::installed(options, cancel)
 }
 
-pub fn game_audio(keys: &installed_content_settings::settings::SettingsKeys) -> MapAudio {
+pub fn game_audio(keys: &content_reader_settings::settings::SettingsKeys) -> MapAudio {
     let volume = |key: &str, fallback: f32| {
         keys.f32_at(&[key])
             .filter(|value| value.is_finite())
@@ -308,24 +308,24 @@ pub fn game_audio(keys: &installed_content_settings::settings::SettingsKeys) -> 
     }
 }
 
-pub fn game_dev_master(keys: &installed_content_settings::settings::SettingsKeys) -> f32 {
+pub fn game_dev_master(keys: &content_reader_settings::settings::SettingsKeys) -> f32 {
     keys.f32_at(&["dev_master_volume"])
         .filter(|value| value.is_finite())
         .map_or(0.5, |value| value.clamp(0.0, 100.0) / 100.0)
 }
 
 pub fn read_game(user: &std::path::Path) -> io::Result<Game> {
-    parse_game_keys(&installed_content_settings::settings::read_keys(user)?)
+    parse_game_keys(&content_reader_settings::settings::read_keys(user)?)
 }
 #[cfg(test)]
 fn parse_game(bytes: &[u8]) -> io::Result<Game> {
-    parse_game_keys(&installed_content_settings::settings::SettingsKeys::read(bytes))
+    parse_game_keys(&content_reader_settings::settings::SettingsKeys::read(bytes))
 }
 #[cfg(test)]
 fn parse_game_graphics(bytes: &[u8]) -> io::Result<MapGraphics> {
     parse_game(bytes).map(|game| game.graphics)
 }
-fn parse_game_keys(keys: &installed_content_settings::settings::SettingsKeys) -> io::Result<Game> {
+fn parse_game_keys(keys: &content_reader_settings::settings::SettingsKeys) -> io::Result<Game> {
     if keys.is_absent() {
         return Ok(Game {
             graphics: MapGraphics {
@@ -348,7 +348,7 @@ fn parse_game_keys(keys: &installed_content_settings::settings::SettingsKeys) ->
             .unwrap_or(fallback)
     };
     let mut result = MapGraphics::default();
-    let (options, _) = installed_content_settings::settings::MapOptions::read(keys);
+    let (options, _) = content_reader_settings::settings::MapOptions::read(keys);
     result.day_night = options.day_night;
     result.show_allied_plans = options.allied_plans;
     result.nato_counters = Some(options.nato_counters);
@@ -405,8 +405,8 @@ mod tests {
         assert_eq!(sample_counts(), Some(vec![1, 2, 4, 8]));
     }
 
-    fn choice(id: &str) -> installed_content_core::content::visual::Choice {
-        installed_content_core::content::visual::Choice {
+    fn choice(id: &str) -> content_reader_core::content::visual::Choice {
+        content_reader_core::content::visual::Choice {
             id: id.into(),
             name: id.into(),
         }
@@ -692,10 +692,10 @@ mod tests {
             ],
             [80.0, 50.4, 25.0, 25.0, 0.0, 49.6]
         );
-        let keys = installed_content_settings::settings::SettingsKeys::read(b"dev_master_volume=25.000000");
+        let keys = content_reader_settings::settings::SettingsKeys::read(b"dev_master_volume=25.000000");
         assert_eq!(game_dev_master(&keys), 0.25);
         assert_eq!(
-            game_dev_master(&installed_content_settings::settings::SettingsKeys::read(b"")),
+            game_dev_master(&content_reader_settings::settings::SettingsKeys::read(b"")),
             0.5
         );
         let shown = parse_game(
@@ -761,7 +761,7 @@ mod tests {
     fn renderers_see_one_selection_for_equivalent_choices() {
         let mut store = Store::default();
         let chosen =
-            |mods: Option<Vec<installed_content_core::content::visual::Choice>>| CampaignMapSettings {
+            |mods: Option<Vec<content_reader_core::content::visual::Choice>>| CampaignMapSettings {
                 visual_mods: mods,
                 ..Default::default()
             };

@@ -1,7 +1,7 @@
 
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
-use installed_content_core::{leader_traits::LeaderTraits, parser::c_string};
-use installed_content_save::characters as saved;
+use content_reader_core::{leader_traits::LeaderTraits, parser::c_string};
+use content_reader_save::characters as saved;
 use replay_data::{rows::CountryRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{
@@ -783,7 +783,7 @@ fn compare_operatives(
 
 pub fn compare_codenames(
     frame: &DecodedFrame,
-    pack: &installed_content_save::intel::Pack,
+    pack: &content_reader_save::intel::Pack,
     report: &mut Report,
 ) -> io::Result<()> {
     let mut saved = BTreeMap::new();
@@ -895,7 +895,7 @@ fn codename(
     report: &mut Report,
     label: &str,
     actual: &replay_data::rows::NameOperands,
-    entry: Option<&installed_content_save::intel::OperativeEntry>,
+    entry: Option<&content_reader_save::intel::OperativeEntry>,
 ) -> bool {
     let Some(entry) = entry else {
         report.limitation(

@@ -236,7 +236,7 @@ pub fn texel_reads(
 ) -> Option<String> {
     let why = shader_pipeline::texel::by_texel(
         &compiled.pixel.wgsl,
-        shader_pipeline::binding(slot, installed_content_core::pdxshader::program::Stage::Pixel),
+        shader_pipeline::binding(slot, content_reader_core::pdxshader::program::Stage::Pixel),
         "shadow buffer",
     )?;
     Some(format!(
@@ -1268,7 +1268,7 @@ mod tests {
 
     #[test]
     fn a_program_reading_the_screen_buffer_by_texel_keeps_it_full_size() {
-        use installed_content_core::pdxshader::program::Stage;
+        use content_reader_core::pdxshader::program::Stage;
         use shader_pipeline::binding;
         let reads = |slot: u32, technique: &str, body: &str| {
             let (own, other) = (binding(slot, Stage::Pixel), binding(slot + 1, Stage::Pixel));

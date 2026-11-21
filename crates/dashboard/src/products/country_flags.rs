@@ -1,9 +1,9 @@
 
 use super::{LoadContext, Product};
 use crate::{Source, catalogue::Catalogue, content, flag_choices::Chain, invalid};
-use installed_content_core::content::diagnostics::Once as OnceLock;
-use installed_content_core::{ResolveOptions, content::ResolvedContent, flags::FlagSet};
-use installed_content_image::Rgba8Image;
+use content_reader_core::content::diagnostics::Once as OnceLock;
+use content_reader_core::{ResolveOptions, content::ResolvedContent, flags::FlagSet};
+use content_reader_image::Rgba8Image;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -179,7 +179,7 @@ impl Product for CountryFlags {
                     Some(cells) => cells,
                     None => {
                         let (cells, fallbacks) =
-                            installed_content_core::content::diagnostics::observe(|| {
+                            content_reader_core::content::diagnostics::observe(|| {
                                 flag_cells(&resolved.layers)
                             });
                         (cells?, fallbacks, Arc::default())
@@ -288,16 +288,16 @@ impl FlagState {
 
 type CachedShield = (
     Arc<ResolvedContent>,
-    installed_content_image::native::Decode,
+    content_reader_image::native::Decode,
     crate::catalogue::Drawn<Result<Arc<ShieldStyle>, String>>,
 );
 
 pub(crate) struct ShieldStyle {
     shield: crate::catalogue::MaskedShield,
     panel: crate::catalogue::MaskedShield,
-    recorded: Option<(installed_content_core::ResolvedLayers, [[u32; 2]; 3])>,
+    recorded: Option<(content_reader_core::ResolvedLayers, [[u32; 2]; 3])>,
     recorded_files: Arc<FlagFiles>,
-    decode: installed_content_image::native::Decode,
+    decode: content_reader_image::native::Decode,
     pub(crate) warnings: Vec<String>,
 }
 
@@ -314,7 +314,7 @@ impl ShieldStyle {
             (Self::shown(catalogue, decode, &mut warnings)?, None)
         } else {
             let (shown, noted) = crate::catalogue::capture_isolated(|| {
-                installed_content_core::content::strict(|| Self::shown(catalogue, decode, &mut warnings))
+                content_reader_core::content::strict(|| Self::shown(catalogue, decode, &mut warnings))
             });
             match shown {
                 Ok(shield) => {
@@ -324,8 +324,8 @@ impl ShieldStyle {
                 Err(error) => {
                     let recorded = layers.recorded_only();
                     warnings.clear();
-                    let guis = installed_content_core::gui::native::read_layers(&recorded)?;
-                    let name = installed_content_core::gui::native::window_button_sprite(
+                    let guis = content_reader_core::gui::native::read_layers(&recorded)?;
+                    let name = content_reader_core::gui::native::window_button_sprite(
                         &guis,
                         TOP_BAR,
                         PLAYER_FLAG,
@@ -357,11 +357,11 @@ impl ShieldStyle {
 
     fn shown(
         catalogue: &Catalogue,
-        decode: installed_content_image::native::Decode,
+        decode: content_reader_image::native::Decode,
         warnings: &mut Vec<String>,
     ) -> io::Result<crate::catalogue::MaskedShield> {
         let layers = &catalogue.content.layers;
-        let name = installed_content_core::gui::native::window_button_sprite(
+        let name = content_reader_core::gui::native::window_button_sprite(
             catalogue.guis()?,
             TOP_BAR,
             PLAYER_FLAG,
@@ -384,11 +384,11 @@ impl ShieldStyle {
 
     fn flags_from<'a>(
         &'a self,
-        layers: &'a installed_content_core::ResolvedLayers,
+        layers: &'a content_reader_core::ResolvedLayers,
         cells: &'a [[u32; 2]; 3],
         files: &'a Arc<FlagFiles>,
     ) -> (
-        &'a installed_content_core::ResolvedLayers,
+        &'a content_reader_core::ResolvedLayers,
         &'a [[u32; 2]; 3],
         &'a Arc<FlagFiles>,
     ) {
@@ -408,7 +408,7 @@ impl ShieldStyle {
 
     fn draw(
         &self,
-        layers: &installed_content_core::ResolvedLayers,
+        layers: &content_reader_core::ResolvedLayers,
         flags: &[&Rgba8Image],
         panel: bool,
     ) -> io::Result<Vec<Rgba8Image>> {
@@ -437,8 +437,8 @@ pub(crate) enum FlagSearch {
     Absent,
 }
 
-pub(crate) fn flag_cells(layers: &installed_content_core::ResolvedLayers) -> io::Result<[[u32; 2]; 3]> {
-    let recorded = installed_content_core::defines::read(layers)?;
+pub(crate) fn flag_cells(layers: &content_reader_core::ResolvedLayers) -> io::Result<[[u32; 2]; 3]> {
+    let recorded = content_reader_core::defines::read(layers)?;
     let graphics = recorded.graphics_for(layers);
     layers.graphics_define("flag cells", &graphics, &recorded, |defines| {
         Ok::<_, io::Error>([
@@ -452,7 +452,7 @@ pub(crate) fn flag_cells(layers: &installed_content_core::ResolvedLayers) -> io:
 #[derive(Clone)]
 enum FlagFile {
     Missing,
-    Refused(installed_content_core::flags::DecodeFailure),
+    Refused(content_reader_core::flags::DecodeFailure),
     Image(Arc<Rgba8Image>),
 }
 
@@ -509,16 +509,16 @@ pub(crate) struct FlagFiles {
     files: Mutex<
         BTreeMap<
             (Stack, usize, String, [u32; 2]),
-            (FlagFile, installed_content_core::content::diagnostics::Diagnostics),
+            (FlagFile, content_reader_core::content::diagnostics::Diagnostics),
         >,
     >,
     probing: bool,
     recorded: OnceLock<(
         (
-            installed_content_core::ResolvedLayers,
+            content_reader_core::ResolvedLayers,
             Result<[[u32; 2]; 3], String>,
         ),
-        installed_content_core::content::diagnostics::Diagnostics,
+        content_reader_core::content::diagnostics::Diagnostics,
     )>,
 }
 
@@ -544,7 +544,7 @@ fn draw_each(
 fn flag_file(
     files: &FlagFiles,
     stack: Stack,
-    layers: &installed_content_core::ResolvedLayers,
+    layers: &content_reader_core::ResolvedLayers,
     set_index: usize,
     asset: &str,
     cell: [u32; 2],
@@ -554,9 +554,9 @@ fn flag_file(
         noted.credit();
         return Ok(file.clone());
     }
-    let (file, noted) = installed_content_core::content::diagnostics::observe(|| {
+    let (file, noted) = content_reader_core::content::diagnostics::observe(|| {
         io::Result::Ok(match layers.read_uncovered(asset) {
-            Ok(bytes) => match installed_content_core::flags::decode_checked(&bytes, cell) {
+            Ok(bytes) => match content_reader_core::flags::decode_checked(&bytes, cell) {
                 Ok(_) if files.probing => FlagFile::Image(probed()),
                 Ok(image) => FlagFile::Image(Arc::new(image)),
                 Err(reason) => FlagFile::Refused(reason),
@@ -582,7 +582,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 pub(crate) fn find_flag(
-    layers: &installed_content_core::ResolvedLayers,
+    layers: &content_reader_core::ResolvedLayers,
     sets: &[FlagSet],
     cells: &[[u32; 2]; 3],
     candidates: &[String],
@@ -611,7 +611,7 @@ pub(crate) fn find_flag(
         return plain(files, reported);
     }
     let ((recorded, recorded_cells), noted) = files.recorded.get_or_init(|| {
-        installed_content_core::content::diagnostics::observe(|| {
+        content_reader_core::content::diagnostics::observe(|| {
             let recorded = layers.recorded_only();
             let cells = flag_cells(&recorded).map_err(|error| error.to_string());
             (recorded, cells)
@@ -666,8 +666,8 @@ struct Broken {
 #[allow(clippy::too_many_arguments)]
 fn ladder(
     stack: Stack,
-    layers: &installed_content_core::ResolvedLayers,
-    recorded: Option<(&installed_content_core::ResolvedLayers, &[[u32; 2]; 3])>,
+    layers: &content_reader_core::ResolvedLayers,
+    recorded: Option<(&content_reader_core::ResolvedLayers, &[[u32; 2]; 3])>,
     sets: &[FlagSet],
     cells: &[[u32; 2]; 3],
     candidates: &[String],
@@ -728,16 +728,16 @@ fn ladder(
                     }
                     let mut finding = Finding::new(
                         match reason {
-                            installed_content_core::flags::DecodeFailure::EngineRefused => Kind::Content,
-                            installed_content_core::flags::DecodeFailure::Truncated => Kind::Refused,
+                            content_reader_core::flags::DecodeFailure::EngineRefused => Kind::Content,
+                            content_reader_core::flags::DecodeFailure::Truncated => Kind::Refused,
                         },
                         key,
                         match reason {
-                            installed_content_core::flags::DecodeFailure::EngineRefused => format!(
+                            content_reader_core::flags::DecodeFailure::EngineRefused => format!(
                                 "flag decoder refused {asset} at cell {}x{}; this file was skipped",
                                 cell[0], cell[1]
                             ),
-                            installed_content_core::flags::DecodeFailure::Truncated => format!(
+                            content_reader_core::flags::DecodeFailure::Truncated => format!(
                                 "flag decoder cannot safely read {asset} at cell {}x{}; this reader refuses this input but the game does not check read status",
                                 cell[0], cell[1]
                             ),
@@ -849,7 +849,7 @@ fn even_overlay(overlay: &Rgba8Image) -> Rgba8Image {
 }
 
 pub struct FlagFolders {
-    layers: installed_content_core::ResolvedLayers,
+    layers: content_reader_core::ResolvedLayers,
     cells: [[u32; 2]; 3],
     files: Arc<FlagFiles>,
     chosen: Mutex<HashMap<Chain, Arc<OnceLock<Option<CountryFlagChoice>>>>>,
@@ -868,7 +868,7 @@ impl FlagFolders {
     }
 
     #[cfg(test)]
-    pub(crate) fn of(layers: installed_content_core::ResolvedLayers, cells: [[u32; 2]; 3]) -> Self {
+    pub(crate) fn of(layers: content_reader_core::ResolvedLayers, cells: [[u32; 2]; 3]) -> Self {
         Self {
             layers,
             cells,
@@ -960,7 +960,7 @@ pub struct FlagContext {
     presentation: crate::presentation::Presentation,
     content: Arc<ResolvedContent>,
     cells: [[u32; 2]; 3],
-    cell_fallbacks: installed_content_core::content::diagnostics::Diagnostics,
+    cell_fallbacks: content_reader_core::content::diagnostics::Diagnostics,
     files: Arc<FlagFiles>,
     warnings: Vec<String>,
 }
@@ -1491,7 +1491,7 @@ mod tests {
             ],
             &textures,
         );
-        catalogue.gui_decode = Ok(installed_content_image::native::Decode {
+        catalogue.gui_decode = Ok(content_reader_image::native::Decode {
             force_pow2_textures: true,
         });
         let loaded = ShieldStyle::load(&catalogue).unwrap();
@@ -1503,11 +1503,11 @@ mod tests {
             [4, 4]
         );
         for (path, _, expected) in refusals {
-            let facts = installed_content_core::gui::native::sprites::read_sprites(format!(
+            let facts = content_reader_core::gui::native::sprites::read_sprites(format!(
                 "spriteTypes = {{ maskedShieldType = {{ name = GFX_mod_shield textureFile1 = gfx/mod/overlay.png textureFile2 = \"{path}\" effectFile = gfx/FX/mod.lua }} }}"
             ).as_bytes());
             catalogue.sprites =
-                installed_content_gfx::gfx::SpriteSet::new(&[("interface/art.gfx".into(), facts)]);
+                content_reader_gfx::gfx::SpriteSet::new(&[("interface/art.gfx".into(), facts)]);
             let why = ShieldStyle::load(&catalogue).err().unwrap().to_string();
             assert!(why.contains(expected), "{path}: {why}");
             assert_shield_warning(&catalogue, &why);
@@ -1608,7 +1608,7 @@ mod tests {
             std::fs::write(file, bytes).unwrap();
         }
         let catalogue = crate::catalogue::tests::layers_catalogue(
-            installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap(),
+            content_reader_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap(),
         );
         let style = ShieldStyle::load(&catalogue).unwrap();
         let context = context(&catalogue.content, cells, Vec::new());
@@ -1705,10 +1705,10 @@ mod tests {
     }
 
     fn shield_pixels(
-        layers: installed_content_core::ResolvedLayers,
+        layers: content_reader_core::ResolvedLayers,
         cells: [[u32; 2]; 3],
     ) -> ([u8; 4], [u8; 4], BTreeSet<String>) {
-        let ((centre, edge), fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+        let ((centre, edge), fallbacks) = content_reader_core::content::observe_overlay_refusals(|| {
             let catalogue = Catalogue::of_layers(layers, "english").unwrap();
             let style = ShieldStyle::load(&catalogue).unwrap();
             let context = context(&catalogue.content, cells, Vec::new());
@@ -1732,10 +1732,10 @@ mod tests {
     }
 
     fn with_visual_mod(
-        mut layers: installed_content_core::ResolvedLayers,
+        mut layers: content_reader_core::ResolvedLayers,
         user: &std::path::Path,
         mod_root: &std::path::Path,
-    ) -> installed_content_core::ResolvedLayers {
+    ) -> content_reader_core::ResolvedLayers {
         let descriptor = user.join("mod/shield.mod");
         std::fs::create_dir_all(descriptor.parent().unwrap()).unwrap();
         std::fs::write(
@@ -1751,11 +1751,11 @@ mod tests {
             user_dir: user.to_owned(),
             cache_dir: user.join("cache"),
         };
-        let choice = installed_content_core::content::visual::Choice {
+        let choice = content_reader_core::content::visual::Choice {
             id: "mod/shield.mod".into(),
             name: "Shield".into(),
         };
-        let plan = installed_content_core::content::visual::apply(
+        let plan = content_reader_core::content::visual::apply(
             &mut layers,
             &options,
             &[choice],
@@ -1774,7 +1774,7 @@ mod tests {
         let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 1);
         let (recorded, cells) = recorded_shield();
         let base =
-            || installed_content_core::ResolvedLayers::from_folders(&[(&recorded.0, &[][..])]).unwrap();
+            || content_reader_core::ResolvedLayers::from_folders(&[(&recorded.0, &[][..])]).unwrap();
         let (centre, edge, fallbacks) = shield_pixels(base(), cells);
         assert_eq!(centre, [0, 200, 0, 255]);
         assert!(near(edge, [0, 43, 0, 255]), "{edge:?}");
@@ -1895,7 +1895,7 @@ mod tests {
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (recorded, _) = recorded_shield();
         let base =
-            || installed_content_core::ResolvedLayers::from_folders(&[(&recorded.0, &[][..])]).unwrap();
+            || content_reader_core::ResolvedLayers::from_folders(&[(&recorded.0, &[][..])]).unwrap();
         let (_, root) = crate::catalogue::tests::folder_catalogue(&[]);
         let broken = root.0.join("broken");
         std::fs::create_dir_all(broken.join("interface")).unwrap();

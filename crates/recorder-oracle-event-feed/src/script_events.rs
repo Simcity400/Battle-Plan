@@ -1,4 +1,4 @@
-use installed_content_save::{SaveDocument, script_events as saved};
+use content_reader_save::{SaveDocument, script_events as saved};
 use recorder_oracle_support::{
     report::Report,
     support::{country_context, country_items, eq, invalid},
@@ -486,7 +486,7 @@ mod tests {
             ),
             (
                 b"CCC".as_slice(),
-                Ok(Some(installed_content_save::governance::Decisions {
+                Ok(Some(content_reader_save::governance::Decisions {
                     taken: vec![b"mod_decision".to_vec()],
                     containers: Default::default(),
                     random_items: Vec::new(),

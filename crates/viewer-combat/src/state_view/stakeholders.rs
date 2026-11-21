@@ -2,8 +2,8 @@ use super::{loc, paths_named, province::Facts, withhold_named};
 use crate::binding::{self, Bindings};
 use crate::content::Content;
 use crate::tooltips::{hover_text, set_hover};
-use installed_content_core::gui::native;
-use installed_content_localisation::localisation::Argument;
+use content_reader_core::gui::native;
+use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{Recorded, tables};
 use replay_frame::frame::DecodedFrame;
 
@@ -61,7 +61,7 @@ pub(super) fn bind(
     state_name: &Result<String, String>,
 ) {
     let state = facts.state;
-    let names = installed_content_country_names::country_names::CountryNames::read(frame, &content.localisation);
+    let names = content_reader_country_names::country_names::CountryNames::read(frame, &content.localisation);
     let mut refused = Vec::new();
     let claims = (|| -> Result<Vec<crate::Values>, String> {
         let rows = frame.complete::<tables::StateCores>().map_err(|e| e.to_string())?;

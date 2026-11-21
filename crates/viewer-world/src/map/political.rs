@@ -14,8 +14,8 @@ use viewer_foundation::map::color_inheritance::{
     Inheritance, active_subject, inheritance, slot_of,
 };
 
-use installed_content_core::{map::MapData, map::ProvinceKind};
-use installed_content_regions::regions::StrategicRegion;
+use content_reader_core::{map::MapData, map::ProvinceKind};
+use content_reader_regions::regions::StrategicRegion;
 #[cfg(test)]
 use replay_data::rows::CountryRow;
 use replay_data::{rows::ProvinceRow, rows::tables};

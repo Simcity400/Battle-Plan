@@ -1,6 +1,6 @@
 use super::*;
 
-fn first_design(country: &installed_content_save::Country) -> io::Result<u64> {
+fn first_design(country: &content_reader_save::Country) -> io::Result<u64> {
     let pool = country
         .convoy_equipment
         .as_ref()
@@ -40,7 +40,7 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::
         if reserved_target
             && !save.country_emissions.as_ref().is_some_and(|emissions| {
                 emissions.iter().any(|emission| {
-                    emission.identity.actual == installed_content_save::ActualCountry::Reserved
+                    emission.identity.actual == content_reader_save::ActualCountry::Reserved
                         && emission.identity.tag.as_slice() == tag
                 })
             })
@@ -73,13 +73,13 @@ mod tests {
     use super::*;
     #[test]
     fn first_design_is_first_nonzero_signed_occurrence_without_classification() {
-        let mut country = installed_content_save::Country {
+        let mut country = content_reader_save::Country {
             convoy_equipment: Some(Vec::new()),
             ..Default::default()
         };
         assert_eq!(first_design(&country).unwrap(), 0);
         country.convoy_equipment = Some(vec![
-            installed_content_save::EquipmentAmount {
+            content_reader_save::EquipmentAmount {
                 id: 1,
                 id_type: 3,
                 amount: Decimal {
@@ -88,7 +88,7 @@ mod tests {
                     lexeme: Vec::new(),
                 },
             },
-            installed_content_save::EquipmentAmount {
+            content_reader_save::EquipmentAmount {
                 id: 7,
                 id_type: 9,
                 amount: Decimal {
@@ -97,7 +97,7 @@ mod tests {
                     lexeme: Vec::new(),
                 },
             },
-            installed_content_save::EquipmentAmount {
+            content_reader_save::EquipmentAmount {
                 id: 8,
                 id_type: 9,
                 amount: Decimal {
@@ -128,7 +128,7 @@ mod tests {
         save.countries
             .get_mut(b"GER".as_slice())
             .unwrap()
-            .convoy_equipment = Some(vec![installed_content_save::EquipmentAmount {
+            .convoy_equipment = Some(vec![content_reader_save::EquipmentAmount {
             id: 4,
             id_type: 117,
             amount: Decimal {

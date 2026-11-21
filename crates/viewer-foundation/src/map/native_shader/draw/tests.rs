@@ -18,7 +18,7 @@ impl gui::Sheets for Sheets {
 }
 
 fn effect(source: &str) -> Arc<super::super::library::Effect> {
-    let program = installed_content_core::pdxshader::program::read_with(b"gfx/FX/fixture.lua", &|path| {
+    let program = content_reader_core::pdxshader::program::read_with(b"gfx/FX/fixture.lua", &|path| {
         Some(match path {
             b"gfx/FX/fixture.shader" => source.as_bytes().to_vec(),
             _ => Vec::new(),

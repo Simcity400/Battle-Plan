@@ -9,7 +9,7 @@ use replay_frame::frame::TableView;
 
 fn scientist_pack() -> characters_saved::Pack {
     characters_saved::parse(
-        &installed_content_core::parser::parse(
+        &content_reader_core::parser::parse(
             br#"character_manager={ historical={
                 character={ id={ id=265 type=73 } token="a" country="GER"
                     scientist={ traits={ "t1" "t2" }
@@ -374,7 +374,7 @@ fn raid_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     };
     let source = br"countries={GER={nukes={{amount=90071992547.40993 nukes_ready=-1}{amount=0 nukes_ready=0}} program_status={project_pool={project={}} breakthrough={}}}}
         raids={targets={target={valid=yes target={state=291} detected={ 1 0 }}} countries={{tag=GER priority=-1 raid_instance={{id={id=4294967295 type=84} phase=PREPARED prep_time=-2 distance=22.1 target={state=291}}} target_cooldowns={{target={state=291} type=oilfield_raid cooldown=3}}}}} peace_conference={}";
-    let pack = saved::parse(&installed_content_core::parser::parse(source).unwrap().items).unwrap();
+    let pack = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
     *frame.tables[TableId::Nukes.index()] = TableView::Complete(TableRows::Nukes(vec![
         NukeRow {
             country: 102,
@@ -685,14 +685,14 @@ fn tooltip_operand_oracle_compares_wing_name_bytes_and_reports_capture_failures(
     let wing = (7_u64 << 32) | 69;
     raid.air_wing = Some(wing);
     let name = b"A\x80BCDEFG\xffZ";
-    let mut air = installed_content_save::air::Pack::default();
-    air.wings.push(installed_content_save::air::Wing {
+    let mut air = content_reader_save::air::Pack::default();
+    air.wings.push(content_reader_save::air::Wing {
         id: wing,
         pool_type: b"fixture_plane".to_vec(),
         name: Some(name.to_vec()),
         accidents: None,
-        experience: installed_content_save::Decimal::parse(b"0").unwrap(),
-        equipment: installed_content_save::air::EquipmentPool {
+        experience: content_reader_save::Decimal::parse(b"0").unwrap(),
+        equipment: content_reader_save::air::EquipmentPool {
             entries: Vec::new(),
             allow_zero: false,
         },
@@ -700,7 +700,7 @@ fn tooltip_operand_oracle_compares_wing_name_bytes_and_reports_capture_failures(
         raid: None,
     });
     let run = |frame: &mut DecodedFrame,
-               air: &installed_content_save::air::Pack,
+               air: &content_reader_save::air::Pack,
                name_rows: Vec<(u32, i64)>| {
         let mut rows = vec![
             (REFERENCES, 0, 0),
@@ -829,10 +829,10 @@ fn raid_equipment_needs_a_row_for_every_saved_recorded_raid() {
     let (mut frame, mut pack, _) = raid_fixture();
     let raid = &mut pack.raids.as_mut().unwrap()[0].instances[0];
     raid.nukes = 2;
-    raid.equipment = Some(installed_content_save::production::Pool {
-        equipment: vec![installed_content_save::production::Equipment {
+    raid.equipment = Some(content_reader_save::production::Pool {
+        equipment: vec![content_reader_save::production::Equipment {
             variant: (41 << 32) | 70,
-            amount: installed_content_save::Decimal::parse(b"5").unwrap(),
+            amount: content_reader_save::Decimal::parse(b"5").unwrap(),
         }],
         allow_zero_entries: Some(false),
     });
@@ -846,7 +846,7 @@ fn raid_equipment_needs_a_row_for_every_saved_recorded_raid() {
 
 #[test]
 fn raid_censuses_follow_the_readers_rules_over_the_saved_raids() {
-    use installed_content_save::{GameDate, SavedDate};
+    use content_reader_save::{GameDate, SavedDate};
     use replay_data::{rows::RaidEquipmentRow, rows::RaidSpeedInputRow};
     let (mut frame, pack, _) = raid_fixture();
     frame.hour = GameDate::parse(b"1943.4.22.7")
@@ -936,10 +936,10 @@ fn raid_equipment_compares_the_saved_pool_and_nukes() {
     let (mut frame, mut pack, _) = raid_fixture();
     let raid = &mut pack.raids.as_mut().unwrap()[0].instances[0];
     raid.nukes = 1;
-    raid.equipment = Some(installed_content_save::production::Pool {
-        equipment: vec![installed_content_save::production::Equipment {
+    raid.equipment = Some(content_reader_save::production::Pool {
+        equipment: vec![content_reader_save::production::Equipment {
             variant: (41 << 32) | 70,
-            amount: installed_content_save::Decimal::parse(b"5").unwrap(),
+            amount: content_reader_save::Decimal::parse(b"5").unwrap(),
         }],
         allow_zero_entries: Some(false),
     });
@@ -968,7 +968,7 @@ const TRUCK: u64 = (42 << 32) | 70;
 const BOUND: i64 = 0x53e2_d620_fb40;
 
 fn totals_fixture(items: &[(u64, &str)], definitions: bool) -> (DecodedFrame, saved::Pack) {
-    use installed_content_save::{
+    use content_reader_save::{
         Decimal,
         production::{Equipment, Pool},
     };
@@ -1204,11 +1204,11 @@ fn raid_path_verdict_uses_only_its_dispatchers_search() {
 #[test]
 fn raid_memo_oracle_checks_each_dispatcher_instead_of_either_path() {
     use replay_data::rows::{RaidPathDispatcher, RaidPathDistanceRow};
-    let graph = installed_content_core::province_graph::ProvinceGraph {
+    let graph = content_reader_core::province_graph::ProvinceGraph {
         edges: BTreeMap::from([(1, vec![(2, Some(50_000))]), (2, vec![(3, Some(50_000))])]),
         ..Default::default()
     };
-    let mut geometry = installed_content_core::province_geometry::ProvinceGeometry::default();
+    let mut geometry = content_reader_core::province_geometry::ProvinceGeometry::default();
     geometry.width = 10;
     geometry.height = 1;
     geometry.centroids = BTreeMap::from([(1, [0, 0]), (2, [1, 0]), (3, [2, 0])]);
@@ -1497,7 +1497,7 @@ fn populated_dictionary_checks_project_names_and_breakthrough_points() {
         }}}
         breakthrough={specialization=-2147483648}
     }}}";
-    let mut parsed = saved::parse(&installed_content_core::parser::parse(source).unwrap().items).unwrap();
+    let mut parsed = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
     pack.countries.get_mut(b"GER".as_slice()).unwrap().status =
         parsed.countries.remove(b"GER".as_slice()).unwrap().status;
     let definition = 0x1234;
@@ -1567,7 +1567,7 @@ fn populated_dictionary_checks_project_names_and_breakthrough_points() {
             ordinal: 0,
             prototype_reward_handle: reward,
             option_handle: option,
-            date: installed_content_save::GameDate::parse(b"1936.1.1.1")
+            date: content_reader_save::GameDate::parse(b"1936.1.1.1")
                 .unwrap()
                 .engine_hour()
                 .unwrap(),
@@ -1688,7 +1688,7 @@ fn hourly_facilities_compare_order_duplicates_and_unresolved_project_tokens() {
             building=building unread_prototype_rewards=0 project=definition}
         project_pool={project={}} breakthrough={}
     }}}";
-    let mut parsed = saved::parse(&installed_content_core::parser::parse(source).unwrap().items).unwrap();
+    let mut parsed = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
     pack.countries.get_mut(b"GER".as_slice()).unwrap().status =
         parsed.countries.remove(b"GER".as_slice()).unwrap().status;
     let original: Vec<_> = (0..2)

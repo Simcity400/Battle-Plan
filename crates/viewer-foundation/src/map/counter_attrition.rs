@@ -6,7 +6,7 @@ pub struct Content {
     pub border_factor: i64,
     pub supply_threshold: i64,
     pub terrains: Vec<Terrain>,
-    pub sub_units: Result<std::sync::Arc<installed_content_core::unit_leader::SubUnits>, String>,
+    pub sub_units: Result<std::sync::Arc<content_reader_core::unit_leader::SubUnits>, String>,
 }
 
 impl replay_derive::eta_derive::frame_terms::SubUnitContent for Content {
@@ -32,9 +32,9 @@ pub struct Terrain {
 
 impl Content {
     pub fn read(
-        defines: &installed_content_core::defines::Defines,
-        terrain: &installed_content_core::terrain::TerrainDefinitions,
-        sub_units: Result<std::sync::Arc<installed_content_core::unit_leader::SubUnits>, String>,
+        defines: &content_reader_core::defines::Defines,
+        terrain: &content_reader_core::terrain::TerrainDefinitions,
+        sub_units: Result<std::sync::Arc<content_reader_core::unit_leader::SubUnits>, String>,
     ) -> io::Result<Self> {
         Ok(Self {
             training: defines.fixed5("NMilitary", "TRAINING_ATTRITION")?,
@@ -68,22 +68,22 @@ pub struct PanelContent {
 }
 impl PanelContent {
     pub fn read(
-        layers: &installed_content_core::ResolvedLayers,
-        map: &installed_content_core::map::MapData,
-        sub_units: Result<std::sync::Arc<installed_content_core::unit_leader::SubUnits>, String>,
+        layers: &content_reader_core::ResolvedLayers,
+        map: &content_reader_core::map::MapData,
+        sub_units: Result<std::sync::Arc<content_reader_core::unit_leader::SubUnits>, String>,
     ) -> Result<Self, String> {
-        let defines = installed_content_core::defines::read(layers).map_err(|why| why.to_string())?;
+        let defines = content_reader_core::defines::read(layers).map_err(|why| why.to_string())?;
         let terrain =
-            installed_content_core::terrain::read_definitions(layers).map_err(|why| why.to_string())?;
+            content_reader_core::terrain::read_definitions(layers).map_err(|why| why.to_string())?;
         let terms = Content::read(&defines, &terrain, sub_units).map_err(|why| why.to_string())?;
-        let (states, _) = installed_content_states::states::read(layers, &defines, &map.definitions)
+        let (states, _) = content_reader_states::states::read(layers, &defines, &map.definitions)
             .map_err(|why| why.to_string())?;
         let members = states
             .definitions()
             .iter()
             .map(|(&id, state)| (id, state.provinces.clone()))
             .collect();
-        let neighbors = installed_content_core::province_graph::ProvinceGraph::read(layers)
+        let neighbors = content_reader_core::province_graph::ProvinceGraph::read(layers)
             .and_then(|(graph, _)| graph.neighbor_states(&members))
             .map_err(|why| why.to_string());
         Ok(Self {

@@ -1,5 +1,5 @@
 use crate::map::{gui_resources as gui_windows, native_gui, sprites::Batch};
-use installed_content_core::defines::Defines;
+use content_reader_core::defines::Defines;
 use std::collections::BTreeMap;
 use std::{
     io,
@@ -262,7 +262,7 @@ fn authored_wrap_width(resources: &impl native_gui::Resources) -> Result<f32, na
                     .into(),
         })?;
     match &element.fields {
-        installed_content_core::gui::native::Fields::TextSprite(text) => Ok(text.max_width as f32),
+        content_reader_core::gui::native::Fields::TextSprite(text) => Ok(text.max_width as f32),
         _ => Err(native_gui::Refusal {
             path: element.path.clone(),
             kind: native_gui::RefusalKind::TypeConfusion,

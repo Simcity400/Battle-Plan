@@ -4,10 +4,10 @@ use crate::{
     map::{name_draw::Placements, ribbon_fixed::Smoothing, textures::load_file},
 };
 use bytemuck::{Pod, Zeroable};
-use installed_content_core::{
+use content_reader_core::{
     ResolvedLayers, defines::Defines, defines::Defines as ContentDefines, parser, parser::Value,
 };
-use installed_content_image::{dds, native::Decode};
+use content_reader_image::{dds, native::Decode};
 use std::{collections::BTreeMap, io};
 pub const MAPARROWS: &str = "gfx/maparrows/maparrows.txt";
 pub const GROUP_SECTION_TYPE_NAME: &str = "ag_child_defence_line";
@@ -304,7 +304,7 @@ impl ArrowTypes {
                         arrow.draw_last = entry
                             .value
                             .scalar()
-                            .and_then(installed_content_core::parser::read_bool)
+                            .and_then(content_reader_core::parser::read_bool)
                             .unwrap_or(arrow.draw_last);
                     }
                     b"texture_masks" => arrow.masks = strings(&entry.value),
@@ -312,7 +312,7 @@ impl ArrowTypes {
                         arrow.draw_shadows = entry
                             .value
                             .scalar()
-                            .and_then(installed_content_core::parser::read_bool)
+                            .and_then(content_reader_core::parser::read_bool)
                             .unwrap_or(arrow.draw_shadows);
                     }
                     b"texture_patterns" => arrow.patterns = strings(&entry.value),
@@ -594,7 +594,7 @@ pub struct OrderAssets {
     pub pages: BTreeMap<(String, usize), ArrowPage>,
     pub defines: OrderDefines,
     pub execution: ExecutionDefines,
-    pub raid_defines: Result<installed_content_raids::raids::RaidGraphicsDefines, String>,
+    pub raid_defines: Result<content_reader_raids::raids::RaidGraphicsDefines, String>,
     pub radar: Result<SymbolPage, String>,
     pub air_range: Result<SymbolPage, String>,
     pub air_transfer: Result<SymbolPage, String>,
@@ -785,7 +785,7 @@ impl OrderAssets {
         layers: &ResolvedLayers,
         decode: Decode,
         (defines, graphics): (&Defines, &Defines),
-        warnings: &mut Vec<installed_content_core::Diagnostic>,
+        warnings: &mut Vec<content_reader_core::Diagnostic>,
     ) -> io::Result<Self> {
         let types = ArrowTypes::parse(&layers.read_uncovered(MAPARROWS)?)?;
         let defines_source = defines;
@@ -793,7 +793,7 @@ impl OrderAssets {
             layers.graphics_define("battle-plan arrows", graphics, defines, OrderDefines::read)?;
         let below = layers.without_overlays();
         let mut pages = BTreeMap::new();
-        let raid_types = installed_content_raids::raids::RaidArrowKind::ALL.map(|kind| kind.arrow_type());
+        let raid_types = content_reader_raids::raids::RaidArrowKind::ALL.map(|kind| kind.arrow_type());
         for name in DRAWN_ARROW_TYPES
             .iter()
             .chain(raid_types.iter())
@@ -801,7 +801,7 @@ impl OrderAssets {
         {
             let Some(arrow) = types.get(name) else {
                 layers.note_refused(format!("arrowType {name}"));
-                warnings.push((installed_content_core::DiagnosticKind::Refused, if *name == TRADE_ROUTE_TYPE_NAME {
+                warnings.push((content_reader_core::DiagnosticKind::Refused, if *name == TRADE_ROUTE_TYPE_NAME {
                     format!("{MAPARROWS} declares no arrowType {name}; trade-route lines are not drawn.")
                 } else if raid_types.contains(name) {
                     format!("{MAPARROWS} declares no arrowType {name}; raid arrows that would use it are not drawn.")
@@ -824,13 +824,13 @@ impl OrderAssets {
                         pages.insert(((*name).to_owned(), choice), page);
                     }
                     Err(error) => warnings.push((
-                        installed_content_core::DiagnosticKind::Refused,
+                        content_reader_core::DiagnosticKind::Refused,
                         format!("arrowType {name} texture choice {choice}: {error}"),
                     )),
                 }
             }
         }
-        warnings.push((installed_content_core::DiagnosticKind::Warning,
+        warnings.push((content_reader_core::DiagnosticKind::Warning,
             "Battle-plan arrows and their textures are read from gfx/maparrows, which is outside the content coverage policy and is not hash-verified."
                 .into(),
         ));
@@ -839,7 +839,7 @@ impl OrderAssets {
                 "raid arrows",
                 graphics,
                 defines_source,
-                installed_content_raids::raids::RaidGraphicsDefines::read,
+                content_reader_raids::raids::RaidGraphicsDefines::read,
             )
             .map_err(|error| error.to_string());
         Ok(Self {

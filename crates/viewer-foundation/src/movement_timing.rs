@@ -1,10 +1,10 @@
 use crate::{map::tables::rows, table_access::TokenKeys};
-use installed_content_core::{
+use content_reader_core::{
     movement::MovementDefines, movement::MovementMap, movement::RailMovementDefines,
     terrain::TerrainDefinitions,
 };
-use installed_content_regions::regions::StrategicRegion;
-use installed_content_unit_path::unit_path::Fact;
+use content_reader_regions::regions::StrategicRegion;
+use content_reader_unit_path::unit_path::Fact;
 use replay_data::{rows::DivisionMovementRow, rows::DivisionRow, rows::tables};
 use replay_derive::{
     eta_derive, eta_derive::Defines, eta_derive::OrganisationDefines, eta_derive::ProvinceOperands,
@@ -149,7 +149,7 @@ pub struct MovementContent {
 pub struct LandSpeedContent {
     pub terrain_movement: Vec<i64>,
     pub regions: BTreeMap<u32, u32>,
-    pub sub_units: Result<Arc<installed_content_core::unit_leader::SubUnits>, String>,
+    pub sub_units: Result<Arc<content_reader_core::unit_leader::SubUnits>, String>,
 }
 
 impl Default for LandSpeedContent {
@@ -195,10 +195,10 @@ impl MovementContent {
 
     pub fn set_task_force_terrain(
         &mut self,
-        terrain: Result<Arc<installed_content_core::terrain::TerrainDefinitions>, String>,
-        regions: &BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
+        terrain: Result<Arc<content_reader_core::terrain::TerrainDefinitions>, String>,
+        regions: &BTreeMap<u32, content_reader_regions::regions::StrategicRegion>,
         subunits: Result<TokenKeys, String>,
-        sub_units: Result<Arc<installed_content_core::unit_leader::SubUnits>, String>,
+        sub_units: Result<Arc<content_reader_core::unit_leader::SubUnits>, String>,
     ) {
         self.land = terrain
             .as_ref()

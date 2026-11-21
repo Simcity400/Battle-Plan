@@ -13,7 +13,7 @@ fn compare(
     frame: &DecodedFrame,
     save: &Save,
     membership: &save::PartialMapMembership,
-    equipment: &installed_content_core::equipment::Database,
+    equipment: &content_reader_core::equipment::Database,
 ) -> io::Result<Report> {
     compare_at(
         frame,
@@ -28,7 +28,7 @@ fn compare_at(
     frame: &DecodedFrame,
     save: &Save,
     membership: &save::PartialMapMembership,
-    equipment: &installed_content_core::equipment::Database,
+    equipment: &content_reader_core::equipment::Database,
     boundary: SampleBoundary,
 ) -> io::Result<Report> {
     compare_core(frame, boundary, save, Ok(membership), Ok(equipment), None)
@@ -1357,7 +1357,7 @@ fn relations_fixture() -> (
     DecodedFrame,
     Save,
     save::PartialMapMembership,
-    installed_content_core::equipment::Database,
+    content_reader_core::equipment::Database,
 ) {
     let (mut frame, mut save, membership, equipment) = fixture();
     add_country(&mut frame, &mut save, 201, 8, b"ENG");
@@ -1424,7 +1424,7 @@ fn relations_fixture() -> (
             advisor_slots: Vec::new(),
         },
     );
-    save.faction_accounts = Some(installed_content_save::faction_accounts::Accounts {
+    save.faction_accounts = Some(content_reader_save::faction_accounts::Accounts {
         extracted: Some(Vec::new()),
         ..Default::default()
     });
@@ -1675,7 +1675,7 @@ fn occupation_dispatch_requires_raw_saved_tags_and_same_read_retained_keys() {
     };
     let (mut frame, mut saved, membership, equipment) = fixture();
     add_country(&mut frame, &mut saved, 201, 8, b"BBB");
-    let parsed = installed_content_core::parser::parse(b"countries={GER={occupation_status={occupation={GER={occupation_law=group occupation_law_list={1=override} state_garrison_data={1={army_manpower_need=4 strength_ratio=1 garrison_required=2 suppression=yes manpower_pool={value={tag=GER value=5}}}}}}}} BBB={}} states={1={resistance={occupied_country_tag=GER resistance=1}}} provinces={}").unwrap();
+    let parsed = content_reader_core::parser::parse(b"countries={GER={occupation_status={occupation={GER={occupation_law=group occupation_law_list={1=override} state_garrison_data={1={army_manpower_need=4 strength_ratio=1 garrison_required=2 suppression=yes manpower_pool={value={tag=GER value=5}}}}}}}} BBB={}} states={1={resistance={occupied_country_tag=GER resistance=1}}} provinces={}").unwrap();
     saved.construction = save::construction::parse(&parsed.items).unwrap();
     frame.hour = 99;
     *frame.tables[TableId::OccupationSettings.index()] =
@@ -1835,7 +1835,7 @@ fn garrison_equipment_dispatch_skips_carried_rows_and_compares_actual_refreshes(
         rows::StateGarrisonRow, rows::VariantDefinitionRow,
     };
     let (mut frame, mut saved, membership, equipment) = fixture();
-    let parsed = installed_content_core::parser::parse(
+    let parsed = content_reader_core::parser::parse(
         br#"
         countries={GER={occupation_status={occupation={GER={state_garrison_data={
             1={equipment={equipment={id={id=9 type=70} amount=0.6} allow_zero_entries=no}
@@ -1967,8 +1967,8 @@ fn failed_content_reads_preserve_independent_map_and_pack_diagnostics() {
             membership: Ok(&membership),
             base_resources: Err("history/states/101-Greenland.txt: malformed resource value".into()),
             railway_adjacency: Err("map/provinces.bmp: malformed adjacency input".into()),
-            buildings: Ok(&installed_content_core::buildings::Buildings::default()),
-            defines: Ok(&installed_content_core::defines::Defines::new().unwrap()),
+            buildings: Ok(&content_reader_core::buildings::Buildings::default()),
+            defines: Ok(&content_reader_core::defines::Defines::new().unwrap()),
             raid_graph: Err("map/adjacencies.csv: unused".into()),
             equipment: Err("common/units/equipment: unused".into()),
             leader_traits: Err("common/country_leader: unused".into()),
@@ -2043,7 +2043,7 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
             user: b"later-player".to_vec(),
             ..Default::default()
         }]));
-    let weather = installed_content_core::parser::parse(
+    let weather = content_reader_core::parser::parse(
         b"weather={provinces={0={province=0 snow=0.00001}} regions={}}",
     )
     .unwrap();
@@ -2073,8 +2073,8 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
             membership: Ok(&membership),
             base_resources: Ok(&save::construction::PartialBaseResources::default()),
             railway_adjacency: Err("railway content is outside this fixture".into()),
-            buildings: Ok(&installed_content_core::buildings::Buildings::default()),
-            defines: Ok(&installed_content_core::defines::Defines::new().unwrap()),
+            buildings: Ok(&content_reader_core::buildings::Buildings::default()),
+            defines: Ok(&content_reader_core::defines::Defines::new().unwrap()),
             raid_graph: Err("map/adjacencies.csv: unused".into()),
             equipment: Err("common/units/equipment: unused".into()),
             leader_traits: Err("common/country_leader: unused".into()),
@@ -2115,8 +2115,8 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
             membership: Ok(&membership),
             base_resources: Ok(&save::construction::PartialBaseResources::default()),
             railway_adjacency: Err("railway content is outside this fixture".into()),
-            buildings: Ok(&installed_content_core::buildings::Buildings::default()),
-            defines: Ok(&installed_content_core::defines::Defines::new().unwrap()),
+            buildings: Ok(&content_reader_core::buildings::Buildings::default()),
+            defines: Ok(&content_reader_core::defines::Defines::new().unwrap()),
             raid_graph: Err("map/adjacencies.csv: unused".into()),
             equipment: Err("common/units/equipment: unused".into()),
             leader_traits: Err("common/country_leader: unused".into()),
@@ -3074,7 +3074,7 @@ fn convoy_variants_follow_the_variant_category() {
             hull = { is_archetype = yes type = screen_ship module_slots = { main = { } } }
         }";
     let load = |module: &str| {
-        installed_content_core::equipment::fixture::load(&[
+        content_reader_core::equipment::fixture::load(&[
             (
                 "common/units/equipment/modules/m.txt",
                 &format!("equipment_modules = {{ gun = {{ add_equipment_type = {module} }} }}"),
@@ -3429,7 +3429,7 @@ fn air_sortie_oracle_compares_the_saved_penalty_and_checks_operand_keys() {
             pool_ordinal: 0,
         },
     );
-    saved.air.bases.push(installed_content_save::air::AirBase {
+    saved.air.bases.push(content_reader_save::air::AirBase {
         id: base,
         state: Some(1),
         host: None,
@@ -3794,7 +3794,7 @@ fn naval_fixture() -> (
     DecodedFrame,
     Save,
     save::PartialMapMembership,
-    installed_content_core::equipment::Database,
+    content_reader_core::equipment::Database,
 ) {
     let (mut frame, mut saved, membership, equipment) = fixture();
     add_country(&mut frame, &mut saved, 201, 8, b"SOV");
@@ -4002,7 +4002,7 @@ fn relation_fixture() -> (
     DecodedFrame,
     Save,
     save::PartialMapMembership,
-    installed_content_core::equipment::Database,
+    content_reader_core::equipment::Database,
 ) {
     let (mut frame, mut save, membership, equipment) = fixture();
     save.date.hour = 2;
@@ -4454,7 +4454,7 @@ fn naval_region_access_refuses_saved_nonpositive_or_duplicate_pairs_and_zero_row
 fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
     let (mut frame, mut save, _, _) = relation_fixture();
     save.production = save::production::parse(
-        &installed_content_core::parser::parse(
+        &content_reader_core::parser::parse(
             br#"countries={
                 GER={production={equipments={allow_zero_entries=no}}}
                 D01={production={equipments={
@@ -4608,7 +4608,7 @@ fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
     let stocked = |amounts: &str| {
         let mut save = save.clone();
         save.production = save::production::parse(
-            &installed_content_core::parser::parse(
+            &content_reader_core::parser::parse(
                 format!(
                     "countries={{GER={{production={{equipments={{allow_zero_entries=no}}}}}}
                     D01={{production={{equipments={{{amounts} allow_zero_entries=no}}}}}}}}"
@@ -5421,7 +5421,7 @@ fn strategic_action_oracle_names_unsaved_operands_and_keeps_saved_differences() 
 fn volunteer_air_stockpile_uses_uncapped_whole_archetypes_a_load_rebuilds() {
     let (mut frame, mut saved, _, _) = relation_fixture();
     saved.production = save::production::parse(
-        &installed_content_core::parser::parse(
+        &content_reader_core::parser::parse(
             br#"countries={D01={production={equipments={
         equipment={id={id=1 type=70} amount=3.6}
         equipment={id={id=2 type=70} amount=1.6}
@@ -5504,7 +5504,7 @@ fn volunteer_air_stockpile_uses_uncapped_whole_archetypes_a_load_rebuilds() {
     let stocked = |amounts: &str| {
         let mut saved = saved.clone();
         saved.production = save::production::parse(
-            &installed_content_core::parser::parse(
+            &content_reader_core::parser::parse(
                 format!(
                     "countries={{D01={{production={{equipments={{{amounts} allow_zero_entries=no}}}}}}}}"
                 )

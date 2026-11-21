@@ -1,5 +1,5 @@
 
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use replay_data::{country_flags, rows::VariantDefinitionRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, BTreeSet};

@@ -5,7 +5,7 @@ use super::{
     at_hour::{At, AtHour, Owner, Read},
 };
 use crate::Source;
-use installed_content_core::content::diagnostics::Once as OnceLock;
+use content_reader_core::content::diagnostics::Once as OnceLock;
 use replay_data::rows::{CountryLinkRow, Recorded, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -112,11 +112,11 @@ pub struct RecruitmentDefines {
     pub noncore_max: i64,
 }
 
-pub fn content_defines(layers: &installed_content_core::ResolvedLayers) -> Result<RecruitmentDefines, String> {
+pub fn content_defines(layers: &content_reader_core::ResolvedLayers) -> Result<RecruitmentDefines, String> {
     let held = layers.derived::<OnceLock<Result<RecruitmentDefines, String>>>();
     held.get_or_init(|| {
         let load = || -> io::Result<RecruitmentDefines> {
-            let defines = installed_content_core::defines::read(layers)?;
+            let defines = content_reader_core::defines::read(layers)?;
             Ok(RecruitmentDefines {
                 speed: defines.fixed5("NCountry", "BASE_MOBILIZATION_SPEED")?,
                 noncore_base: defines.fixed5("NCountry", "LOCAL_MANPOWER_ACCESSIBLE_NON_CORE_FACTOR")?,

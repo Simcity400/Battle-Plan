@@ -4,7 +4,7 @@ use viewer_foundation::map::camera::Placement;
 use viewer_foundation::map::province_admission::edge_boxes;
 #[test]
 fn only_states_the_building_producer_cannot_select_are_refused() {
-    let descriptors = installed_content_core::mesh::parse_descriptors(br#"
+    let descriptors = content_reader_core::mesh::parse_descriptors(br#"
             entity = { name = ruin state = { name = destroyed event = { particle = smoke light = alarm } } }
             entity = { name = default_ruin clone = ruin default_state = destroyed }
             entity = { name = linked_ruin clone = ruin state = { name = idle next_state = destroyed } }
@@ -20,7 +20,7 @@ fn only_states_the_building_producer_cannot_select_are_refused() {
 }
 
 use super::*;
-use installed_content_core::buildings;
+use content_reader_core::buildings;
 use replay_data::{
     Hour, rows::BuildingRow, rows::CountryLinkRow, rows::LexicalTokenRow, rows::LocalPlayerRow,
     rows::RaidScope, rows::RaidTargetStatusRow, rows::TableId, rows::TableRows,
@@ -40,7 +40,7 @@ buildings = {
 "#;
 
 fn types() -> Buildings {
-    buildings::parse(SAMPLE, &installed_content_core::key_names::KeyNames::default()).unwrap()
+    buildings::parse(SAMPLE, &content_reader_core::key_names::KeyNames::default()).unwrap()
 }
 
 fn defines() -> Defines {
@@ -785,7 +785,7 @@ fn a_ruin_with_its_own_mesh_keeps_variant_selector_zero_across_levels() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let types = buildings::parse(
-            b"buildings={ arms_factory={ show_on_map=1 show_on_map_meshes=2 has_destroyed_mesh=yes level_cap={ state_max=20 } } }", &installed_content_core::key_names::KeyNames::default(),
+            b"buildings={ arms_factory={ show_on_map=1 show_on_map_meshes=2 has_destroyed_mesh=yes level_cap={ state_max=20 } } }", &content_reader_core::key_names::KeyNames::default(),
         )
         .unwrap();
     let assets = one_slot_assets(
@@ -1828,7 +1828,7 @@ fn shared_slot_pages_install_as_the_layers_slots_and_share_untouched_pages() {
     let kind = BuildingType { name: "infrastructure".into(), show_on_map: Some(1), show_on_map_meshes: 1, ..Default::default() };
     let types = Buildings { declaration_order: vec![kind.name.clone()], types: BTreeMap::from([(kind.name.clone(), kind)]), ..Default::default() };
     let defines = Defines { shrink_distance: 180.0, destroyed: 6_000_000, recovered: 8_000_000, damaged: 80_000, max_levels: 10, popup_speed: 5.0 };
-    let at = |x: f32| installed_content_core::positions::BuildingPosition { state: 100, kind: "infrastructure".into(), x, y: 0.0, z: x, rotation: 0.0, adjacent_sea: 0 };
+    let at = |x: f32| content_reader_core::positions::BuildingPosition { state: 100, kind: "infrastructure".into(), x, y: 0.0, z: x, rotation: 0.0, adjacent_sea: 0 };
     let authored = (0..150).map(|id| (100, "infrastructure".to_owned(), at(id as f32), None)).collect();
     let assets = MapBuildingAssets::stub(&types, defines, authored, Vec::new(), Vec::new(), None);
     let hour = |at: i32| WireHour { branch: 0, hour: at, perspective: 1, fog: true, warnings: Vec::new(), city_damage: Arc::default() };

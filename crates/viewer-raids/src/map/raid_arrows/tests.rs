@@ -507,7 +507,7 @@ fn the_pool_is_the_raids_recorded_row_or_refused_by_name() {
 fn the_unit_entity_follows_the_native_ladder() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use installed_content_raids::raids::RaidUnitModel;
+    use content_reader_raids::raids::RaidUnitModel;
     let declared = |name: &str| {
         [
             "ENG_truck_entity",
@@ -522,7 +522,7 @@ fn the_unit_entity_follows_the_native_ladder() {
             entity: entity.map(str::to_owned),
             default_entity: default.map(str::to_owned),
             equipment: equipment
-                .and_then(installed_content_core::equipment::category_mask)
+                .and_then(content_reader_core::equipment::category_mask)
                 .unwrap_or(0),
             ..RaidUnitModel::default()
         };
@@ -587,7 +587,7 @@ fn the_unit_entity_follows_the_native_ladder() {
 fn the_designer_model_follows_resolve_aircraft_designer_model_with_and_without_the_dlc() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (content, _) = installed_content_core::equipment::fixture::load(&[(
+    let (content, _) = content_reader_core::equipment::fixture::load(&[(
         "common/units/equipment/planes.txt",
         "equipments = {
             transport_plane_equipment = { is_archetype = yes sprite = transport_plane }

@@ -88,7 +88,7 @@ pub(super) fn run(run: Run<'_>) -> io::Result<Value> {
     report["wall_seconds"] = json!(wall_seconds);
     report["viewport"] = json!(pixels);
     report["present_mode"] = json!(format!("{:?}", state.surface_config.present_mode));
-    report["attached_display_hz"] = json!(installed_content_settings::settings::display_refresh_hz(Some(window.hwnd())));
+    report["attached_display_hz"] = json!(content_reader_settings::settings::display_refresh_hz(Some(window.hwnd())));
     report["adapter"] = json!(state.adapter.get_info().name);
     Ok(report)
 }

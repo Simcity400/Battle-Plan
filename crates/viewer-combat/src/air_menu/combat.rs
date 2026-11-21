@@ -3,7 +3,7 @@ use crate::{
     Values,
     binding::{Bindings, SPRITE},
 };
-use installed_content_localisation::localisation::Argument;
+use content_reader_localisation::localisation::Argument;
 use replay_data::rows::tables;
 use replay_derive::air_region_derive::{self as derive, EquipmentPools, Item, Retained};
 
@@ -59,7 +59,7 @@ fn damage(
     item: Item,
 ) -> Result<Values, String> {
     let amount = match item.cause {
-        0 | 1 | 2 | 6 | 7 => installed_content_core::fixed5::fixed5_to_string(item.amount, 2),
+        0 | 1 | 2 | 6 | 7 => content_reader_core::fixed5::fixed5_to_string(item.amount, 2),
         3 => loc(
             content,
             "AIRWING_DISRUPTED_VAL",

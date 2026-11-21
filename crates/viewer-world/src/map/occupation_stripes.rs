@@ -1,4 +1,4 @@
-use installed_content_core::{defines::Defines, map::MapData};
+use content_reader_core::{defines::Defines, map::MapData};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
@@ -191,7 +191,7 @@ fn prepare(
 #[cfg(test)]
 mod tests {
     use super::{Field, *};
-    use installed_content_core::map::CountryColors;
+    use content_reader_core::map::CountryColors;
     use replay_data::rows::*;
     use replay_frame::frame::TableView;
     use viewer_foundation::map::test_support::{test_frame, test_put as put};

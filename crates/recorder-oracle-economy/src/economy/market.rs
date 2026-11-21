@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_save::{economy::market as save, production};
+use content_reader_save::{economy::market as save, production};
 use replay_data::rows::{MarketPool, MarketPriceLevel, MarketSubsidy};
 fn pool(report: &mut Report, label: &str, actual: &MarketPool, expected: &production::Pool) {
     equal(
@@ -635,7 +635,7 @@ mod tests {
             allow_zero_entries: Some(false),
             equipment: vec![production::Equipment {
                 variant: 71,
-                amount: installed_content_save::Decimal::parse(b"-0.00001").unwrap(),
+                amount: content_reader_save::Decimal::parse(b"-0.00001").unwrap(),
             }],
         };
         let mut actual = MarketPool {

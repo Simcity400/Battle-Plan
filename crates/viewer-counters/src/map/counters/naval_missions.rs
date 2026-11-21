@@ -402,7 +402,7 @@ struct Record<'e> {
 }
 
 fn efficiency_text(value: i64) -> String {
-    let text = installed_content_core::fixed5::fixed5_percent(value.clamp(0, 100_000), 0, true);
+    let text = content_reader_core::fixed5::fixed5_percent(value.clamp(0, 100_000), 0, true);
     let code = COLOR;
     if value < 75_000 {
         format!("{code}R{text}{code}!")
@@ -481,7 +481,7 @@ fn set_shown(
 pub(super) fn mission_assets(
     windows: &NativeWindows,
     registry: &native::resources::Registry,
-    localisation: &installed_content_localisation::localisation::Localisation,
+    localisation: &content_reader_localisation::localisation::Localisation,
 ) -> native_gui::Assets {
     let mut assets = native_gui::Assets::default();
     let gui_type = |name: &[u8]| windows.gui_type(name);

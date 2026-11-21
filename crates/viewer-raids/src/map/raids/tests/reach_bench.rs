@@ -1,7 +1,7 @@
 
 use std::time::Instant;
 
-use installed_content_core::province_graph::ProvinceGraph;
+use content_reader_core::province_graph::ProvinceGraph;
 use replay_data::{
     rows::DivisionMovementRow, rows::DivisionRow, rows::DivisionStatusRow, rows::FactionMemberRow,
     rows::NavalBaseRow, rows::RelationLinkRow, rows::WarRelationRow,
@@ -224,7 +224,7 @@ fn army_reach_bench() {
     use launch::RaidPaths;
     let (graph, geometry) = grid();
     let mut assets = assets();
-    assets.moves = Ok(installed_content_unit_path::unit_path::MoveGraph::new(
+    assets.moves = Ok(content_reader_unit_path::unit_path::MoveGraph::new(
         &graph, &geometry,
     ));
     assets.geometry = geometry;

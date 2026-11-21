@@ -10,7 +10,7 @@ use crate::{
 };
 use dashboard_follow::live::{Cells, Source as Cell};
 use engine_air_history::cloop_history::air_stats;
-use installed_content_localisation::localisation::Argument;
+use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{AirStatisticsRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};

@@ -1,6 +1,6 @@
 use super::carriers::{MIO, OTHER, SIZES, in_organisation, sized};
 use super::*;
-use installed_content_core::{equipment::Groups, mio_traits::Catalog, parser::Item};
+use content_reader_core::{equipment::Groups, mio_traits::Catalog, parser::Item};
 use replay_data::rows::{
     IndustrialOrganisationDetailsRow, IndustrialOrganisationFlag, IndustrialOrganisationRow,
     IndustrialOrganisationTask, IndustrialOrganisationVariable, TableRows,
@@ -83,9 +83,9 @@ fn content() -> (Catalog, Groups) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
     }
-    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     let loaded = (
-        installed_content_core::mio_traits::read(&layers).unwrap(),
+        content_reader_core::mio_traits::read(&layers).unwrap(),
         Groups::load(&layers).unwrap(),
     );
     std::fs::remove_dir_all(&root).unwrap();

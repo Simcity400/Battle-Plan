@@ -78,7 +78,7 @@ impl<'a> CounterQueries<'a> {
         &self,
         through: u32,
         raw_owner: u32,
-    ) -> Result<installed_content_unit_path::unit_path::StraitFleet, String> {
+    ) -> Result<content_reader_unit_path::unit_path::StraitFleet, String> {
         let world = self.world.get_or_init(|| {
             dashboard_text::triggers::World::read(self.frame, self.reads.trigger_content.facts())
         });
@@ -127,7 +127,7 @@ impl<'a> CounterQueries<'a> {
         &self,
         selected: &[Unit],
         target: u32,
-    ) -> Result<installed_content_unit_path::unit_path::selected_transport::Outputs, String> {
+    ) -> Result<content_reader_unit_path::unit_path::selected_transport::Outputs, String> {
         let world = self.world.get_or_init(|| {
             dashboard_text::triggers::World::read(self.frame, self.reads.trigger_content.facts())
         });

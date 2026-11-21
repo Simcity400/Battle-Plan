@@ -49,7 +49,7 @@ impl ScriptedText<'_> {
         };
         crate::triggers::inputs::table(self.frame, TableId::CountryAppearance);
         crate::triggers::inputs::table(self.frame, TableId::ReservedCountryNaming);
-        let tag = installed_content_country_names::country_names::original_or_own_tag_in(
+        let tag = content_reader_country_names::country_names::original_or_own_tag_in(
             &self.frame,
             controller,
         )?;

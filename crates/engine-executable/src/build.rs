@@ -79,7 +79,7 @@ impl RecordedBuild<'_> {
         };
         Some(format!(
             "This recording was made with game {} ({}), but the installed game is {installed}. \
-             Installed content and tables are read from the installed game.",
+             Content and tables are read from the installed game.",
             self.version,
             describe(self.identity.size, &self.identity.sha256),
         ))

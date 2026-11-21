@@ -131,7 +131,7 @@ impl Shared {
 
 pub trait Source: Send + Sync {
     fn origins(&self) -> Option<&resource_origins::Content>;
-    fn localisation(&self) -> &installed_content_localisation::localisation::Localisation;
+    fn localisation(&self) -> &content_reader_localisation::localisation::Localisation;
 }
 
 impl Source for Content {
@@ -139,7 +139,7 @@ impl Source for Content {
         self.resource_icons.as_ref().ok().map(|icons| &icons.origins)
     }
 
-    fn localisation(&self) -> &installed_content_localisation::localisation::Localisation {
+    fn localisation(&self) -> &content_reader_localisation::localisation::Localisation {
         &self.names.localisation
     }
 }

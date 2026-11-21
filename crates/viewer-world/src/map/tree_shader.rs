@@ -1,5 +1,5 @@
 use eframe::wgpu;
-use installed_content_core::{
+use content_reader_core::{
     pdxshader::DepthStencilState, pdxshader::RasterizerState, pdxshader::program::Stage,
 };
 use shader_pipeline::{binding, gpu, library::Effect};

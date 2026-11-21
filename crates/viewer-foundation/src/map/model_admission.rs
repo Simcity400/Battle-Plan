@@ -1,4 +1,4 @@
-use installed_content_core::defines::Defines;
+use content_reader_core::defines::Defines;
 use std::io;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

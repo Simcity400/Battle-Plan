@@ -20,7 +20,7 @@ use viewer_foundation::tooltip_text::Tooltip;
 pub struct Content {
     pub assets: Arc<super::RaidAssets>,
     pub flags: Arc<LazyFlags>,
-    pub localisation: Arc<installed_content_localisation::localisation::Localisation>,
+    pub localisation: Arc<content_reader_localisation::localisation::Localisation>,
     pub recorded_language: String,
     pub scripted: Arc<Result<dashboard_text::scripted_text::ScriptedContent, String>>,
 }

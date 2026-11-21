@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 use std::{cell::RefCell, collections::BTreeMap, collections::BTreeSet, io, sync::Arc};
 
-use installed_content_core::{ResolvedLayers, pdxshader};
-use installed_content_image::native::Decode;
+use content_reader_core::{ResolvedLayers, pdxshader};
+use content_reader_image::native::Decode;
 
 pub fn globals(map: [u32; 2], decode: Decode) -> Vec<String> {
     shader_pipeline::library::globals(map, decode)
@@ -73,7 +73,7 @@ impl<B> Default for Graph<B> {
     fn default() -> Self { Self { sources: BTreeMap::new(), errors: BTreeSet::new() } }
 }
 
-fn graph<B: Clone + AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_core::content::Bytes>>(effect: &str, read: &dyn Fn(&str) -> io::Result<B>) -> Graph<B> {
+fn graph<B: Clone + AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_core::content::Bytes>>(effect: &str, read: &dyn Fn(&str) -> io::Result<B>) -> Graph<B> {
     let out = RefCell::new(Graph::default());
     let read = |path: &str| {
         if let Some(bytes) = out.borrow().sources.get(path) {
@@ -120,7 +120,7 @@ pub struct Audit {
     pub affected_passes: usize,
 }
 
-fn audit_paths<B: Clone + Eq + AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_core::content::Bytes>>(
+fn audit_paths<B: Clone + Eq + AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_core::content::Bytes>>(
     layers: &ResolvedLayers,
     passes: &[(&str, &str, &str)],
     vanilla: &dyn Fn(&str) -> io::Result<B>,
@@ -190,8 +190,8 @@ fn passes_with<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]>>(read: &dyn Fn(&s
         .map(|&(name, path)| (name.into(), path.into()))
         .collect();
     let path = "gfx/maparrows/maparrows.txt";
-    let document = installed_content_core::parser::parse(&read(path)?)?;
-    let effect = |items: &[installed_content_core::parser::Item], kind: &str| -> io::Result<String> {
+    let document = content_reader_core::parser::parse(&read(path)?)?;
+    let effect = |items: &[content_reader_core::parser::Item], kind: &str| -> io::Result<String> {
         let value = items.iter().rev().find(|item| item.key.as_deref().is_some_and(|key| key.eq_ignore_ascii_case(b"effect")))
             .and_then(|item| item.value.scalar())
             .ok_or_else(|| invalid(format!("{path}: {kind} has no scalar effect; shader source audit cannot establish its source")))?;
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     #[ignore = "reads the installed game's shaders; set BATTLE_PLAN_GAME_DIR"]
     fn installed_map_passes_point_sample_the_light_table() {
-        use installed_content_core::{
+        use content_reader_core::{
             pdxshader::program, pdxshader::program::Filter, pdxshader::program::Stage,
         };
         let root = PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap());

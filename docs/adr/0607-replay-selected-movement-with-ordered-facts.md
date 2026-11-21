@@ -16,4 +16,4 @@ Transport uses the current local selection in insertion order and the chosen act
 
 Transport primary and secondary texts have independent lengths. The first railway call can be eligible when only secondary is nonempty. It transforms and appends primary bytes and ensures a line feed on a nonempty body. The second call tests primary length only, then appends a literal ASCII space and the raw primary. Neither rule makes text length an admission test.
 
-[Selected checks](../../crates/installed-content-unit-path/src/unit_path/selected.rs) · [Area search](../../crates/installed-content-unit-path/src/unit_path/selected/area.rs) · [Order cursor](../../crates/installed-content-unit-path/src/unit_path/selected/cursor.rs) · [Transport](../../crates/installed-content-unit-path/src/unit_path/selected/transport.rs)
+[Selected checks](../../crates/content-reader-unit-path/src/unit_path/selected.rs) · [Area search](../../crates/content-reader-unit-path/src/unit_path/selected/area.rs) · [Order cursor](../../crates/content-reader-unit-path/src/unit_path/selected/cursor.rs) · [Transport](../../crates/content-reader-unit-path/src/unit_path/selected/transport.rs)

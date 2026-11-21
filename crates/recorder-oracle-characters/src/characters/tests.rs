@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_save::{Decimal, GameDate};
+use content_reader_save::{Decimal, GameDate};
 use replay_data::{
     rows::ActiveAbilityRow, rows::CharacterRow, rows::Recorded, rows::TableId, rows::TableRows,
     rows::UnitLeaderRow, rows::UnitLeaderTraitRow,
@@ -209,7 +209,7 @@ fn advisor_modifier_cache_distinguishes_not_recorded_from_native_unavailable() {
 
 #[test]
 fn operative_codename_oracle_checks_both_hosts_and_saved_omissions() {
-    use installed_content_save::{DivisionName, intel};
+    use content_reader_save::{DivisionName, intel};
     use replay_data::{rows::CharacterOperativeRow, rows::NameOperands};
     let (mut frame, _, _) = fixture();
     let naming = NameOperands {
@@ -348,7 +348,7 @@ fn operative_name_and_codename_compatibility_gaps_are_named_and_counted() {
         if whole_frame {
             report.record_tables(&frame);
         }
-        compare_codenames(&frame, &installed_content_save::intel::Pack::default(), &mut report).unwrap();
+        compare_codenames(&frame, &content_reader_save::intel::Pack::default(), &mut report).unwrap();
         assert!(report.differences.is_empty());
         assert_eq!(report.scalar_checks, 0);
         assert_eq!(report.compared_tables["CharacterOperatives codenames"], 0);
@@ -400,7 +400,7 @@ fn operative_name_and_codename_native_absence_is_named_separately() {
             ..Default::default()
         }]));
     let mut report = Report::default();
-    compare_codenames(&frame, &installed_content_save::intel::Pack::default(), &mut report).unwrap();
+    compare_codenames(&frame, &content_reader_save::intel::Pack::default(), &mut report).unwrap();
     assert!(report.differences.is_empty());
     assert_eq!(report.scalar_checks, 0);
     for field in [
@@ -431,8 +431,8 @@ fn leader_traits(text: &str) -> LeaderTraits {
     let file = root.join("common/country_leader/traits.txt");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, text).unwrap();
-    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let (traits, _) = installed_content_core::leader_traits::read(&layers).unwrap();
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let (traits, _) = content_reader_core::leader_traits::read(&layers).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
     traits
 }
@@ -1530,7 +1530,7 @@ fn unnamed_roster_row(id: u32, ordinal: u32) -> CharacterRow {
 
 #[test]
 fn a_saved_character_no_country_lists_is_compared_as_the_memory_that_wrote_or_loaded_the_save() {
-    let document = installed_content_core::parser::parse(UNNAMED_ROSTER).unwrap();
+    let document = content_reader_core::parser::parse(UNNAMED_ROSTER).unwrap();
     let pack = saved::parse(&document.items).unwrap();
     let country = CountryRow {
         id: 7,

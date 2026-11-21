@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 
-use installed_content_core::{
+use content_reader_core::{
     ResolvedLayers,
     content::diagnostics::{self, Diagnostics},
     image::{Rgba8Image, dds, native::Decode},
@@ -63,13 +63,13 @@ fn noted<T>(drawn: Result<T, String>) -> Result<T, String> {
 
 #[derive(Default)]
 struct Inputs {
-    map_size: installed_content_core::content::diagnostics::Once<Result<[u32; 2], String>>,
+    map_size: content_reader_core::content::diagnostics::Once<Result<[u32; 2], String>>,
     programs: Mutex<BTreeMap<Vec<u8>, Arc<ParsedProgram>>>,
     retried: OnceLock<()>,
 }
 
 type ParsedProgram =
-    installed_content_core::content::diagnostics::Once<Result<Arc<program::Program>, String>>;
+    content_reader_core::content::diagnostics::Once<Result<Arc<program::Program>, String>>;
 
 pub fn program(layers: &ResolvedLayers, effect: &[u8]) -> Result<Arc<program::Program>, String> {
     let inputs = layers.derived::<Inputs>();
@@ -268,10 +268,10 @@ pub fn map_size(layers: &ResolvedLayers) -> Result<[u32; 2], String> {
         .map_size
         .get_or_init(|| {
             let files =
-                installed_content_core::terrain::read_default_map(layers).map_err(|e| e.to_string())?;
+                content_reader_core::terrain::read_default_map(layers).map_err(|e| e.to_string())?;
             let path = files.file("provinces").map_err(|e| e.to_string())?;
             let (prefix, length) = layers.read_prefix(&path, 138).map_err(|e| e.to_string())?;
-            installed_content_core::image::bmp::rgb_dimensions_prefix(&prefix, length)
+            content_reader_core::image::bmp::rgb_dimensions_prefix(&prefix, length)
                 .map_err(|e| e.to_string())
         })
         .clone()

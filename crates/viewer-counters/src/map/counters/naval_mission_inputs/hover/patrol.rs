@@ -18,7 +18,7 @@ pub(in crate::map::counters) struct Defines {
 }
 impl Defines {
     pub(in crate::map::counters) fn read(
-        defines: &installed_content_core::defines::Defines,
+        defines: &content_reader_core::defines::Defines,
     ) -> io::Result<Self> {
         Ok(Self {
             base: defines.fixed5("NNavy", "BASE_SPOTTING")?,
@@ -434,7 +434,7 @@ impl Breakdown {
         }
         if self.weather != ONE {
             let text =
-                installed_content_core::fixed5::fixed5_percent(self.weather.wrapping_sub(ONE), 1, true);
+                content_reader_core::fixed5::fixed5_percent(self.weather.wrapping_sub(ONE), 1, true);
             let value = format!(
                 "\u{11}{}{text}\u{11}!",
                 if self.weather < ONE { 'R' } else { 'Y' }
@@ -456,7 +456,7 @@ fn hidden(hour: &Hour<'_>, region: u32) -> Fact<i32> {
     let relations = Relations::read(hour.frame, hour.links).map_err(str::to_owned)?;
     let mut count = 0_i32;
     for &province in hour.anchors.region_provinces(region) {
-        if hour.anchors.kinds.get(&province) != Some(&installed_content_core::map::ProvinceKind::Sea) {
+        if hour.anchors.kinds.get(&province) != Some(&content_reader_core::map::ProvinceKind::Sea) {
             continue;
         }
         let roster = order

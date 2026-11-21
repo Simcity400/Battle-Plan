@@ -107,7 +107,7 @@ fn load_with(
     source: &Source,
     options: &ContentOptions,
     settings: &Settings,
-    resolved: impl Fn() -> io::Result<Arc<installed_content_core::content::ResolvedContent>>,
+    resolved: impl Fn() -> io::Result<Arc<content_reader_core::content::ResolvedContent>>,
     presented: impl FnOnce() -> io::Result<Arc<Presented>>,
     keeping: Keeping,
 ) -> io::Result<Catalogue> {
@@ -126,7 +126,7 @@ fn load_with(
     )?;
     let gui_decode = settings
         .as_ref()
-        .map(|&force_pow2_textures| installed_content_image::native::Decode {
+        .map(|&force_pow2_textures| content_reader_image::native::Decode {
             force_pow2_textures,
         })
         .map_err(|why| format!("settings.txt is unavailable: {why}"));
@@ -134,17 +134,17 @@ fn load_with(
         presented
             .content
             .layers
-            .artwork("interface sprites", installed_content_gfx::gfx::read)
+            .artwork("interface sprites", content_reader_gfx::gfx::read)
     };
     let sprites = match keeping {
         Keeping::On if presented.presentation.is_empty() => {
             let (sprites, noted) = kept::kept(
-                kept::place::<installed_content_gfx::gfx::SpriteSet>(
+                kept::place::<content_reader_gfx::gfx::SpriteSet>(
                     source,
                     &options.options.cache_dir,
                     &[],
                 ),
-                || installed_content_core::content::diagnostics::capture(read_sprites),
+                || content_reader_core::content::diagnostics::capture(read_sprites),
             );
             noted.credit();
             sprites
@@ -185,7 +185,7 @@ type Cached = Option<(Binding, Arc<CachedResult<Catalogue>>)>;
 pub type Settings = Result<bool, String>;
 
 fn settings(options: &ContentOptions) -> Settings {
-    installed_content_settings::settings::read_keys(&options.options.user_dir)
+    content_reader_settings::settings::read_keys(&options.options.user_dir)
         .map(|keys| keys.force_pow2_textures())
         .map_err(|why| why.to_string())
 }
@@ -262,11 +262,11 @@ pub fn present<T, E: std::fmt::Display>(
     #[cfg(any(test, feature = "test-support"))]
     PRESENTED.with(|count| count.set(count.get() + 1));
     Drawn::new(|| {
-        if std::ptr::eq(admitted, recorded) || installed_content_core::content::is_strict() {
+        if std::ptr::eq(admitted, recorded) || content_reader_core::content::is_strict() {
             return draw(admitted);
         }
         let (shown, noted) =
-            capture_isolated(|| installed_content_core::content::strict(|| draw(admitted)));
+            capture_isolated(|| content_reader_core::content::strict(|| draw(admitted)));
         match shown {
             Ok(value) => {
                 credit(&noted);
@@ -275,7 +275,7 @@ pub fn present<T, E: std::fmt::Display>(
             Err(reason) => {
                 let drawn = draw(recorded);
                 if drawn.is_ok() {
-                    installed_content_core::content::credit_overlay_refusals(
+                    content_reader_core::content::credit_overlay_refusals(
                         &std::collections::BTreeSet::from([format!("{what} ({reason})")]),
                     );
                 }
@@ -310,18 +310,18 @@ mod present_tests {
         select(&source, &mut options, &["art"]);
         let (admitted, recorded) = presenting(&source, Some(&options)).unwrap().unwrap();
         let note = |text: &str| {
-            installed_content_core::content::credit_overlay_refusals(&std::collections::BTreeSet::from([
+            content_reader_core::content::credit_overlay_refusals(&std::collections::BTreeSet::from([
                 text.to_owned(),
             ]))
         };
         let (drawn, line) = fallback_line(|| {
             present("the icon", &admitted, &recorded, |cat| {
                 if std::ptr::eq(cat, &*admitted) {
-                    assert!(installed_content_core::content::is_strict());
+                    assert!(content_reader_core::content::is_strict());
                     note("discarded selector note");
                     Err("the mod's sprite does not load".to_owned())
                 } else {
-                    assert!(!installed_content_core::content::is_strict());
+                    assert!(!content_reader_core::content::is_strict());
                     Ok::<_, String>(7)
                 }
             })
@@ -361,7 +361,7 @@ mod present_tests {
                 &plain,
                 |cat| {
                     attempts.set(attempts.get() + 1);
-                    assert!(!installed_content_core::content::is_strict());
+                    assert!(!content_reader_core::content::is_strict());
                     assert!(std::ptr::eq(cat, &*plain));
                     Ok::<_, String>(1)
                 },
@@ -413,7 +413,7 @@ mod present_tests {
                 cat,
                 |drawing| {
                     if std::ptr::eq(drawing, &*shown) {
-                        assert!(installed_content_core::content::is_strict());
+                        assert!(content_reader_core::content::is_strict());
                         Err("the mod's inner sprite does not load".to_owned())
                     } else {
                         Ok::<_, String>("recorded inner")
@@ -780,11 +780,11 @@ mod loader_tests {
     }
 }
 
-pub fn equipment_units(catalogue: &Catalogue) -> Result<Arc<installed_content_core::equipment::Database>, String> {
+pub fn equipment_units(catalogue: &Catalogue) -> Result<Arc<content_reader_core::equipment::Database>, String> {
     catalogue
         .content
         .layers
-        .derived::<CachedResult<installed_content_core::equipment::Database>>()
-        .get_or_init(|| installed_content_core::equipment::Database::load_complete(&catalogue.content.layers))
+        .derived::<CachedResult<content_reader_core::equipment::Database>>()
+        .get_or_init(|| content_reader_core::equipment::Database::load_complete(&catalogue.content.layers))
         .map_err(|error| error.to_string())
 }

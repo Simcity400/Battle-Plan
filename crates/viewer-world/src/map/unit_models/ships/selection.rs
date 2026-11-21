@@ -1,6 +1,6 @@
 
 use super::*;
-use installed_content_core::{parser::c_string, parser::text};
+use content_reader_core::{parser::c_string, parser::text};
 mod pass;
 pub(super) use pass::Pass;
 #[cfg(test)]

@@ -1,11 +1,11 @@
 use crate::invalid;
-use installed_content_core::{
+use content_reader_core::{
     ResolvedLayers,
     defines::Defines,
     map::{MapData, ProvinceKind},
     parser::{self, Value},
 };
-use installed_content_regions::regions::StrategicRegion;
+use content_reader_regions::regions::StrategicRegion;
 use std::{collections::BTreeMap, io};
 
 const SNOW_FIXED_POINT: f32 = 100_000.0;

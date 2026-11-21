@@ -21,7 +21,7 @@ pub(crate) struct Defines {
 }
 
 impl Defines {
-    pub fn load(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
         Ok(Self {
             costs: defines
                 .fixed5_array("NAir", "MISSION_FUEL_COSTS")

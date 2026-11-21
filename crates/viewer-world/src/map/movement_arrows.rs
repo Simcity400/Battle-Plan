@@ -15,10 +15,10 @@ use std::{
 };
 
 use eframe::wgpu;
-use installed_content_core::{
+use content_reader_core::{
     ResolvedLayers, defines::Defines, gui::native::resources, gui::native::sprites,
 };
-use installed_content_image::{dds, native::Decode};
+use content_reader_image::{dds, native::Decode};
 use shader_pipeline::gpu;
 
 use {
@@ -109,7 +109,7 @@ impl Assets {
                 }
                 let effect = if definition.effect.is_empty() {
                     shader_pipeline::library::Effect::from_compiled(
-                        Arc::new(installed_content_core::pdxshader::program::Program::default()),
+                        Arc::new(content_reader_core::pdxshader::program::Program::default()),
                         Vec::new(),
                         Vec::new(),
                     )
@@ -544,7 +544,7 @@ impl Player {
 }
 
 fn forget_unknown(retained: &mut shader_scene::State) {
-    use installed_content_core::pdxshader::program::Stage;
+    use content_reader_core::pdxshader::program::Stage;
     retained.stream.forget_program();
     for slot in 0..4 {
         retained.stream.forget_texture(slot, Stage::Pixel, None);

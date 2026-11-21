@@ -1,5 +1,5 @@
 use super::{Arg, Context, Tooltip, line};
-use installed_content_core::fixed5::fixed5_to_string;
+use content_reader_core::fixed5::fixed5_to_string;
 use replay_data::{rows::IntelNetworkRow, rows::tables};
 use viewer_foundation::map::native_text::{COLOR, FLAG};
 
@@ -265,7 +265,7 @@ fn cap_parts(context: &impl Source, node: &IntelNetworkRow) -> Result<String, St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_localisation::localisation::Localisation;
+    use content_reader_localisation::localisation::Localisation;
 
     struct Fake(Localisation);
 

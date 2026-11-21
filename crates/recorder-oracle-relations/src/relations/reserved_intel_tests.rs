@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_save::{CountryEmissionIdentity, SaveDocument};
+use content_reader_save::{CountryEmissionIdentity, SaveDocument};
 use replay_data::{rows::Recorded, rows::ReservedCountryIntelSample, rows::TableRows};
 use replay_frame::frame::TableView;
 
@@ -380,7 +380,7 @@ fn zero_refusal_preserves_unchanged_positive_four_lane_differences() {
     );
     save.country_intel.insert(
         b"GER".to_vec(),
-        vec![installed_content_save::CountryIntelRecord::default()],
+        vec![content_reader_save::CountryIntelRecord::default()],
     );
     let context = super::super::super::country_context(&frame).unwrap();
     let mut report = Report::default();

@@ -950,7 +950,7 @@ pub fn fold(spans: &[PeaceConferenceSpanRow], outcomes: &[Outcome], settled: &[S
 }
 
 fn is_keyword(spelling: &str, keyword: &str) -> bool {
-    installed_content_core::parser::native::Token { kind: installed_content_core::parser::native::Kind::Bare, text: spelling.as_bytes().to_vec(), line: 0, quoted: false, byte_end: 0 }.is_keyword(keyword)
+    content_reader_core::parser::native::Token { kind: content_reader_core::parser::native::Kind::Bare, text: spelling.as_bytes().to_vec(), line: 0, quoted: false, byte_end: 0 }.is_keyword(keyword)
 }
 
 fn takes_states(spelling: &str) -> bool {
@@ -961,7 +961,7 @@ fn demand_label(spelling: &str) -> Option<&'static str> {
     DEMAND_LABELS.iter().find(|(keyword, _)| is_keyword(spelling, keyword)).map(|(_, label)| *label)
 }
 
-fn name_actions(reply: &mut PeaceDealsReply, localisation: &installed_content_localisation::localisation::Localisation, recorded_language: &str) {
+fn name_actions(reply: &mut PeaceDealsReply, localisation: &content_reader_localisation::localisation::Localisation, recorded_language: &str) {
     let mut names: HashMap<String, Option<String>> = HashMap::new();
     let mut refused = catalogue::Refusals::default();
     let mut localise = |key: &str, refused: &mut catalogue::Refusals| {
@@ -972,7 +972,7 @@ fn name_actions(reply: &mut PeaceDealsReply, localisation: &installed_content_lo
                     refused.note("localisation key is not in the recorded content", key);
                     return None;
                 }
-                let country = [("COUNTRY", installed_content_localisation::localisation::Argument::Text(NAME_COUNTRY))];
+                let country = [("COUNTRY", content_reader_localisation::localisation::Argument::Text(NAME_COUNTRY))];
                 let arguments: &[_] = if key == PUPPET_LABEL { &country } else { &[] };
                 catalogue::localised_with(localisation, key, arguments, catalogue::View::Scripted).inspect_err(|reason| refused.note(reason.clone(), key)).ok()
             })

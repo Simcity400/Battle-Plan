@@ -1,7 +1,7 @@
 
 use super::*;
-use installed_content_core::{characters::Authored, modifiers::Modifiers};
-use installed_content_core::{
+use content_reader_core::{characters::Authored, modifiers::Modifiers};
+use content_reader_core::{
     gui::native::BoundLocalization, gui::native::BoundValue, gui::native::FormattedLocalization,
 };
 use replay_data::rows::{
@@ -30,7 +30,7 @@ fn operand<'a>(item: &'a Item, name: &str) -> Option<&'a [u8]> {
 
 fn boolean(item: &Item, name: &str) -> bool {
     operand(item, name)
-        .and_then(installed_content_core::parser::read_bool)
+        .and_then(content_reader_core::parser::read_bool)
         .unwrap_or(false)
 }
 
@@ -369,7 +369,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if name.as_bytes().get(3) == Some(&b'_') {
             name = String::from_utf8_lossy(raw).into_owned();
         }
-        let role = installed_content_core::characters::country_leader_role("", children(item))?;
+        let role = content_reader_core::characters::country_leader_role("", children(item))?;
         self.char_role_header(
             b"EFFECT_ADD_COUNTRY_LEADER_ROLE_PROMOTE",
             &name,
@@ -388,7 +388,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         else {
             return Ok(String::new());
         };
-        let role = installed_content_core::characters::country_leader_role(
+        let role = content_reader_core::characters::country_leader_role(
             "",
             field(children(item), "country_leader")
                 .map(children)
@@ -425,7 +425,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let ideology = if character_scope {
             item.value
                 .scalar()
-                .filter(|value| installed_content_core::parser::c_string(value) != b"yes")
+                .filter(|value| content_reader_core::parser::c_string(value) != b"yes")
                 .or_else(|| operand(item, "ideology"))
         } else {
             operand(item, "ideology")
@@ -633,7 +633,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         else {
             return Ok(String::new());
         };
-        let role = installed_content_core::characters::advisor_role(
+        let role = content_reader_core::characters::advisor_role(
             "",
             field(children(item), "advisor")
                 .map(children)
@@ -706,7 +706,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        let idea = std::str::from_utf8(installed_content_core::parser::c_string(
+        let idea = std::str::from_utf8(content_reader_core::parser::c_string(
             item.value.scalar().unwrap_or_default(),
         ))
         .map_err(|_| "advisor idea token is not UTF-8")?;

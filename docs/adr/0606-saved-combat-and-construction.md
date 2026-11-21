@@ -10,4 +10,4 @@ The resource-origin reader keeps both occurrences of `efficiency` in their emitt
 
 The ignored real-save combat-log test takes a text save through `BATTLE_PLAN_COMBAT_LOG_SAVE`. It parses a complete save and prints a summary for inspection.
 
-[Air save fields](../../crates/installed-content-save/src/air.rs) · [Combat logs](../../crates/installed-content-save/src/combat_log.rs) · [Combat window fields](../../crates/installed-content-save/src/combat_details.rs) · [Construction and occupation](../../crates/installed-content-save/src/construction.rs)
+[Air save fields](../../crates/content-reader-save/src/air.rs) · [Combat logs](../../crates/content-reader-save/src/combat_log.rs) · [Combat window fields](../../crates/content-reader-save/src/combat_details.rs) · [Construction and occupation](../../crates/content-reader-save/src/construction.rs)

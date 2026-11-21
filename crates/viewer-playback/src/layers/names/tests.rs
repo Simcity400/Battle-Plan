@@ -3,7 +3,7 @@ use crate::layers::{
     Layer, Published, View,
     rails::tests::{frames_until, recorded, side_of},
 };
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use map_display_data::landscape::{Placements, WorldName};
 use replay_columnar::{manifest::Status, state::Cell};
 use replay_data::rows::TableId;

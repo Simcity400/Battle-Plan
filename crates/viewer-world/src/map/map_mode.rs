@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use installed_content_core::{
+use content_reader_core::{
     defines::Defines, map::MapData, map::ProvinceKind, scripted_map_modes::GameLayer,
     scripted_map_modes::LayerType, scripted_map_modes::MapModes, scripted_map_modes::MapText,
 };
@@ -439,10 +439,10 @@ pub struct Content {
     styles: std::sync::Mutex<style_fold::Styles>,
     scripts: std::sync::Mutex<colour_script::Fold>,
     pub defines: ModeDefines,
-    ideologies: Arc<installed_content_core::ideologies::Ideologies>,
+    ideologies: Arc<content_reader_core::ideologies::Ideologies>,
     category_colors: BTreeMap<Vec<u8>, Result<Option<[f32; 4]>, String>>,
     pub scripted: MapModes,
-    faction_templates: Result<Arc<installed_content_core::faction_templates::Catalog>, String>,
+    faction_templates: Result<Arc<content_reader_core::faction_templates::Catalog>, String>,
     recorded_language: String,
     terrain: Result<terrain::Built, String>,
     pub infrastructure: infrastructure::Content,
@@ -471,10 +471,10 @@ impl Content {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         defines: &Defines,
-        ideologies: Arc<installed_content_core::ideologies::Ideologies>,
-        categories: &installed_content_state_categories::state_categories::Database,
+        ideologies: Arc<content_reader_core::ideologies::Ideologies>,
+        categories: &content_reader_state_categories::state_categories::Database,
         scripted: MapModes,
-        faction_templates: Result<Arc<installed_content_core::faction_templates::Catalog>, String>,
+        faction_templates: Result<Arc<content_reader_core::faction_templates::Catalog>, String>,
         recorded_language: String,
         terrain: Result<terrain::Sources, String>,
         infrastructure: infrastructure::Content,
@@ -587,7 +587,7 @@ pub struct GroupLabels {
 pub fn faction_labels(
     content: &Content,
     frame: &DecodedFrame,
-    localisation: &installed_content_localisation::localisation::Localisation,
+    localisation: &content_reader_localisation::localisation::Localisation,
 ) -> Result<GroupLabels, String> {
     use dashboard_text::faction_names;
     let factions = complete::<tables::Factions>(frame, "factions")?;

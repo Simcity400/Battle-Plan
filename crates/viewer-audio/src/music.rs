@@ -129,7 +129,7 @@ impl Player {
 
     pub fn update<'m>(
         &mut self,
-        music: &'m installed_content_sound::music::Music,
+        music: &'m content_reader_sound::music::Music,
         chances: Option<&Chances>,
         recent: usize,
     ) -> Option<&'m str> {

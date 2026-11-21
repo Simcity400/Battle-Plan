@@ -2,11 +2,11 @@
 use viewer_foundation::map::gpu_contract::Targets;
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
-use installed_content_core::{
+use content_reader_core::{
     ResolvedLayers, buildings::Buildings, map::MapData, positions::BuildingPosition,
 };
-use installed_content_image::native::Decode;
-use installed_content_image::{IndexedImage, dds};
+use content_reader_image::native::Decode;
+use content_reader_image::{IndexedImage, dds};
 use replay_data::{rows::NavalBaseRow, rows::ProvinceSupplyRow, rows::RailEdgeRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{
@@ -80,7 +80,7 @@ pub struct RailDefines {
 }
 
 impl RailDefines {
-    pub fn load(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
         let number = |name| defines.number("NGraphics", name).map(|value| value as f32);
         let levels = defines.number("NSupply", "MAX_RAILWAY_LEVEL")?;
         if !(1.0..=f64::from(u16::MAX)).contains(&levels) {
@@ -482,7 +482,7 @@ impl RailGeometry {
         map: &MapData,
         buildings: &[BuildingPosition],
         types: &Buildings,
-        rivers: &installed_content_image::IndexedImage,
+        rivers: &content_reader_image::IndexedImage,
         heightmap: Arc<IndexedImage>,
         defines: RailDefines,
     ) -> io::Result<Self> {
@@ -571,7 +571,7 @@ impl RailGeometry {
             .collect();
         let mut ports = BTreeMap::new();
         for p in buildings {
-            let Some(installed_content_core::buildings::Slot::Bucket(slot)) = types.slot(&p.kind) else {
+            let Some(content_reader_core::buildings::Slot::Bucket(slot)) = types.slot(&p.kind) else {
                 continue;
             };
             let id = at(p.x as i32, p.z as i32);
@@ -587,10 +587,10 @@ impl RailGeometry {
         for (&(a, b), boundary) in &mut boundaries {
             if !matches!(
                 map.definitions.get(&a).map(|d| d.kind),
-                Some(installed_content_core::map::ProvinceKind::Land)
+                Some(content_reader_core::map::ProvinceKind::Land)
             ) || !matches!(
                 map.definitions.get(&b).map(|d| d.kind),
-                Some(installed_content_core::map::ProvinceKind::Land)
+                Some(content_reader_core::map::ProvinceKind::Land)
             ) {
                 continue;
             }
@@ -1410,8 +1410,8 @@ impl Bridges {
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
-        defines: &installed_content_core::defines::Defines,
-        warnings: &mut Vec<installed_content_core::Diagnostic>,
+        defines: &content_reader_core::defines::Defines,
+        warnings: &mut Vec<content_reader_core::Diagnostic>,
     ) -> io::Result<Self> {
         let entities = [
             defines.text("NGraphics", "RAILWAY_BRIDGE_ENTITY")?,

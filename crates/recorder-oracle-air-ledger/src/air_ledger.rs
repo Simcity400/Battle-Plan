@@ -1,6 +1,6 @@
 use super::{ContentRead, Report, complete, country_context, invalid};
 use engine_air_history::air_loss_sites::FIELD_COUNT;
-use installed_content_save::air::Pack;
+use content_reader_save::air::Pack;
 use replay::campaign::Replay;
 use replay_data::{rows::TableId, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -33,7 +33,7 @@ pub fn compare_air_losses(
     replay: &Replay,
     frame: &DecodedFrame,
     save: &Pack,
-    regions: ContentRead<'_, installed_content_regions::regions::StrategicRegions>,
+    regions: ContentRead<'_, content_reader_regions::regions::StrategicRegions>,
     report: &mut Report,
 ) -> io::Result<()> {
     let regions = regions.map_err(|error| {
@@ -107,7 +107,7 @@ impl DailyCheck {
     fn observe(
         &mut self,
         frame: &DecodedFrame,
-        regions: &installed_content_regions::regions::StrategicRegions,
+        regions: &content_reader_regions::regions::StrategicRegions,
     ) -> io::Result<()> {
         if i64::from(frame.hour) != self.next {
             return Err(invalid("air daily oracle missing or repeated hour"));
@@ -290,7 +290,7 @@ impl DailyCheck {
 
 pub fn compare_bombing_damage(
     frame: &DecodedFrame,
-    buildings: ContentRead<'_, installed_content_core::buildings::Buildings>,
+    buildings: ContentRead<'_, content_reader_core::buildings::Buildings>,
     report: &mut Report,
 ) -> io::Result<()> {
     let rows = complete::<tables::BuildingBombingDamage>(frame)?;
@@ -393,7 +393,7 @@ pub fn compare_bombing_damage(
 mod tests {
     use super::*;
     use crate::test_support::frame;
-    use installed_content_save::air::DailyStatistics;
+    use content_reader_save::air::DailyStatistics;
     use replay_data::{
         rows::AirLossEventRow, rows::BuildingBombingDamageCause, rows::BuildingBombingDamageRow,
         rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::ProvinceRow,
@@ -465,11 +465,11 @@ mod tests {
         ])
     }
 
-    fn region_content() -> installed_content_regions::regions::StrategicRegions {
-        let mut regions = installed_content_regions::regions::StrategicRegions::default();
+    fn region_content() -> content_reader_regions::regions::StrategicRegions {
+        let mut regions = content_reader_regions::regions::StrategicRegions::default();
         regions.regions.insert(
             4001,
-            installed_content_regions::regions::StrategicRegion {
+            content_reader_regions::regions::StrategicRegion {
                 id: 4001,
                 ..Default::default()
             },
@@ -477,11 +477,11 @@ mod tests {
         regions
     }
 
-    fn building_content() -> installed_content_core::buildings::Buildings {
-        let mut buildings = installed_content_core::buildings::Buildings::default();
+    fn building_content() -> content_reader_core::buildings::Buildings {
+        let mut buildings = content_reader_core::buildings::Buildings::default();
         buildings.types.insert(
             "mod_air_ledger_building".into(),
-            installed_content_core::buildings::BuildingType {
+            content_reader_core::buildings::BuildingType {
                 name: "mod_air_ledger_building".into(),
                 ..Default::default()
             },
@@ -659,7 +659,7 @@ mod tests {
     fn daily_missing_saved_window_is_not_zero_for_an_existing_history() {
         let mut save = daily_save();
         save.daily_statistics.clear();
-        save.statistics.push(installed_content_save::air::Statistics {
+        save.statistics.push(content_reader_save::air::Statistics {
             country: b"mod country".to_vec(),
             region: 4001,
             year_slot: 0,
@@ -678,8 +678,8 @@ mod tests {
     #[test]
     fn malformed_daily_save_fails_only_air_group() {
         let text = br#"strategic_air={"mod country"={history={4001={history_queue={0={max_elements=30 offset=30 is_full=no} 2={max_elements=5 offset=1 is_full=no}}}}}}"#;
-        let doc = installed_content_core::parser::parse(text).unwrap();
-        let save = installed_content_save::air::parse(&doc.items).unwrap();
+        let doc = content_reader_core::parser::parse(text).unwrap();
+        let save = content_reader_save::air::parse(&doc.items).unwrap();
         assert_eq!(save.daily_errors.len(), 1);
         assert_eq!(save.statistics.len(), 1);
         let mut report = Report::default();

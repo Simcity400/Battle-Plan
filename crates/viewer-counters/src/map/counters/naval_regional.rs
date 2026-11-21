@@ -597,7 +597,7 @@ pub(super) fn prepare<'a>(
                             .join("; ")
                     })?;
                     let height = extent.map_or(0, |size| size[1]);
-                    let y = installed_content_core::crt::truncate_f32(
+                    let y = content_reader_core::crt::truncate_f32(
                         (1.0 - (packet
                             .raiding_spotting
                             .ok_or("regional convoy spotting is unavailable")?
@@ -751,7 +751,7 @@ pub(super) fn control_hovers(
                         key,
                         &[(
                             "COUNT",
-                            installed_content_localisation::localisation::Argument::Int32(
+                            content_reader_localisation::localisation::Argument::Int32(
                                 count as u32 as i32,
                             ),
                         )],

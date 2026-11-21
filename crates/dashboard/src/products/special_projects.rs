@@ -14,8 +14,8 @@ use crate::{
     span::HourSpan,
 };
 use dashboard_query::{Query, identity::Holder};
-use installed_content_core::special_projects::{Catalog, Project};
-use installed_content_localisation::localisation::Argument;
+use content_reader_core::special_projects::{Catalog, Project};
+use content_reader_localisation::localisation::Argument;
 use replay::lanes::{self, Cell, History, Keys, Step};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{TableId, tables};
@@ -346,7 +346,7 @@ pub(crate) fn spellings(frame: &DecodedFrame, ids: impl IntoIterator<Item = u32>
     ids.into_iter()
         .filter_map(|id| {
             let row = rows.binary_search_by_key(&id, |row| row.token).ok().map(|at| &rows[at])?;
-            let text = std::str::from_utf8(installed_content_core::parser::c_string(&row.literal)).ok()?;
+            let text = std::str::from_utf8(content_reader_core::parser::c_string(&row.literal)).ok()?;
             Some((id, text.to_owned()))
         })
         .collect()

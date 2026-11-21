@@ -1,7 +1,7 @@
 
 use std::{io, sync::Arc};
 
-use installed_content_core::content::facts::{Pack, PackSource};
+use content_reader_core::content::facts::{Pack, PackSource};
 use replay::campaign::Replay;
 
 struct RecordingFacts(Arc<Replay>, usize);

@@ -8,8 +8,8 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use installed_content_core::parser::Item;
-use installed_content_unit_path::{
+use content_reader_core::parser::Item;
+use content_reader_unit_path::{
     unit_path, unit_path::Army, unit_path::ArmyCombat, unit_path::CounterClass,
     unit_path::CounterRequest, unit_path::Country, unit_path::Fact, unit_path::MoveWorld,
     unit_path::Mover, unit_path::Occupant, unit_path::ReachKey, unit_path::Reachable,
@@ -25,10 +25,10 @@ use dashboard_text::triggers::{Eval, Scope, Scopes, World};
 
 #[derive(Clone, Copy)]
 pub struct ReadOperands<'a> {
-    pub moves: &'a Result<installed_content_unit_path::unit_path::MoveGraph, String>,
+    pub moves: &'a Result<content_reader_unit_path::unit_path::MoveGraph, String>,
     pub trigger_content: &'a crate::trigger_content::TriggerContent,
     pub regions: &'a BTreeMap<u32, u32>,
-    pub geometry: &'a installed_content_core::province_geometry::ProvinceGeometry,
+    pub geometry: &'a content_reader_core::province_geometry::ProvinceGeometry,
     pub combat_minimum_time: i32,
     pub avoid_enemy: bool,
     pub day_night: &'a Result<replay_data::day_night::Defines, String>,
@@ -40,8 +40,8 @@ impl ReadOperands<'_> {
         &self,
         from: u32,
         to: u32,
-    ) -> installed_content_unit_path::unit_path::Fact<
-        Option<installed_content_unit_path::unit_path::SelectedNeighbour>,
+    ) -> content_reader_unit_path::unit_path::Fact<
+        Option<content_reader_unit_path::unit_path::SelectedNeighbour>,
     > {
         self.moves
             .as_ref()
@@ -86,9 +86,9 @@ mod selected_common;
 pub use selected_common::{CommonCells, CommonText};
 #[path = "movement_reads/order_cursor.rs"]
 mod order_cursor;
-pub use installed_content_unit_path::unit_path::order_cursor::OrderCursor;
+pub use content_reader_unit_path::unit_path::order_cursor::OrderCursor;
 pub use order_cursor::{order_cursor, rule_relation};
-pub use installed_content_unit_path::unit_path::RuleReason;
+pub use content_reader_unit_path::unit_path::RuleReason;
 
 struct Wars {
     can_occupy_non_war: bool,
@@ -185,7 +185,7 @@ impl<'w, 'a> Moves<'w, 'a> {
 
     pub fn naval_rule(
         &self,
-        rule: &installed_content_core::adjacency_rules::AdjacencyRule,
+        rule: &content_reader_core::adjacency_rules::AdjacencyRule,
         raw_owner: u32,
         submarine: bool,
     ) -> Fact<bool> {
@@ -197,9 +197,9 @@ impl<'w, 'a> Moves<'w, 'a> {
         Ok(rule.permits(
             mover.verdict(rule, self.slot(raw_owner)?)?,
             if submarine {
-                installed_content_core::adjacency_rules::SUBMARINE
+                content_reader_core::adjacency_rules::SUBMARINE
             } else {
-                installed_content_core::adjacency_rules::NAVY
+                content_reader_core::adjacency_rules::NAVY
             },
         ))
     }
@@ -1065,7 +1065,7 @@ pub mod test_support;
 mod combat_location_tests {
     use super::test_support::{frame, put, unnamed_assets};
     use super::*;
-    use installed_content_unit_path::unit_path::{CommonCombat, CommonMoveWorld};
+    use content_reader_unit_path::unit_path::{CommonCombat, CommonMoveWorld};
     use replay_data::rows::{
         LandCombatDetailsRow, LandCombatRow, RailwayGunCounterInputRow, Recorded,
     };

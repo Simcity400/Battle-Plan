@@ -1,6 +1,6 @@
 use crate::triggers::Failure;
 
-use installed_content_scripted_localisation::{
+use content_reader_scripted_localisation::{
     scripted_localisation::RandomList, scripted_localisation::RandomMember,
 };
 

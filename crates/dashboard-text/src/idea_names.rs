@@ -1,7 +1,7 @@
 
 use crate::catalogue::{self, View};
-use installed_content_core::{ideas::Idea, ideas::IdeaContent};
-use installed_content_localisation::localisation::Argument;
+use content_reader_core::{ideas::Idea, ideas::IdeaContent};
+use content_reader_localisation::localisation::Argument;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IdeaCountry<'a> {
@@ -28,8 +28,8 @@ const ADVISOR_NAME_PATTERN: &str = "POLITICS_ADVISOR_NAME_PATTERN";
 
 pub fn idea_name(
     ideas: &IdeaContent,
-    names: &installed_content_core::names::NameLists,
-    localisation: &installed_content_localisation::localisation::Localisation,
+    names: &content_reader_core::names::NameLists,
+    localisation: &content_reader_localisation::localisation::Localisation,
     token: &str,
     country: IdeaCountry<'_>,
 ) -> Result<IdeaName, String> {
@@ -85,8 +85,8 @@ pub fn idea_name(
 }
 
 fn generated_idea_name(
-    names: &installed_content_core::names::NameLists,
-    localisation: &installed_content_localisation::localisation::Localisation,
+    names: &content_reader_core::names::NameLists,
+    localisation: &content_reader_localisation::localisation::Localisation,
     idea: &Idea,
     country: IdeaCountry<'_>,
     look: CountryLook<'_>,
@@ -108,7 +108,7 @@ fn generated_idea_name(
         return Ok(String::new());
     };
     let text = |part: &str, bytes| {
-        installed_content_core::parser::text(bytes)
+        content_reader_core::parser::text(bytes)
             .map_err(|refused| format!("the drawn {part} of a generated advisor name is {refused}"))
     };
     let (first, surname) = (text("name", first)?, text("surname", surname)?);

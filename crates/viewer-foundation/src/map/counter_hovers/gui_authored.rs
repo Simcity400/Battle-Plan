@@ -2,7 +2,7 @@
 use super::refuse;
 use crate::tooltip_text::ensure_newlines;
 use crate::tooltip_text::{TextIcons, Tooltip, displayable, localise};
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthoredKey {
@@ -20,8 +20,8 @@ pub struct Authored {
 }
 
 impl Authored {
-    pub fn read(element: &installed_content_core::gui::native::Element, disabled: bool) -> Option<Self> {
-        use installed_content_core::{gui::native::FormattedLocalization, gui::native::tooltip_hash};
+    pub fn read(element: &content_reader_core::gui::native::Element, disabled: bool) -> Option<Self> {
+        use content_reader_core::{gui::native::FormattedLocalization, gui::native::tooltip_hash};
         let common = &element.common;
         let mut out = Self {
             path: element.path.clone(),
@@ -87,19 +87,19 @@ impl Authored {
         for (body, key) in [(false, &self.title), (true, &self.body)] {
             let Some(key) = key else { continue };
             let text = (|| {
-                if installed_content_core::gui::native::tooltip_hash(&key.bytes) != key.hash {
+                if content_reader_core::gui::native::tooltip_hash(&key.bytes) != key.hash {
                     return Err(format!(
                         "{} stored tooltip hash does not match its key",
                         self.path
                     ));
                 }
-                let text_key = std::str::from_utf8(installed_content_core::parser::c_string(&key.bytes))
+                let text_key = std::str::from_utf8(content_reader_core::parser::c_string(&key.bytes))
                     .map_err(|_| format!("{} tooltip key is not UTF-8", self.path))?;
                 if key.bound {
                     localise(loc, text_key, &[]).map(Some)
                 } else {
                     Ok(loc.get(text_key).map(|text| {
-                        std::str::from_utf8(installed_content_core::parser::c_string(text.as_bytes()))
+                        std::str::from_utf8(content_reader_core::parser::c_string(text.as_bytes()))
                             .expect("a UTF-8 string split at NUL remains UTF-8")
                             .to_owned()
                     }))
@@ -125,7 +125,7 @@ impl Authored {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_core::gui::native;
+    use content_reader_core::gui::native;
 
     fn element(body: &str) -> native::Element {
         native::read(format!("guiTypes = {{ guiButtonType = {{ name = w {body} }} }}").as_bytes())

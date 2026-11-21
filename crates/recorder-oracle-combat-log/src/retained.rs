@@ -1,5 +1,5 @@
 use crate::{Report, complete, invalid, required_country_tag};
-use installed_content_save::{Save, production};
+use content_reader_save::{Save, production};
 use replay_data::rows;
 use replay_data::rows::CountryRow;
 use replay_data::rows::tables;

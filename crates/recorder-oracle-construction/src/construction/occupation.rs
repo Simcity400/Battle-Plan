@@ -633,7 +633,7 @@ pub fn resistance(
 pub fn resistance_map(
     rows: &[replay_data::rows::StateResistanceRow],
     saved: &saved::Pack,
-    states: &BTreeMap<u32, installed_content_save::State>,
+    states: &BTreeMap<u32, content_reader_save::State>,
     state_rows: &[replay_data::rows::StateRow],
     controllers: &BTreeMap<u32, &[u8]>,
     tags: &BTreeMap<u32, &[u8]>,
@@ -857,7 +857,7 @@ pub fn collaboration(
 pub fn resistance_hover(
     rows: &[replay_data::rows::StateResistanceRow],
     saved: &saved::Pack,
-    intel: &installed_content_save::intel::Pack,
+    intel: &content_reader_save::intel::Pack,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {

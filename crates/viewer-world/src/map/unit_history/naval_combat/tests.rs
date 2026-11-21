@@ -1,6 +1,6 @@
 
 use super::*;
-use installed_content_core::{mesh::Animation, mesh::EntityState, mesh::Mesh, mesh::NavalHitMissEffect};
+use content_reader_core::{mesh::Animation, mesh::EntityState, mesh::Mesh, mesh::NavalHitMissEffect};
 use {
     crate::map::entity_animation::Clip, crate::map::entity_animation::Node,
     crate::map::unit_history, crate::map::unit_history::Kind,

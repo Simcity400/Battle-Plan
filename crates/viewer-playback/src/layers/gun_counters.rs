@@ -7,7 +7,7 @@ use replay_data::{
     Hour,
     rows::{Field, NativeValue, Opaque, RailwayGunEtaOperands, RailwaySelectionInputs, Recorded, TableId},
 };
-use installed_content_core::map::MapData;
+use content_reader_core::map::MapData;
 use std::{
     cell::Cell as Flag,
     collections::{BTreeMap, HashMap},

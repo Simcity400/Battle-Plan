@@ -19,7 +19,7 @@ fn decoded_source_keeps_effect_text_bytes_and_dormant_refusals() {
         "synthetic",
         Content::default(),
     );
-    let body = installed_content_core::parser::parse(
+    let body = content_reader_core::parser::parse(
         b"if={limit={always=no} unported_effect=1} else={add_political_power=3 army_experience=2}",
     )
     .unwrap();

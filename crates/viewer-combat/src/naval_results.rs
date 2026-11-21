@@ -1,4 +1,4 @@
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     rows::NavalCombatAirHit, rows::NavalCombatHit, rows::NavalResultPlane, rows::NavalResultRow,
     rows::NavalResultShip, rows::NavalResultSideDetails, rows::VariantDefinitionRow, rows::tables,
@@ -410,7 +410,7 @@ struct Content<'a> {
     tokens: Result<TokenNames<'a>, String>,
     variants: BTreeMap<u64, &'a VariantDefinitionRow>,
     names: super::naval_variants::Names<'a>,
-    country_names: installed_content_country_names::country_names::CountryNames<'a>,
+    country_names: content_reader_country_names::country_names::CountryNames<'a>,
     viewer_tag: Result<&'a str, String>,
 }
 impl Content<'_> {
@@ -603,7 +603,7 @@ fn ship_sprite(
         .ok_or_else(|| format!("stacked content lacks retained ship sprite {name}"))
 }
 
-pub(super) fn pride_color(defines: &installed_content_core::defines::Defines) -> Result<[f32; 4], String> {
+pub(super) fn pride_color(defines: &content_reader_core::defines::Defines) -> Result<[f32; 4], String> {
     let values = defines
         .numbers("NGraphics", "PRIDE_OF_THE_FLEET_MODULATE")
         .map_err(|error| error.to_string())?;
@@ -775,7 +775,7 @@ fn air_text(
         content.loc,
         countries,
         |country| {
-            let name = installed_content_localisation::localisation::crt_case_text(
+            let name = content_reader_localisation::localisation::crt_case_text(
                 &content
                     .country_names
                     .name_with(order.slot(country)?, "_DEF")?,
@@ -1089,7 +1089,7 @@ pub(super) fn bind(
         tokens: TokenNames::new(frame).map_err(|error| error.to_string()),
         variants: variants.rows().iter().map(|row| (row.id, row)).collect(),
         names: super::naval_variants::Names::new(static_content, frame),
-        country_names: installed_content_country_names::country_names::CountryNames::read(
+        country_names: content_reader_country_names::country_names::CountryNames::read(
             frame,
             &static_content.localisation,
         ),

@@ -1,7 +1,7 @@
 
 use super::politics_content::PoliticsContent;
 use crate::{catalogue, metadata::validate_campaign};
-use installed_content_localisation::localisation::Argument;
+use content_reader_localisation::localisation::Argument;
 use replay::campaign::Replay;
 use replay_data::{
     rows::LexicalTokenRow, rows::ModifierDefinitionRow, rows::TableId, rows::tables,

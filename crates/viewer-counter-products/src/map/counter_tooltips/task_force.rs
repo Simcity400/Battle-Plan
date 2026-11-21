@@ -153,7 +153,7 @@ pub(super) mod tests {
         recorded_language: Option<&str>,
         run: impl FnOnce(Context<'_>) -> R,
     ) -> R {
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err(unavailable.into());
         let vision = Vision::sharing(1, []);
         run(Context {
@@ -310,7 +310,7 @@ pub(super) mod tests {
         ]
         .into_iter()
         .collect();
-        let gui = installed_content_core::gui::native::read(
+        let gui = content_reader_core::gui::native::read(
             br#"guiTypes = { iconType = {
             name = control pdx_tooltip = TITLE pdx_tooltip_delayed = BODY
         } }"#,
@@ -376,7 +376,7 @@ pub(super) mod tests {
         ]
         .into_iter()
         .collect();
-        let gui = installed_content_core::gui::native::read(
+        let gui = content_reader_core::gui::native::read(
             br#"guiTypes = { iconType = {
             name = control pdx_tooltip = TITLE pdx_tooltip_delayed = BODY
         } }"#,

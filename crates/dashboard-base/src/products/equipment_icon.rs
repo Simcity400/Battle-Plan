@@ -1,7 +1,7 @@
 
 use crate::catalogue::Catalogue;
-use installed_content_core::{equipment::Database, technology::Enablers};
-use installed_content_equipment_graphics::{
+use content_reader_core::{equipment::Database, technology::Enablers};
+use content_reader_equipment_graphics::{
     equipment_graphics, equipment_graphics::Context, equipment_graphics::context::Prepared,
     equipment_graphics::countries::ModelCountry,
 };
@@ -171,11 +171,11 @@ fn settled<T>(read: std::thread::Result<T>) -> T {
     read.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
-pub fn inputs_stamped(layers: &installed_content_core::ResolvedLayers) -> io::Result<bool> {
+pub fn inputs_stamped(layers: &content_reader_core::ResolvedLayers) -> io::Result<bool> {
     if !layers.stamped("map/default.map")? {
         return Ok(false);
     }
-    let default_map = installed_content_core::terrain::read_default_map(layers)?;
+    let default_map = content_reader_core::terrain::read_default_map(layers)?;
     for name in ["definitions", "continent"] {
         let Ok(path) = default_map.file(name) else {
             return Ok(false);
@@ -189,19 +189,19 @@ pub fn inputs_stamped(layers: &installed_content_core::ResolvedLayers) -> io::Re
 
 impl IconContent {
     pub fn native(
-        layers: Arc<installed_content_core::ResolvedLayers>,
+        layers: Arc<content_reader_core::ResolvedLayers>,
         units: Arc<Database>,
         scripted: &Result<dashboard_text::scripted_text::ScriptedContent, String>,
-        registry: &installed_content_core::gui::native::resources::Registry,
+        registry: &content_reader_core::gui::native::resources::Registry,
     ) -> io::Result<Self> {
-        let default_map = installed_content_core::terrain::read_default_map(&layers)?;
-        let provinces = installed_content_core::map::parse_definitions(
+        let default_map = content_reader_core::terrain::read_default_map(&layers)?;
+        let provinces = content_reader_core::map::parse_definitions(
             &layers.read(&default_map.file("definitions")?)?,
         )?;
-        let defines = installed_content_core::defines::read(&layers)?;
+        let defines = content_reader_core::defines::read(&layers)?;
         let mut warnings = Vec::new();
         let names = equipment_graphics::Names::read(&layers, &default_map, &mut warnings)?;
-        let enablers = installed_content_core::technology::read_enablers(&layers, |limit| {
+        let enablers = content_reader_core::technology::read_enablers(&layers, |limit| {
             scripted
                 .as_ref()
                 .map_err(Clone::clone)?
@@ -217,7 +217,7 @@ impl IconContent {
             &defines,
         )?;
         let dlc = layers.dlc_names()?;
-        let sprites = installed_content_core::gui::native::sprites::registry(&registry.files)
+        let sprites = content_reader_core::gui::native::sprites::registry(&registry.files)
             .keys()
             .filter_map(|name| std::str::from_utf8(name).ok().map(str::to_owned))
             .collect();
@@ -247,20 +247,20 @@ impl IconContent {
         units: Option<Arc<Database>>,
     ) -> io::Result<Self> {
         let layers = &catalogue.content.layers;
-        let default_map = installed_content_core::terrain::read_default_map(layers)?;
-        let provinces = installed_content_core::map::parse_definitions(
+        let default_map = content_reader_core::terrain::read_default_map(layers)?;
+        let provinces = content_reader_core::map::parse_definitions(
             &layers.read(&default_map.file("definitions")?)?,
         )?;
-        let defines = installed_content_core::defines::read(layers)?;
+        let defines = content_reader_core::defines::read(layers)?;
         let mut warnings = Vec::new();
         let files = Arc::clone(&catalogue);
         let (names, pools, enablers, units, geography) = std::thread::scope(|threads| {
-            use installed_content_core::parallel::spawn;
+            use content_reader_core::parallel::spawn;
             let enablers = spawn(threads, || {
                 dashboard_text::catalogue::capture(|| {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         let world = std::cell::OnceCell::new();
-                        installed_content_core::technology::read_enablers(layers, |limit| {
+                        content_reader_core::technology::read_enablers(layers, |limit| {
                             world
                                 .get_or_init(|| {
                                     catalogue
@@ -281,7 +281,7 @@ impl IconContent {
                     let names = layers.key_names()?;
                     match names.equipment_database() {
                         Some(database) if database.lost.is_none() => {
-                            for path in installed_content_core::equipment::files(layers)? {
+                            for path in content_reader_core::equipment::files(layers)? {
                                 path.read(layers)?;
                             }
                             Ok(Arc::clone(database))
@@ -402,20 +402,20 @@ impl IconContent {
         warnings
     }
 
-    pub fn preparation_warnings(&self) -> Vec<installed_content_core::Diagnostic> {
+    pub fn preparation_warnings(&self) -> Vec<content_reader_core::Diagnostic> {
         let mut warnings: Vec<_> = self
             .load_warnings
             .iter()
             .cloned()
-            .map(|message| (installed_content_core::DiagnosticKind::Warning, message))
+            .map(|message| (content_reader_core::DiagnosticKind::Warning, message))
             .collect();
         warnings.extend(self.enablers.refused.iter().map(|definition| {
-            (installed_content_core::DiagnosticKind::Unsupported,
+            (content_reader_core::DiagnosticKind::Unsupported,
                 format!("technology {definition} enables equipment through a script, which is not supported; icons that would use it are unknown"))
         }));
         warnings.extend(self.pools.refusals().into_iter().map(|(subject, reason)| {
             (
-                installed_content_core::DiagnosticKind::Refused,
+                content_reader_core::DiagnosticKind::Refused,
                 format!("{subject}: {reason}"),
             )
         }));

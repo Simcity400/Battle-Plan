@@ -2,7 +2,7 @@ use super::{
     Context,
     mode_lines::{FIXED5 as ONE, OccupationDefines, mul, percent},
 };
-use installed_content_localisation::localisation::Argument as Arg;
+use content_reader_localisation::localisation::Argument as Arg;
 use replay_data::{rows, rows::Recorded, rows::tables};
 
 fn add(a: i64, b: i64) -> i64 {
@@ -85,7 +85,7 @@ fn resistance_rate(
 pub(super) fn base_value(value: i64, colour: char) -> String {
     format!(
         "\u{11}{colour}{}%\u{11}!",
-        installed_content_core::fixed5::fixed5_to_string(value, 3)
+        content_reader_core::fixed5::fixed5_to_string(value, 3)
     )
 }
 

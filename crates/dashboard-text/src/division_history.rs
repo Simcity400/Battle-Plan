@@ -1,4 +1,4 @@
-use installed_content_localisation::localisation::Argument;
+use content_reader_localisation::localisation::Argument;
 use replay_data::rows::DivisionHistoryRow;
 
 pub fn event_key(entry: &DivisionHistoryRow) -> Result<&[u8], String> {

@@ -1,6 +1,6 @@
 use super::{Report, complete, country_tag, invalid, required_country_tag};
 use super::{compare_text, equal};
-use installed_content_save::Save;
+use content_reader_save::Save;
 use replay_data::{
     rows::CountryRow, rows::FuelDemandHour, rows::FuelDemandRead, rows::Recorded, rows::TableId,
     rows::tables,
@@ -242,7 +242,7 @@ fn conditional_name(
     saved: Option<&[u8]>,
 ) -> io::Result<()> {
     let actual = actual.ok_or_else(|| invalid("fuel demand stored-name capture failed"))?;
-    let prefix = installed_content_core::parser::c_string(actual);
+    let prefix = content_reader_core::parser::c_string(actual);
     if prefix.len() < actual.len() {
         report.limitation(
             "native text serialization ends at the first NUL; captured trailing name bytes are not save-comparable",

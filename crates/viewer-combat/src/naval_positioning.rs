@@ -2,7 +2,7 @@ use super::keyed::Keyed;
 use super::naval_air_groups::{
     self, CarrierJoins, DenseBases, PositioningAir, PositioningAirSources,
 };
-use installed_content_naval_combat_defines::naval_combat_defines::Defines;
+use content_reader_naval_combat_defines::naval_combat_defines::Defines;
 use replay_data::{
     rows::AirBaseRow, rows::NavalCombatDetailsRow, rows::NavalCombatShipRow,
     rows::NavalCombatSideDetails, rows::NavalCombatSummaryInputs, rows::ShipModelRow,

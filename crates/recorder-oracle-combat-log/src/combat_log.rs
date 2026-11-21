@@ -9,7 +9,7 @@ use engine_land_inputs::{
     ncombat_log_cmanager::WINDOW_ENTRIES,
 };
 use engine_resources::{clend_lease_exchange::DELIVERED_KIND, clend_lease_exchange::SUNK_KIND};
-use installed_content_save::{Save, production};
+use content_reader_save::{Save, production};
 use replay_data::{rows::CountryRow, rows::TableId, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
@@ -75,7 +75,7 @@ pub fn compare(
             if !compared {
                 continue;
             }
-            let mut arrays: [Vec<&installed_content_save::combat_log::Month>; 5] = Default::default();
+            let mut arrays: [Vec<&content_reader_save::combat_log::Month>; 5] = Default::default();
             for month in &group.losses {
                 let kind = u8::try_from(month.reason)
                     .ok()
@@ -251,7 +251,7 @@ pub fn division_census(
     for (tag, (grouped, ungrouped, qualified)) in expected {
         if saved.country_emissions.as_ref().is_some_and(|emissions| {
             emissions.iter().any(|emission| {
-                emission.identity.actual == installed_content_save::ActualCountry::Reserved
+                emission.identity.actual == content_reader_save::ActualCountry::Reserved
                     && emission.identity.tag.as_slice() == tag
             })
         }) {

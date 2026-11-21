@@ -1,7 +1,7 @@
 use super::Tooltip;
 use engine_native::{craid_instance::outcome_key, craid_instance::phase_key};
-use installed_content_localisation::localisation::Argument as Arg;
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Argument as Arg;
+use content_reader_localisation::localisation::Localisation;
 use viewer_foundation::tooltip_text::localise;
 
 pub type Text = Result<String, String>;

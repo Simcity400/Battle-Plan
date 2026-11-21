@@ -13,7 +13,7 @@ use dashboard_text::{
     metadata::link_slot,
     variant_names::{self, Tags, Texts},
 };
-use installed_content_core::unit_leader::SubUnits;
+use content_reader_core::unit_leader::SubUnits;
 use replay_data::rows::{NavalRefitProgressRow, ProductionLineRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -243,7 +243,7 @@ impl AtHour for NavalManagement {
 }
 
 fn content_units(cat: &Catalogue, warnings: &mut Vec<String>) -> Option<Arc<SubUnits>> {
-    match cat.content.layers.derived::<catalogue::CachedResult<SubUnits>>().get_or_init(|| installed_content_core::unit_leader::sub_units(&cat.content.layers)) {
+    match cat.content.layers.derived::<catalogue::CachedResult<SubUnits>>().get_or_init(|| content_reader_core::unit_leader::sub_units(&cat.content.layers)) {
         Ok(units) => {
             warnings.extend(units.warnings().iter().cloned());
             Some(units)

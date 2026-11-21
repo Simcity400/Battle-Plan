@@ -4,7 +4,7 @@ use std::{
     io,
 };
 
-use installed_content_save::{GameDate, characters as saved_characters, intel as saved};
+use content_reader_save::{GameDate, characters as saved_characters, intel as saved};
 use replay_data::{rows::CountryRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
@@ -26,11 +26,11 @@ pub struct ScopeKinds {
 pub fn compare(
     frame: &DecodedFrame,
     save: &saved::Pack,
-    rosters: &installed_content_save::country_rosters::Pack,
+    rosters: &content_reader_save::country_rosters::Pack,
     characters: Option<&saved_characters::Manager>,
     countries: &BTreeMap<u32, &CountryRow>,
     tokens: &TokenNames<'_>,
-    intelligence: Result<&installed_content_core::intelligence::AgencyUpgrades, &str>,
+    intelligence: Result<&content_reader_core::intelligence::AgencyUpgrades, &str>,
     scopes: ScopeKinds,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -128,9 +128,9 @@ pub fn compare(
 pub fn compare_operation_buffers(
     frame: &DecodedFrame,
     save: &saved::Pack,
-    governance: &installed_content_save::governance::Pack,
+    governance: &content_reader_save::governance::Pack,
     state_ids: &BTreeSet<u32>,
-    membership: Result<&installed_content_save::PartialMapMembership, &str>,
+    membership: Result<&content_reader_save::PartialMapMembership, &str>,
     report: &mut Report,
 ) -> io::Result<()> {
     let buffers = complete::<tables::AgencyOperationBuffers>(frame)?;
@@ -176,8 +176,8 @@ pub fn compare_operation_buffers(
                     ))
                 })?;
                 match membership.provinces.get(&province) {
-                    Some(installed_content_save::ProvinceMembership::Known(state)) => state.unwrap_or(0),
-                    Some(installed_content_save::ProvinceMembership::Unknown(_)) => {
+                    Some(content_reader_save::ProvinceMembership::Known(state)) => state.unwrap_or(0),
+                    Some(content_reader_save::ProvinceMembership::Unknown(_)) => {
                         return Err(invalid(
                             "buffered operation target province has unknown state membership",
                         ));
@@ -2078,7 +2078,7 @@ fn compare_agency_upgrade_identities(
     frame: &DecodedFrame,
     countries: &BTreeMap<u32, &CountryRow>,
     tokens: &TokenNames<'_>,
-    intelligence: Result<&installed_content_core::intelligence::AgencyUpgrades, &str>,
+    intelligence: Result<&content_reader_core::intelligence::AgencyUpgrades, &str>,
     report: &mut Report,
 ) -> io::Result<()> {
     let rows = complete::<tables::AgencyUpgradeLevels>(frame)?;
@@ -2262,7 +2262,7 @@ fn compare_subjects(
 fn compare_capitulation(
     frame: &DecodedFrame,
     save: &saved::Pack,
-    rosters: &installed_content_save::country_rosters::Pack,
+    rosters: &content_reader_save::country_rosters::Pack,
     countries: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -2750,7 +2750,7 @@ fn compare_variables(
             }
             values.entry(name).or_default().push(entry.value_raw);
         }
-        let mut expected_values = BTreeMap::<&[u8], Vec<&installed_content_save::Decimal>>::new();
+        let mut expected_values = BTreeMap::<&[u8], Vec<&content_reader_save::Decimal>>::new();
         for entry in &expected.entries {
             expected_values
                 .entry(&entry.name)
@@ -3530,8 +3530,8 @@ mod tests {
         let countries = BTreeMap::from([(7, &rows[0]), (8, &rows[1])]);
         let input: &[u8] = br#"countries={AAA={diplomacy={wargoals={take_state={id={id=3 type=4713} wargoaldata_actor=AAA wargoaldata_recipient=BBB type=take_state} puppet={id={id=4 type=4713} wargoaldata_actor=AAA wargoaldata_recipient=AAA type=puppet}} available_wargoals={wargoal={id=3 type=4713}}}} BBB={diplomacy={}}}"#;
         let save = parsed(input);
-        let rosters = installed_content_save::country_rosters::parse(
-            &installed_content_core::parser::parse(input).unwrap().items,
+        let rosters = content_reader_save::country_rosters::parse(
+            &content_reader_core::parser::parse(input).unwrap().items,
         )
         .unwrap();
         let run = |goals: [Recorded<Option<Vec<u32>>>; 2]| {
@@ -3899,7 +3899,7 @@ mod tests {
     }
 
     fn parsed(input: &[u8]) -> saved::Pack {
-        saved::parse(&installed_content_core::parser::parse(input).unwrap().items).unwrap()
+        saved::parse(&content_reader_core::parser::parse(input).unwrap().items).unwrap()
     }
 
     fn germany() -> CountryRow {
@@ -3913,7 +3913,7 @@ mod tests {
 
     #[test]
     fn character_variables_compare_with_each_saved_character() {
-        let items = installed_content_core::parser::parse(
+        let items = content_reader_core::parser::parse(
             br#"variables={} countries={} character_manager={historical={
             character={id={id=44 type=73} token=a variables={ score=1.5 }}
             character={id={id=45 type=73} token=b}
@@ -3969,7 +3969,7 @@ mod tests {
 
     #[test]
     fn character_flags_compare_with_each_saved_characters_flags() {
-        let items = installed_content_core::parser::parse(
+        let items = content_reader_core::parser::parse(
             br#"countries={} character_manager={historical={
             character={id={id=44 type=73} token=a flags={
                 recently_sick={ value=1 date="1936.1.26.1" days=180 }
@@ -4358,8 +4358,8 @@ mod tests {
         let file = root.join("common/intelligence_agency_upgrades/synthetic.txt");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, b"first_branch={mod_upgrade={picture=first}} second_branch={mod_upgrade={picture=second}}").unwrap();
-        let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        let intelligence = installed_content_core::intelligence::read_agency_upgrades(&layers).unwrap();
+        let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let intelligence = content_reader_core::intelligence::read_agency_upgrades(&layers).unwrap();
         let country = germany();
         let countries = BTreeMap::from([(101, &country), (102, &country)]);
         let tokens = BTreeMap::from([
@@ -4978,7 +4978,7 @@ mod tests {
 
     #[test]
     fn variable_seeds_compare_all_scope_kinds_and_name_missing_operands() {
-        let items = installed_content_core::parser::parse(
+        let items = content_reader_core::parser::parse(
             br#"variables={random={11 2147483648}}
             countries={GER={variables={random={12 99}}}}
             states={1={variables={random={13 0}}}}
@@ -5246,10 +5246,10 @@ mod tests {
     fn buffered_targets_compare_saved_capitals_in_every_bucket_and_reject_mutations() {
         use replay_data::{rows::AgencyBufferedOperation, rows::AgencyOperationBuffersRow};
         let pack = parsed(OPERATION_SAVE);
-        let governance = installed_content_save::governance::Pack {
+        let governance = content_reader_save::governance::Pack {
             countries: [(
                 b"SOV".to_vec(),
-                installed_content_save::governance::Country {
+                content_reader_save::governance::Country {
                     capital: Some(219),
                     ..Default::default()
                 },
@@ -5327,7 +5327,7 @@ mod tests {
 
     #[test]
     fn buffered_province_targets_take_precedence_and_capital_absence_means_no_state() {
-        use installed_content_save::{PartialMapMembership, ProvinceMembership};
+        use content_reader_save::{PartialMapMembership, ProvinceMembership};
         use replay_data::{rows::AgencyBufferedOperation, rows::AgencyOperationBuffersRow};
         let mut pack = parsed(OPERATION_SAVE);
         let operation = pack
@@ -5343,10 +5343,10 @@ mod tests {
             .first_mut()
             .unwrap();
         operation.target_province = Some(333);
-        let governance = installed_content_save::governance::Pack {
+        let governance = content_reader_save::governance::Pack {
             countries: [(
                 b"SOV".to_vec(),
-                installed_content_save::governance::Country {
+                content_reader_save::governance::Country {
                     capital: Some(219),
                     ..Default::default()
                 },

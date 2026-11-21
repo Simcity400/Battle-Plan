@@ -24,7 +24,7 @@ pub(super) fn append(
     let definition: Result<
         (
             &ActiveAbilityRow,
-            &installed_content_abilities::abilities::Definition,
+            &content_reader_abilities::abilities::Definition,
         ),
         String,
     > = (|| {
@@ -122,7 +122,7 @@ fn scoped_description(
     context: &Context<'_>,
     reference: u64,
     leader: &UnitLeaderRow,
-    definition: &installed_content_abilities::abilities::Definition,
+    definition: &content_reader_abilities::abilities::Definition,
 ) -> Result<dashboard_text::effect_description::Description, String> {
     use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, ScriptedText};
 

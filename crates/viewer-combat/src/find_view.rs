@@ -517,7 +517,7 @@ impl FindView {
             .find(|region| results_element.is_some_and(|results| results.path == region.path))
             .and_then(|region| gui::region_rect(region, origin));
         if let Some(field) = root.path_named(FIELD)
-            && let installed_content_core::gui::native::Fields::EditBox(edit) = &field.fields
+            && let content_reader_core::gui::native::Fields::EditBox(edit) = &field.fields
         {
             let [x, y] = edit.position();
             let [w, h] = edit.size();
@@ -587,8 +587,8 @@ impl FindView {
 }
 
 fn button_texts(
-    root: &installed_content_core::gui::native::Element,
-    localisation: &installed_content_localisation::localisation::Localisation,
+    root: &content_reader_core::gui::native::Element,
+    localisation: &content_reader_localisation::localisation::Localisation,
     refused: &mut BTreeMap<String, usize>,
 ) -> Values {
     gui::elements(root)
@@ -658,7 +658,7 @@ pub fn countries_and_states(
         .filter(|row| row.capital > 0)
         .map(|row| (row.country, row.capital as u32))
         .collect();
-    let names = installed_content_country_names::country_names::CountryNames::read(
+    let names = content_reader_country_names::country_names::CountryNames::read(
         frame,
         &content.localisation,
     );
@@ -754,7 +754,7 @@ mod tests {
         )
         .unwrap();
         let root = gui::template(&windows, WINDOW).unwrap();
-        let localisation: installed_content_localisation::localisation::Localisation =
+        let localisation: content_reader_localisation::localisation::Localisation =
             [("FIND", "Find")]
                 .map(|(key, text)| (key.to_owned(), text.to_owned()))
                 .into_iter()

@@ -331,7 +331,7 @@ fn torpedo_counter_sums_current_attack_before_truncating_to_177() {
 #[test]
 fn carrier_penalty_uses_opponent_silhouette_and_actual_multiplier() {
     use replay_data::{rows::NavalCombatPlane, rows::ShipCounterInputs};
-    let defines = installed_content_naval_combat_defines::naval_combat_defines::Defines {
+    let defines = content_reader_naval_combat_defines::naval_combat_defines::Defines {
         summary_fixed: [0; 14],
         summary_integer: [0, 0, 80],
         silhouette_planes: [10, 5, 16, 3, 4, 7],
@@ -440,7 +440,7 @@ fn carrier_laurel_has_native_alpha_and_hides_on_missing_inputs() {
 }
 #[test]
 fn opposing_silhouette_rounds_each_forward_group() {
-    let defines = installed_content_naval_combat_defines::naval_combat_defines::Defines {
+    let defines = content_reader_naval_combat_defines::naval_combat_defines::Defines {
         summary_fixed: [0; 14],
         summary_integer: [0; 3],
         silhouette_planes: [10, 5, 0, 0, 0, 0],
@@ -600,7 +600,7 @@ fn equipment_fields_are_read_as_their_readers_read_them() {
             odd = { lg_attack = 5 } } }",
     )
     .unwrap();
-    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     let (bound, misreads) = convoy_weapon_bound(&layers).unwrap();
     assert_eq!(bound, Ok([0, 25_000]));
     assert!(misreads.is_empty(), "{misreads:?}");
@@ -618,7 +618,7 @@ fn bound_of(text: &str) -> ConvoyBound {
     let path = root.join("common/units/equipment/convoys.txt");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, text).unwrap();
-    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     let bound = convoy_weapon_bound(&layers).unwrap();
     fs::remove_dir_all(&root).unwrap();
     bound

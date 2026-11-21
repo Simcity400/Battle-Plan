@@ -1,5 +1,5 @@
 #[cfg(test)]
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 pub use viewer_foundation::recorded_labels::RecordedLabels;
 
 #[cfg(test)]

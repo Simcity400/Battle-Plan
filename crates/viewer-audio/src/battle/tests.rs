@@ -1,6 +1,6 @@
 use super::*;
-use installed_content_core::test_support::Stack;
-use installed_content_sound::combat_sounds::{BattleDefines, Layers};
+use content_reader_core::test_support::Stack;
+use content_reader_sound::combat_sounds::{BattleDefines, Layers};
 use std::collections::BTreeMap;
 
 fn battle(key: u64, center: [f32; 2], radius: f32, divisions: usize, infantry: usize) -> Battle {
@@ -31,7 +31,7 @@ fn content(name: &str) -> (Stack, Content) {
         "rifle = { sound_effect = rifles units = { infantry } divisions_range = { 5 -1 } }",
     );
     let layers = stack.layers(&[]);
-    let catalog = installed_content_sound::sound::Catalog::read(&layers).unwrap();
+    let catalog = content_reader_sound::sound::Catalog::read(&layers).unwrap();
     let combat = Layers::read(&layers).unwrap();
     let content = Content::new(catalog, None).with_battles(
         Some(BattleDefines {

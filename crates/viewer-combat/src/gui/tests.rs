@@ -23,8 +23,8 @@ impl CombatResources for Fixture {
 
     fn button_sounds(
         &self,
-        _: &installed_content_core::gui::native::Button,
-    ) -> installed_content_core::gui::native::ButtonSounds {
+        _: &content_reader_core::gui::native::Button,
+    ) -> content_reader_core::gui::native::ButtonSounds {
         Default::default()
     }
 }
@@ -136,9 +136,9 @@ fn retained_null_tactic_keeps_the_previous_drawable_and_initial_authored_image()
         "combat_tactic:fixture",
         resources.sprites["GFX_odd"].clone(),
     );
-    let content = Content::from_database(installed_content_core::combat_tactics::parse(
+    let content = Content::from_database(content_reader_core::combat_tactics::parse(
         b"fixture={picture=fixture}",
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     ));
     let null = LandCombatSideDetails {
         tactic_kind: 1,
@@ -205,7 +205,7 @@ fn retained_null_tactic_keeps_the_previous_drawable_and_initial_authored_image()
 fn result_controls_include_both_close_buttons_outside_panels_and_text_scrollbars() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let resources = fixture_with(installed_content_core::gui::native::read(br#"guiTypes={
+    let resources = fixture_with(content_reader_core::gui::native::read(br#"guiTypes={
         scrollbarType={name=details_bar size={x=10 y=60} minValue=0 maxValue=1 stepSize=1
             rightButton=up leftButton=down track=track slider=slider
             guiButtonType={name=up spriteType=GFX_even}
@@ -844,7 +844,7 @@ fn hover_geometry_uses_native_container_clip() {
 fn native_paths_include_container_backgrounds() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let gui = installed_content_core::gui::native::read(b"guiTypes={containerWindowType={name=view size={width=20 height=20} background={name=Background spriteType=bg} containerWindowType={name=inner size={width=5 height=5} iconType={name=icon spriteType=s}}}}");
+    let gui = content_reader_core::gui::native::read(b"guiTypes={containerWindowType={name=view size={width=20 height=20} background={name=Background spriteType=bg} containerWindowType={name=inner size={width=5 height=5} iconType={name=icon spriteType=s}}}}");
     let root = gui
         .templates()
         .iter()
@@ -1212,7 +1212,7 @@ fn combat_controls_keep_native_scroll_paths_axes_and_popup_mask() {
             containerWindowType={{name=tactics_list_view {body}}}
         }}"#
     );
-    let resources = fixture_with(installed_content_core::gui::native::read(document.as_bytes()));
+    let resources = fixture_with(content_reader_core::gui::native::read(document.as_bytes()));
     let popup = resources.gui_type(b"tactics_list_view").unwrap();
     let mut popup_instance = Instance::construct(popup, [800, 600], &resources).unwrap();
     popup_instance.gui_show(popup, popup).unwrap();
@@ -1299,7 +1299,7 @@ fn combat_hit_prepare_does_not_tick_before_native_scroll_input() {
                     slotsize={width=100 height=40} max_slots_horizontal=1}}
         }"#;
     let windows = windows(source);
-    let resources = fixture_with(installed_content_core::gui::native::read(source));
+    let resources = fixture_with(content_reader_core::gui::native::read(source));
     let view = windows.gui_type(b"view").unwrap();
     let values = Values::from([(
         "rows".into(),

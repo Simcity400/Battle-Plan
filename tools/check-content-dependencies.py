@@ -11,12 +11,12 @@ import tomllib
 
 
 ROW_READERS = {
-    "installed-content",
-    "installed-content-country-names",
-    "installed-content-equipment-graphics",
-    "installed-content-raids",
-    "installed-content-save",
-    "installed-content-weather",
+    "content-reader",
+    "content-reader-country-names",
+    "content-reader-equipment-graphics",
+    "content-reader-raids",
+    "content-reader-save",
+    "content-reader-weather",
 }
 LEAVES = {"engine-allocation", "engine-executable", "engine-heap", "engine-reference-values", "replay-identity"}
 
@@ -37,7 +37,7 @@ def check(lockfile):
     }
     roots = sorted(
         name for name in packages
-        if (name.startswith("installed-content-") and name not in ROW_READERS)
+        if (name.startswith("content-reader-") and name not in ROW_READERS)
         or name in {"shader-pipeline", "replay-identity", "engine-allocation", "weather-period"}
     )
     failures = []

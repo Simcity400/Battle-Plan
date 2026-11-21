@@ -3,7 +3,7 @@ use crate::layers::{
     Layer,
     rails::tests::{frames_until, recorded, side_of},
 };
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use map_display_data::landscape::LabelName;
 use replay_columnar::{
     manifest::Status,

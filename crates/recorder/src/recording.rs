@@ -8,10 +8,10 @@ use crate::{
     windows::{self, Event, Process, ProcessMemory},
 };
 use engine_executable::build::hash_executable;
-use installed_content_core::{
+use content_reader_core::{
     content::GatherOptions, content::GatheredContent, content::gather_cancellable,
 };
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use history_requests::HistoryRequest;
 use recorder_platform::games::{Discovery, GameProcess, OtherGames, choose_game};
 use replay::recorder_settings::RecorderSettings;
@@ -428,7 +428,7 @@ impl FinalizingAhead {
             .spawn(move || {
                 let _pass_progress = progress_io::passes(&session);
                 packing.run(|| {
-                let localisation = installed_content_localisation::localisation::read(&layers, &language)
+                let localisation = content_reader_localisation::localisation::read(&layers, &language)
                     .inspect_err(|error| {
                         eprintln!("Countries are named by tag: the localisation could not be read: {error}");
                     })
@@ -1972,7 +1972,7 @@ pub(crate) fn capture(
         cache_dir: facts_cache.clone(),
         dlc_order: None,
     };
-    println!("Verifying installed content hashes in the background...");
+    println!("Verifying the game installation's content hashes in the background...");
     let scan = ContentScan::start(gather_options);
     let mut next_discovery = Instant::now();
     let mut others = OtherGames::default();
@@ -4902,7 +4902,7 @@ fn root_of(session: &Path) -> Result<&Path, String> {
         .ok_or_else(|| failure_text(session, "not in a capture root"))
 }
 
-fn installed_content() -> Result<installed_content_core::ResolveOptions, String> {
+fn installed_content() -> Result<content_reader_core::ResolveOptions, String> {
     let settings = RecorderSettings::load()
         .map_err(|error| format!("the recorder settings could not be read: {error}"))?;
     let user_dir = match settings.user_folder {
@@ -4911,7 +4911,7 @@ fn installed_content() -> Result<installed_content_core::ResolveOptions, String>
     };
     let game_dir = crate::directories::default_game_directory()
         .map_err(|_| "Steam lists no the game installation".to_owned())?;
-    Ok(installed_content_core::ResolveOptions {
+    Ok(content_reader_core::ResolveOptions {
         game_dir,
         user_dir,
         cache_dir: replay::recorder_settings::directory(),
@@ -4920,7 +4920,7 @@ fn installed_content() -> Result<installed_content_core::ResolveOptions, String>
 
 type InstallationKey = Result<(PathBuf, PathBuf), String>;
 type SettingsStamp = Option<(SystemTime, u64)>;
-type InstalledContent = Result<installed_content_core::ResolveOptions, String>;
+type InstalledContent = Result<content_reader_core::ResolveOptions, String>;
 
 const NAMING_RETRY: Duration = Duration::from_secs(30);
 const NAMING_RETRY_MAX: Duration = Duration::from_secs(600);
@@ -4948,7 +4948,7 @@ fn cached_installed_content() -> InstalledContent {
 struct NamingStack {
     identity: replay_data::identity::Identity,
     installation: InstallationKey,
-    resolved: Option<installed_content_core::ResolvedContent>,
+    resolved: Option<content_reader_core::ResolvedContent>,
     localisation: Option<Result<Localisation, String>>,
     retry: Option<(Instant, Duration)>,
     #[cfg(test)]
@@ -4973,8 +4973,8 @@ impl NamingStack {
                     self.resolutions += 1;
                 }
                 let options = content.as_ref().map_err(String::clone)?;
-                let resolved = installed_content_core::resolve(&self.identity, options)
-                    .and_then(installed_content_core::ResolvedContent::exact)
+                let resolved = content_reader_core::resolve(&self.identity, options)
+                    .and_then(content_reader_core::ResolvedContent::exact)
                     .map_err(|error| error.to_string())?;
                 self.resolved = Some(resolved);
             }
@@ -4982,7 +4982,7 @@ impl NamingStack {
             {
                 self.reads += 1;
             }
-            installed_content_localisation::localisation::read(
+            content_reader_localisation::localisation::read(
                 &self.resolved.as_ref().unwrap().layers,
                 &self.identity.language,
             )

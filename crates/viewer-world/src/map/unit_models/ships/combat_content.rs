@@ -1,7 +1,7 @@
 
 use std::{collections::BTreeMap, io};
 
-use installed_content_core::{Diagnostic, DiagnosticKind, mesh, parser, parser::native};
+use content_reader_core::{Diagnostic, DiagnosticKind, mesh, parser, parser::native};
 
 use {crate::map::entity_animation::Rig, crate::map::mesh_pose};
 
@@ -75,7 +75,7 @@ impl Config {
                     _ => None,
                 };
                 if let Some(destination) = stored_float {
-                    if let Some(value) = installed_content_core::crt::scan_f32(&field.value.text) {
+                    if let Some(value) = content_reader_core::crt::scan_f32(&field.value.text) {
                         *destination = value;
                         return native::Shape::One;
                     }

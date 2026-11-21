@@ -1,6 +1,6 @@
-use installed_content_core::{ResolvedLayers, ambient};
-use installed_content_image::IndexedImage;
-use installed_content_image::native::Decode;
+use content_reader_core::{ResolvedLayers, ambient};
+use content_reader_image::IndexedImage;
+use content_reader_image::native::Decode;
 use std::io;
 #[cfg(test)]
 use viewer_foundation::map::province_admission::admits_box;
@@ -69,8 +69,8 @@ impl FrameAssets {
                 .iter()
                 .map(|e| format!("Map frame descriptor unavailable: {e}")),
         );
-        let default = installed_content_core::terrain::read_default_map(layers)?;
-        let heights = installed_content_core::terrain::read_indexed_image(
+        let default = content_reader_core::terrain::read_default_map(layers)?;
+        let heights = content_reader_core::terrain::read_indexed_image(
             layers, &format!("map/{}", default.heightmap),
         )?;
         let bounds = buckets([heights.width, heights.height]);
@@ -339,7 +339,7 @@ impl Presentation {
 fn placement_preserves_authored_height_scale_and_only_y_rotation() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let types = ambient::parse(b"type={type=mod_frame scale=2 always_visible=yes use_animation=no object={position={3 -4 5} rotation={90 90 90}}}", &installed_content_core::key_names::KeyNames::default()).unwrap();
+    let types = ambient::parse(b"type={type=mod_frame scale=2 always_visible=yes use_animation=no object={position={3 -4 5} rotation={90 90 90}}}", &content_reader_core::key_names::KeyNames::default()).unwrap();
     let value = instance(&types[0], &types[0].objects[0]);
     assert_eq!(value.position, [3., -4., 5.]);
     assert_eq!(value.scale, 2.);
@@ -462,7 +462,7 @@ fn ambient_admission_expiry_and_recreation_preserve_native_order() {
 fn event_only_ambient_uses_shared_player_scale_and_entry_clock() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let descriptors = installed_content_core::mesh::parse_descriptors(br#"entity={name=emitter scale=0.3 state={name=idle event={time=0 particle=mist keep_particle=yes}}}"#, "gfx/synthetic.asset").unwrap();
+    let descriptors = content_reader_core::mesh::parse_descriptors(br#"entity={name=emitter scale=0.3 state={name=idle event={time=0 particle=mist keep_particle=yes}}}"#, "gfx/synthetic.asset").unwrap();
     let library = ModelLibrary::load(
         &ResolvedLayers::default(),
         Decode::default(),
@@ -507,7 +507,7 @@ fn event_only_ambient_uses_shared_player_scale_and_entry_clock() {
 fn a_still_ambient_object_plays_its_default_state_from_when_it_appears() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let descriptors = installed_content_core::mesh::parse_descriptors(
+    let descriptors = content_reader_core::mesh::parse_descriptors(
         br#"entity={name=wind default_state=idle state={name=idle state_time=1 event={trigger_once=yes sound={soundeffect=amb_wind}}}}
             entity={name=late default_state=idle state={name=idle looping=no event={time=5 sound={soundeffect=amb_late}}}}
             entity={name=twin default_state=idle state={name=idle chance=1 event={sound={soundeffect=amb_a}}} state={name=idle chance=0 event={sound={soundeffect=amb_b}}}}

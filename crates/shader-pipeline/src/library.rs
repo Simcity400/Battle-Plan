@@ -1,8 +1,8 @@
 use super::{Compiled, cache};
-use installed_content_core::content::diagnostics::{
+use content_reader_core::content::diagnostics::{
     Diagnostics as ContentDiagnostics, Observed, Once as OnceLock,
 };
-use installed_content_core::{
+use content_reader_core::{
     ResolvedLayers,
     image::native::Decode,
     pdxshader::program::{self, Program},
@@ -537,7 +537,7 @@ mod tests {
             fn compile(
                 &self,
                 source: &Program,
-                technique: &installed_content_core::pdxshader::program::Technique,
+                technique: &content_reader_core::pdxshader::program::Technique,
                 defines: &[String],
             ) -> Result<super::super::Compiled, String> {
                 if source.identity == self.1 && defines.iter().any(|define| define == "ANIMATED") {

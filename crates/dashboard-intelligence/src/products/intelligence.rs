@@ -13,7 +13,7 @@ pub mod roster;
 use crate::Source;
 use dashboard_core::config::LoadContext;
 use dashboard_text::cryptology;
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::Serialize;
@@ -95,7 +95,7 @@ impl Content {
         let defines = source
             .content(&content.options)
             .map_err(|error| error.to_string())
-            .and_then(|bound| installed_content_core::defines::read(&bound.layers).map_err(|error| error.to_string()))
+            .and_then(|bound| content_reader_core::defines::read(&bound.layers).map_err(|error| error.to_string()))
             .and_then(|defines| cryptology::Defines::read(&defines));
         Self { localisation, defines }
     }

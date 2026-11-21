@@ -422,8 +422,8 @@ fn party_tags(query: &Query<'_>, run: u32, hour: i32, raw: u32, who: (u32, u32),
     let frame = cost::storage(|| replay::at::frame(query.replay.recording(), run, hour, &reads))?;
     if raw == 0 {
         return Ok((
-            installed_content_country_names::country_names::reserved_zero_tag(&frame).ok().map(str::to_owned),
-            installed_content_country_names::country_names::original_or_own_tag(&frame, 0).map(str::to_owned),
+            content_reader_country_names::country_names::reserved_zero_tag(&frame).ok().map(str::to_owned),
+            content_reader_country_names::country_names::original_or_own_tag(&frame, 0).map(str::to_owned),
         ));
     }
     let resolved = (|| -> Result<(String, Result<String, String>), String> {
@@ -431,8 +431,8 @@ fn party_tags(query: &Query<'_>, run: u32, hour: i32, raw: u32, who: (u32, u32),
         let slot = link_slot(links, raw).ok_or_else(|| "the party's country has no recorded country link".to_owned())?;
         if slot == 0 {
             return Ok((
-                installed_content_country_names::country_names::reserved_zero_tag(&frame)?.to_owned(),
-                installed_content_country_names::country_names::original_or_own_tag(&frame, 0).map(str::to_owned),
+                content_reader_country_names::country_names::reserved_zero_tag(&frame)?.to_owned(),
+                content_reader_country_names::country_names::original_or_own_tag(&frame, 0).map(str::to_owned),
             ));
         }
         let countries = frame.complete::<tables::Countries>().map_err(|why| format!("countries is unavailable: {why}"))?;
@@ -446,7 +446,7 @@ fn party_tags(query: &Query<'_>, run: u32, hour: i32, raw: u32, who: (u32, u32),
         let appearance = frame.complete::<tables::CountryAppearance>().ok().and_then(|rows| rows.iter().rev().find(|row| row.country == country.id));
         let selected = appearance
             .ok_or_else(|| "the party's country has no complete country appearance".to_owned())
-            .and_then(|appearance| installed_content_country_names::country_names::original_tag(country, appearance))
+            .and_then(|appearance| content_reader_country_names::country_names::original_tag(country, appearance))
             .map(str::to_owned);
         Ok((own, selected))
     })();

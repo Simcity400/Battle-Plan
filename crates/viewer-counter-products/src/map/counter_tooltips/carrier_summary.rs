@@ -201,7 +201,7 @@ pub(super) fn full_country_header(tag: &str, name: &str) -> String {
 }
 
 fn fuel_amount(raw: i64) -> String {
-    use installed_content_core::fixed5::format_fixed5;
+    use content_reader_core::fixed5::format_fixed5;
     let (add, divisor, precision, suffix) = match raw {
         value if value < 0x5f51db0 => return format_fixed5(value, false, 0),
         value if value < 0x1748291620 => (100_000, 100_000_000, 1, 'K'),
@@ -330,7 +330,7 @@ fn slot(context: &Context<'_>, raw: u32) -> Result<u32, String> {
 
 fn tag<'a>(context: &Context<'a>, raw: u32) -> Result<&'a str, String> {
     if raw == 0 {
-        return installed_content_country_names::country_names::reserved_zero_tag(context.frame);
+        return content_reader_country_names::country_names::reserved_zero_tag(context.frame);
     }
     let rows = context
         .frame
@@ -1487,9 +1487,9 @@ mod tests {
                 .map(|(key, text)| (key.to_owned(), text.to_owned())),
             )
             .collect();
-        let defines = installed_content_core::defines::Defines::new().unwrap();
+        let defines = content_reader_core::defines::Defines::new().unwrap();
         defines.load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.2,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.8,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=1}}").unwrap();
-        let mut subunits = installed_content_core::unit_leader::SubUnits::default();
+        let mut subunits = content_reader_core::unit_leader::SubUnits::default();
         subunits.read(
             b"sub_units={DeckPlane={type=cas} EmptyDeck={type=naval_bomber}}",
             "synthetic.txt",
@@ -1522,7 +1522,7 @@ mod tests {
             Ok(&fog_content),
         )
         .unwrap();
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         run(&Context {
             nato,
             diagnostics: true,

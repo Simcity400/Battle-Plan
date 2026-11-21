@@ -6,7 +6,7 @@ use super::{
     native_windows::NativeWindows,
     sprites::SpriteSheet,
 };
-use installed_content_core::gui::native;
+use content_reader_core::gui::native;
 use std::collections::BTreeMap;
 
 pub type PortraitTextures<'a> = &'a dyn Fn(&[u8]) -> Option<Texture>;
@@ -14,7 +14,7 @@ pub type PortraitTextures<'a> = &'a dyn Fn(&[u8]) -> Option<Texture>;
 pub struct GuiAssets<'a> {
     pub gui: &'a crate::map::native_resources::GuiResources,
     pub windows: &'a NativeWindows,
-    pub localisation: &'a installed_content_localisation::localisation::Localisation,
+    pub localisation: &'a content_reader_localisation::localisation::Localisation,
     pub flags: Option<GuiFlags<'a>>,
     pub physical_viewport: Option<[i32; 2]>,
     pub portrait_textures: Option<PortraitTextures<'a>>,
@@ -54,7 +54,7 @@ impl native_gui::Resources for GuiAssets<'_> {
         self.gui.font(name)
     }
 
-    fn localisation(&self) -> &installed_content_localisation::localisation::Localisation {
+    fn localisation(&self) -> &content_reader_localisation::localisation::Localisation {
         self.localisation
     }
 

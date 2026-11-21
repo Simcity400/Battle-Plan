@@ -5,7 +5,7 @@ use crate::map::tables::rows;
 use crate::movement_timing::Etas;
 use crate::unit_class::CounterClass;
 use crate::unit_handle::Unit;
-use installed_content_core::movement::MovementMap;
+use content_reader_core::movement::MovementMap;
 use std::cell::Cell;
 use std::collections::{BTreeMap, btree_map::Entry};
 use std::sync::{Arc, Mutex};

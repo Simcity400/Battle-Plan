@@ -1,5 +1,5 @@
-use installed_content_core::terrain::TerrainCategory;
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_core::terrain::TerrainCategory;
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::io;

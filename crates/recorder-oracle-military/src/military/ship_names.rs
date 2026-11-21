@@ -1,5 +1,5 @@
 use super::Report;
-use installed_content_save::ShipName;
+use content_reader_save::ShipName;
 use replay_data::rows::{Recorded, ShipNamingOperands};
 
 pub(super) fn compare(

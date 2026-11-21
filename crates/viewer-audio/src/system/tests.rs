@@ -1,6 +1,6 @@
 use super::*;
 use crate::{Emitter, Group, Listener};
-use installed_content_core::test_support::Stack;
+use content_reader_core::test_support::Stack;
 
 const ASSETS: &str = r#"
     sound = { name = tone file = "tone.wav" }
@@ -15,12 +15,12 @@ fn source(name: &str) -> (Stack, Arc<Source>) {
     stack.write(&base, "sound/test.asset", ASSETS);
     std::fs::write(
         base.join("sound/tone.wav"),
-        installed_content_sound::wav::encode_pcm16(RATE, 1, &vec![8_192; RATE as usize / 4]),
+        content_reader_sound::wav::encode_pcm16(RATE, 1, &vec![8_192; RATE as usize / 4]),
     )
     .unwrap();
     std::fs::write(base.join("sound/broken.wav"), b"RIFF\x04\0\0\0WAVEjunk").unwrap();
     let layers = stack.layers(&[]);
-    let catalog = installed_content_sound::sound::Catalog::read(&layers).unwrap();
+    let catalog = content_reader_sound::sound::Catalog::read(&layers).unwrap();
     let source = Arc::new(Source {
         content: Arc::new(Content::new(catalog, None)),
         layers,

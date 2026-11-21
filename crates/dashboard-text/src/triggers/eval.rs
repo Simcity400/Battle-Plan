@@ -5,7 +5,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
-use installed_content_core::{
+use content_reader_core::{
     parser::Item, scope::Keyword as ScopeKeyword, scope::Names, scope::Scope as Parsed,
     scope::ScopeKind, scope::TriggerScopes, scripted_triggers::Template, trigger_keys::CountKind,
     trigger_keys::Dispatch, trigger_keys::Dispatched, trigger_keys::ScopeStep, trigger_keys::cycle,
@@ -700,7 +700,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             ),
             Ok(text) => {
                 let parsed =
-                    super::refusal::deferred(|| installed_content_core::scope::parse(text, quoted, &names));
+                    super::refusal::deferred(|| content_reader_core::scope::parse(text, quoted, &names));
                 let asked = names.asked.take();
                 let why = (!asked.is_empty()).then(|| Failure::merge(asked));
                 if let Some(why) = &why {
@@ -717,8 +717,8 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         let Dispatched {
             dispatch,
             unless_scope,
-        } = installed_content_core::trigger_keys::dispatch_with_error(
-            installed_content_core::trigger_keys::Key {
+        } = content_reader_core::trigger_keys::dispatch_with_error(
+            content_reader_core::trigger_keys::Key {
                 keyword: keyword.as_ref().map(|keyword| keyword.text()),
                 text: item.key.as_deref().unwrap_or_default(),
                 quoted: item.key_quoted,
@@ -731,10 +731,10 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     .triggers
                     .ok()
                     .and_then(|triggers| match triggers.scripted.lookup(text) {
-                        installed_content_core::scripted_triggers::Lookup::Template(template) => {
+                        content_reader_core::scripted_triggers::Lookup::Template(template) => {
                             Some(template)
                         }
-                        installed_content_core::scripted_triggers::Lookup::Missing => None,
+                        content_reader_core::scripted_triggers::Lookup::Missing => None,
                     })
             },
         )?;
@@ -1576,7 +1576,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 let expected = item
                     .value
                     .scalar()
-                    .and_then(installed_content_core::parser::read_bool)
+                    .and_then(content_reader_core::parser::read_bool)
                     .ok_or("is_country_leader needs yes or no")?;
                 if character == 0 || self.world.character_retired(character)? {
                     Eval::False

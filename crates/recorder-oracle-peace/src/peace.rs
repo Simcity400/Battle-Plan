@@ -2,7 +2,7 @@
 #[path = "peace_tests.rs"]
 mod tests;
 use super::*;
-use installed_content_save::projects;
+use content_reader_save::projects;
 use replay_data::{rows::PeaceSettlementRow, rows::SettledPeaceAction};
 
 pub const DESTROYED_ACTIONS: &str = "PeaceSettlements destroyed-actions limitation: normal finalization destroys bidding turns and ordered actions before a completed save; a completed save cannot independently certify action types, order, negotiators or operands.";

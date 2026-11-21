@@ -58,8 +58,8 @@ fn expected_add(
                 .insert((String::new(), space), library.textures.len());
             library
                 .textures
-                .push(installed_content_image::dds::Texture::from_rgba8(
-                    installed_content_image::Rgba8Image {
+                .push(content_reader_image::dds::Texture::from_rgba8(
+                    content_reader_image::Rgba8Image {
                         width: 1,
                         height: 1,
                         pixels: vec![0; 4],
@@ -249,7 +249,7 @@ fn expected_add(
         bound: 0.,
         convoy_radius: None,
         attachments: usize::from(name == "cavalry"),
-        cull_distance_squared: installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+        cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
     });
     if name == "fallen" {
         *library
@@ -526,9 +526,9 @@ fn single_parse_bakes_keep_fixed_bytes_and_ordered_refusals() {
     assert_eq!(
         warnings,
         [
-            (installed_content_core::DiagnosticKind::Refused, attachment),
+            (content_reader_core::DiagnosticKind::Refused, attachment),
             (
-                installed_content_core::DiagnosticKind::Refused,
+                content_reader_core::DiagnosticKind::Refused,
                 format!("No mesh resolved for {missing}; those objects are not drawn.")
             ),
         ]

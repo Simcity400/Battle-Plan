@@ -22,16 +22,16 @@ engine-air-history.workspace = true
 engine-executable.workspace = true
 engine-allocation.workspace = true
 engine-research.workspace = true
-installed-content-core.workspace = true
-installed-content-country-names.workspace = true
-installed-content-equipment-graphics.workspace = true
-installed-content-image.workspace = true
-installed-content-localisation.workspace = true
-installed-content-raids.workspace = true
-installed-content-regions.workspace = true
-installed-content-state-categories.workspace = true
-installed-content-states.workspace = true
-installed-content-weather.workspace = true
+content-reader-core.workspace = true
+content-reader-country-names.workspace = true
+content-reader-equipment-graphics.workspace = true
+content-reader-image.workspace = true
+content-reader-localisation.workspace = true
+content-reader-raids.workspace = true
+content-reader-regions.workspace = true
+content-reader-state-categories.workspace = true
+content-reader-states.workspace = true
+content-reader-weather.workspace = true
 replay-data.workspace = true
 replay-derive.workspace = true
 replay-frame.workspace = true
@@ -46,16 +46,16 @@ bytemuck = { workspace = true, features = ["derive"] }
 product-codec.workspace = true
 dashboard-text = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true
-installed-content-core = { workspace = true, features = ["test-support"] }
-installed-content-country-names = { workspace = true, features = ["test-support"] }
-installed-content-equipment-graphics = { workspace = true, features = ["test-support"] }
-installed-content-image = { workspace = true, features = ["test-support"] }
-installed-content-localisation = { workspace = true, features = ["test-support"] }
-installed-content-raids = { workspace = true, features = ["test-support"] }
-installed-content-regions = { workspace = true, features = ["test-support"] }
-installed-content-state-categories = { workspace = true, features = ["test-support"] }
-installed-content-states = { workspace = true, features = ["test-support"] }
-installed-content-weather = { workspace = true, features = ["test-support"] }
+content-reader-core = { workspace = true, features = ["test-support"] }
+content-reader-country-names = { workspace = true, features = ["test-support"] }
+content-reader-equipment-graphics = { workspace = true, features = ["test-support"] }
+content-reader-image = { workspace = true, features = ["test-support"] }
+content-reader-localisation = { workspace = true, features = ["test-support"] }
+content-reader-raids = { workspace = true, features = ["test-support"] }
+content-reader-regions = { workspace = true, features = ["test-support"] }
+content-reader-state-categories = { workspace = true, features = ["test-support"] }
+content-reader-states = { workspace = true, features = ["test-support"] }
+content-reader-weather = { workspace = true, features = ["test-support"] }
 viewer-foundation = { path = "../viewer-foundation", features = ["test-support"] }
 shader-pipeline = { path = "../shader-pipeline", features = ["test-support"] }
 pollster.workspace = true
@@ -65,8 +65,8 @@ serde_json.workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-province-area = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-installed-content-province-area = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

@@ -338,7 +338,7 @@ mod tests {
                 canonical_slot: 1,
             }]),
         );
-        let names = installed_content_division_names::division_names::Database::default();
+        let names = content_reader_division_names::division_names::Database::default();
         let units = Err("unused division content".into());
         let vision = Vision::sharing(1, []);
         let context = Context {

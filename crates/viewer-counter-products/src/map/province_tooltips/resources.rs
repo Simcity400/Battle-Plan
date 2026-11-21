@@ -1,6 +1,6 @@
 
 use super::{Context, line};
-use installed_content_localisation::{localisation::Argument as Arg, localisation::Localisation};
+use content_reader_localisation::{localisation::Argument as Arg, localisation::Localisation};
 use viewer_foundation::{
     resource_origins::{self, Hour, whole},
     tooltip_text::Tooltip,

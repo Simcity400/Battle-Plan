@@ -1,6 +1,6 @@
 use super::localise;
-use installed_content_localisation::{localisation::Argument as Arg, localisation::Localisation};
-use installed_content_weather::weather::TemperatureRange;
+use content_reader_localisation::{localisation::Argument as Arg, localisation::Localisation};
+use content_reader_weather::weather::TemperatureRange;
 use replay_data::{rows::WeatherProvinceRow, rows::WeatherRegionRow};
 
 pub(super) fn row(

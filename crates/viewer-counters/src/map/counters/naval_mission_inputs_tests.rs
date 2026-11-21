@@ -44,7 +44,7 @@ pub(super) fn hour<'a>(
 }
 pub(super) fn content(terrain: &[u8]) -> Content {
     Content {
-        terrain: installed_content_core::terrain::parse_definitions(terrain).unwrap(),
+        terrain: content_reader_core::terrain::parse_definitions(terrain).unwrap(),
         allegiance_group_cutoff: 500.0,
         naval_terrain: BTreeMap::new(),
         dominance: replay_derive::naval_dominance_derive::Defines::default(),
@@ -71,7 +71,7 @@ pub(super) fn anchors() -> CounterContent {
         wing_types: Ok(Arc::new(Default::default())),
         mission_content: Err("unused in fixture".into()),
         port_mission_defines: viewer_foundation::map::port_mission_defines::Defines::read(
-            &installed_content_core::defines::Defines::new().unwrap(),
+            &content_reader_core::defines::Defines::new().unwrap(),
         ),
         anchors: Arc::new(BTreeMap::new()),
         stack_scales: BTreeMap::new(),
@@ -382,11 +382,11 @@ fn p2_join_keeps_the_native_range_boundary_and_null_home_base_hub_guard() {
             ..Default::default()
         }]),
     );
-    let graph = installed_content_core::province_graph::ProvinceGraph {
+    let graph = content_reader_core::province_graph::ProvinceGraph {
         edges: [(1, vec![(2, Some(300_000))]), (2, vec![(1, Some(300_000))])].into(),
         ..Default::default()
     };
-    let geometry = installed_content_core::province_geometry::ProvinceGeometry {
+    let geometry = content_reader_core::province_geometry::ProvinceGeometry {
         centroids: [(1, [0, 0]), (2, [3, 0]), (3, [0, 0]), (4, [3, 0])].into(),
         land: [3, 4].into(),
         width: 10,
@@ -668,7 +668,7 @@ fn strike_status_retains_repeated_aggression_lines_in_ledger_order() {
         &[hover_entry(2, 2, Some(1))],
         &mut hovers,
     );
-    let mut loc = installed_content_localisation::localisation::Localisation::default();
+    let mut loc = content_reader_localisation::localisation::Localisation::default();
     loc.language = "english".into();
     let status = hovers[&(7, 2, hover::Control::Status)].render(&loc, "english", None);
     assert_eq!(

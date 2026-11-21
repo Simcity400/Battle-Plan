@@ -28,7 +28,7 @@ const MUSIC_OPEN: Duration = Duration::from_secs(2);
 
 pub struct Source {
     pub content: Arc<Content>,
-    pub layers: installed_content_core::ResolvedLayers,
+    pub layers: content_reader_core::ResolvedLayers,
 }
 
 enum Command {
@@ -455,7 +455,7 @@ fn sample_path(source: &Source, load: Load) -> Result<&str, String> {
     }
 }
 
-fn read_bytes(source: &Source, load: Load) -> Result<installed_content_core::content::Bytes, String> {
+fn read_bytes(source: &Source, load: Load) -> Result<content_reader_core::content::Bytes, String> {
     let path = sample_path(source, load)?;
     source
         .layers
@@ -465,14 +465,14 @@ fn read_bytes(source: &Source, load: Load) -> Result<installed_content_core::con
 
 fn decode(source: &Source, load: Load) -> Result<Arc<Samples>, String> {
     let path = sample_path(source, load)?;
-    let pcm = installed_content_sound::wav::decode(&read_bytes(source, load)?)
+    let pcm = content_reader_sound::wav::decode(&read_bytes(source, load)?)
         .map_err(|why| format!("{path}: {why}"))?;
     Ok(Arc::new(Samples::from_pcm(&pcm)))
 }
 
-fn open_track(source: &Source, load: Load) -> Result<installed_content_sound::ogg::Stream, String> {
+fn open_track(source: &Source, load: Load) -> Result<content_reader_sound::ogg::Stream, String> {
     let path = sample_path(source, load)?;
-    installed_content_sound::ogg::open(read_bytes(source, load)?).map_err(|why| format!("{path}: {why}"))
+    content_reader_sound::ogg::open(read_bytes(source, load)?).map_err(|why| format!("{path}: {why}"))
 }
 
 fn guarded<T>(

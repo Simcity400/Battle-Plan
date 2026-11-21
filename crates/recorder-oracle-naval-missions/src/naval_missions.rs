@@ -28,7 +28,7 @@ pub fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
 
 pub fn bind_patrol_save_fields(
     frame: &DecodedFrame,
-    document: &installed_content_save::SaveDocument,
+    document: &content_reader_save::SaveDocument,
     save: &mut Save,
 ) -> io::Result<()> {
     patrol_inputs::bind(frame, document, save)
@@ -198,8 +198,8 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
 
 fn compare_saved_row(
     row: &replay_data::rows::NavalMissionTaskForceRow,
-    expected: &installed_content_save::naval_missions::TaskForce,
-    saved: &installed_content_save::naval_missions::Pack,
+    expected: &content_reader_save::naval_missions::TaskForce,
+    saved: &content_reader_save::naval_missions::Pack,
     r: &mut Report,
     label: &str,
 ) -> (usize, usize) {
@@ -314,7 +314,7 @@ fn presence(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_save::naval_missions;
+    use content_reader_save::naval_missions;
     use replay_data::{
         rows::NavalMissionLedgerRow, rows::NavalMissionTaskForceRow, rows::TaskForceRow,
     };
@@ -605,7 +605,7 @@ mod tests {
         };
         save.counter_inputs.task_forces.insert(
             task,
-            installed_content_save::counter_inputs::TaskForce {
+            content_reader_save::counter_inputs::TaskForce {
                 fleet,
                 is_in_regions: Some(true),
                 ..Default::default()

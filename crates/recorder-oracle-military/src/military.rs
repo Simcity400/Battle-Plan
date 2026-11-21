@@ -3,7 +3,7 @@ use std::{
     io,
 };
 
-use installed_content_save::Save;
+use content_reader_save::Save;
 use recorder_oracle_support::support::equal;
 use replay_data::{
     rows::CountryRow, rows::DivisionMovementRow, rows::DivisionRow, rows::DivisionStatusRow,
@@ -30,7 +30,7 @@ pub use unit_bonuses::compare as compare_country_unit_bonuses;
 pub fn compare_land_combats(
     frame: &DecodedFrame,
     save: &Save,
-    membership: &installed_content_save::PartialMapMembership,
+    membership: &content_reader_save::PartialMapMembership,
     report: &mut Report,
 ) -> io::Result<()> {
     let mut combats = BTreeMap::new();
@@ -125,7 +125,7 @@ fn unit_class(save: &Save, handle: u64) -> Option<u32> {
 
 pub fn compare_battle_sounds(
     frame: &DecodedFrame,
-    membership: &installed_content_save::PartialMapMembership,
+    membership: &content_reader_save::PartialMapMembership,
     report: &mut Report,
 ) -> io::Result<()> {
     let rows = frame.complete::<tables::BattleSounds>()?;
@@ -886,7 +886,7 @@ fn compare_combat_movement(
 pub fn compare_camouflage(
     label: &str,
     row: &replay_data::rows::DivisionStatusRow,
-    saved: Option<&installed_content_save::Acclimatization>,
+    saved: Option<&content_reader_save::Acclimatization>,
     tokens: &TokenNames<'_>,
     show_at: &Result<i64, String>,
     report: &mut Report,
@@ -935,7 +935,7 @@ pub fn compare_camouflage(
                 .iter()
                 .map(|(name, weight)| (name, weight.raw)),
             saved.maximum.as_ref().map_or(
-                installed_content_save::Acclimatization::OMITTED_MAXIMUM_RAW,
+                content_reader_save::Acclimatization::OMITTED_MAXIMUM_RAW,
                 |maximum| maximum.raw,
             ),
             show_at,
@@ -959,7 +959,7 @@ fn shown_entries(entries: &[(&[u8], i64)]) -> Vec<(String, i64)> {
 pub fn compare_acclimatization(
     label: &str,
     row: &replay_data::rows::DivisionStatusRow,
-    saved: Option<&installed_content_save::Acclimatization>,
+    saved: Option<&content_reader_save::Acclimatization>,
     tokens: &TokenNames<'_>,
     report: &mut Report,
 ) {
@@ -995,7 +995,7 @@ pub fn compare_acclimatization(
     };
     report.scalar_checks += 1;
     let expected = saved.maximum.as_ref().map_or(
-        installed_content_save::Acclimatization::OMITTED_MAXIMUM_RAW,
+        content_reader_save::Acclimatization::OMITTED_MAXIMUM_RAW,
         |maximum| maximum.raw,
     );
     if maximum != expected {
@@ -1031,7 +1031,7 @@ fn compare_template_text(
     saved: &[u8],
     saved_present: bool,
 ) {
-    let prefix = installed_content_core::parser::c_string(stored);
+    let prefix = content_reader_core::parser::c_string(stored);
     if prefix.len() < stored.len() {
         report.limitation(
             "native text serialization ends at the first NUL; captured trailing bytes are not save-comparable",
@@ -1398,7 +1398,7 @@ pub fn compare_division_template_icons(
             let names_group = settings
                 .names_group
                 .as_deref()
-                .map(installed_content_core::parser::c_string)
+                .map(content_reader_core::parser::c_string)
                 .filter(|key| !key.is_empty());
             setting!(
                 "division_names_group",
@@ -1662,13 +1662,13 @@ pub fn compare_division_template_icons(
 pub fn compare_naval_units(
     frame: &DecodedFrame,
     save: &Save,
-    membership: &installed_content_save::PartialMapMembership,
+    membership: &content_reader_save::PartialMapMembership,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
     fn province(
         value: Option<u32>,
-        membership: &installed_content_save::PartialMapMembership,
+        membership: &content_reader_save::PartialMapMembership,
     ) -> io::Result<u32> {
         match value {
             Some(value) if value == 0 || !membership.contains_province(value) => Err(invalid(
@@ -1703,7 +1703,7 @@ pub fn compare_naval_units(
             ),
             Recorded::Value(None) => return Err(invalid("fleet stored name capture refused")),
             Recorded::Value(Some(bytes)) => {
-                let comparable = installed_content_core::parser::c_string(bytes);
+                let comparable = content_reader_core::parser::c_string(bytes);
                 if comparable.len() != bytes.len() {
                     report.limitation("native name serialization ends at the first NUL; trailing owned bytes need a live comparison", format!("{label}.name"));
                 }
@@ -2001,7 +2001,7 @@ pub fn compare_naval_combat_sources(
 pub fn compare_naval_combats(
     frame: &DecodedFrame,
     save: &Save,
-    membership: &installed_content_save::PartialMapMembership,
+    membership: &content_reader_save::PartialMapMembership,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -2406,7 +2406,7 @@ pub fn compare_army_orders(
 pub fn compare_divisions(
     frame: &DecodedFrame,
     save: &Save,
-    membership: &installed_content_save::PartialMapMembership,
+    membership: &content_reader_save::PartialMapMembership,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {

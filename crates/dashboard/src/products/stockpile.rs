@@ -18,7 +18,7 @@ use crate::{
 use super::at_hour::Read;
 use dashboard_query::Query;
 use dashboard_text::variant_names::{self, Tags, Texts, raw_variant, variant_names};
-use installed_content_core::equipment::Database;
+use content_reader_core::equipment::Database;
 use replay_data::rows::{TableId, VariantModuleRow, VariantUpgradeRow, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
