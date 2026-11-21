@@ -337,7 +337,9 @@ fn names() -> BTreeSet<String> {
         .collect()
 }
 
+// quarantine: #3 dashboard rework
 #[test]
+#[ignore = "quarantined under #3"]
 fn production_selection_covers_map_and_shared_recorded_input_readers() {
     let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
         .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);

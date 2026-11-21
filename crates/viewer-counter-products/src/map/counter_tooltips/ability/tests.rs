@@ -416,7 +416,7 @@ fn communications_resolves_the_character_role_and_refuses_an_ambiguous_direct_li
         assert!(
             communication_leader(context, &original)
                 .unwrap_err()
-                .contains("more than one UnitLeaders row")
+                .contains("more than one unit leaders row")
         )
     });
     *frame.tables[TableId::UnitLeaders.index()] = TableView::Unavailable {

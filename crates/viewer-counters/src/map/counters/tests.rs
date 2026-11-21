@@ -2576,14 +2576,14 @@ fn gun_sub_unit_tokens_name_their_authored_key_under_the_lexers_fold() {
         BTreeMap::from([
             (3, Ok("railway_gun".to_owned())),
             (4, Err("sub-unit armored_train is not authored".to_owned())),
-            (8, Err("token 8 is not in LexicalTokens".to_owned())),
+            (8, Err("token 8 is not in lexical tokens".to_owned())),
         ])
     );
     assert_eq!(
         inputs.refused,
         BTreeSet::from([
             "railway gun sub-unit: sub-unit armored_train is not authored".to_owned(),
-            "railway gun sub-unit: token 8 is not in LexicalTokens".to_owned(),
+            "railway gun sub-unit: token 8 is not in lexical tokens".to_owned(),
         ])
     );
     let rows = inputs.rows.as_ref().expect("the census is complete");
@@ -2637,7 +2637,7 @@ fn an_assigned_report_copies_and_clears_its_refused_tokens() {
     let refusing = CounterReport {
         refused_tokens: BTreeSet::from([
             "air_base folds to several tokens: 3, 4 and perhaps more".to_owned(),
-            "railway gun sub-unit: token 8 is not in LexicalTokens".to_owned(),
+            "railway gun sub-unit: token 8 is not in lexical tokens".to_owned(),
         ]),
         ..Default::default()
     };
@@ -2648,7 +2648,7 @@ fn an_assigned_report_copies_and_clears_its_refused_tokens() {
         kept.warnings().collect::<Vec<_>>(),
         [
             "Counters: refused token: air_base folds to several tokens: 3, 4 and perhaps more.",
-            "Counters: refused token: railway gun sub-unit: token 8 is not in LexicalTokens.",
+            "Counters: refused token: railway gun sub-unit: token 8 is not in lexical tokens.",
         ]
     );
     kept.assign(&CounterReport::default());
@@ -5536,8 +5536,7 @@ fn memoized_template_icons_equal_a_fresh_read_hour_by_hour() {
         let Err(refusal) = &kept[hour - 1] else {
             panic!("hour {hour} is not refused");
         };
-        let refusal = refusal.to_string();
-        assert!(refusal.contains(&format!("hour {hour} ")), "{refusal}");
+        assert_eq!(refusal.to_string(), "division template icons holds rows of another kind", "hour {hour}");
     }
 }
 

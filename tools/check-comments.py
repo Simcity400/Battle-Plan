@@ -169,6 +169,9 @@ def exempt(name, start, comment, source=b""):
             return True
         following = source[start + len(comment):].lstrip(b"\r\n").split(b"\n", 1)[0]
         return bool(re.search(r"\.test\.[cm]?[jt]sx?$", name)) and b"test.skip(" in following
+    if name.startswith(".github/workflows/") and re.fullmatch(rb"# v\d+(?:\.\d+)*", comment):
+        line = source[source.rfind(b"\n", 0, start) + 1:start]
+        return bool(re.fullmatch(rb"\s*(?:- )?uses: [\w.-]+/[\w./-]+@[0-9a-f]{40}\s+", line))
     return bool(re.fullmatch(rb"(?:#|//|/\*)\s*SPDX-License-Identifier: [\w.+() -]+(?:\*/)?", comment))
 
 

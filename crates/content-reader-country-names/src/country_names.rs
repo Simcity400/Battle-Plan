@@ -1391,8 +1391,8 @@ mod tests {
                     },
                 ]));
             for (slot, own, prefix) in [
-                (30, "D01", "CountryAppearance"),
-                (0, "ZZ0", "ReservedCountryNaming"),
+                (30, "D01", "country appearance"),
+                (0, "ZZ0", "reserved country naming"),
             ] {
                 let result = original_or_own_tag(&frame, slot);
                 match expected {
@@ -1400,16 +1400,16 @@ mod tests {
                     Ok(text) => assert_eq!(result, Ok(text)),
                     Err(why) => {
                         let field = if why.starts_with("reference") {
-                            "original_tag_reference"
+                            "original tag reference"
                         } else {
-                            "original_tag"
+                            "original tag"
                         };
                         let suffix = if why.ends_with("absent") {
                             "not recorded"
                         } else {
                             "capture refused"
                         };
-                        assert_eq!(result, Err(format!("{prefix}.{field} {suffix}")));
+                        assert_eq!(result, Err(format!("{field} of {prefix} {suffix}")));
                     }
                 }
                 let selected = original_or_own_reference(&frame, slot);

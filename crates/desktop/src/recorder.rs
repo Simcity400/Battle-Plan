@@ -318,15 +318,35 @@ mod tests {
     }
 
     fn recording(path: &Path) {
-        let mut bytes = b"H4RP".to_vec();
-        bytes.extend_from_slice(
-            &replay_data::format::FormatVersion::CURRENT
-                .version()
-                .to_le_bytes(),
-        );
-        bytes.extend_from_slice(&720_u32.to_le_bytes());
-        bytes.extend_from_slice(&(CAMPAIGN.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(CAMPAIGN.as_bytes());
+        use replay_data::identity::{
+            CaptureMode, Identity, SampleBoundary, SessionStart, Verification,
+        };
+        let session = SessionStart {
+            id: 1,
+            process_id: 1,
+            process_start_time: 1,
+            qpc_frequency: 1,
+            sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
+            identity: Identity {
+                game_version: "synthetic".into(),
+                exe_hash: [1; 32],
+                exe_size: 1,
+                vanilla_hash: [2; 32],
+                dlc: vec![],
+                mods: vec![],
+                coverage_policy: 1,
+                language: "english".into(),
+                recorder_version: "synthetic".into(),
+                collector_hash: [3; 32],
+                verification: Verification::Unchecked,
+            },
+        };
+        let bytes = replay::campaign::fixtures::encode_records(
+            CAMPAIGN.as_bytes().to_vec(),
+            &[vec![replay::spool::Record::SessionStart(session)]],
+        )
+        .unwrap();
         std::fs::write(path, bytes).unwrap();
     }
 

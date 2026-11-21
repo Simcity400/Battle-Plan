@@ -1914,7 +1914,7 @@ fn unavailable(view: &TableView, expected: &str) {
 #[test]
 fn padded_snapshot_counts_are_rejected_before_allocating_or_reading_rows() {
     let claimed = 16_384_u32;
-    assert_eq!(TableId::Divisions.minimum_row_bytes(), 50);
+    assert_eq!(TableId::Divisions.minimum_row_bytes(), 51);
     assert_eq!(TableId::Campaign.minimum_row_bytes(), 5);
     for table in TableId::ALL {
         let padding = claimed as usize * table.minimum_row_bytes() - 1;

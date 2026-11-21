@@ -530,6 +530,10 @@ elif mode in {'check', 'build', 'test', 'ui'}:
                     subprocess.run(['npm', 'run', 'build:ui'], cwd=SRC, check=True)
             if mode != 'ui':
                 prune_incremental()
+                if args[:1] == ['clippy'] and subprocess.run(['cargo', 'clippy', '--version'], cwd=SRC, capture_output=True).returncode:
+                    if subprocess.run(['rustup', 'component', 'add', 'clippy'], cwd=SRC).returncode:
+                        print('Clippy could not be installed on this VM', file=sys.stderr, flush=True)
+                        sys.exit(80)
                 command = ['cargo', 'xwin', *args, '--target', TARGET]
                 if mode in {'build', 'test'}:
                     command.append('--message-format=json-render-diagnostics')

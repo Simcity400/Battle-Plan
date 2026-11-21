@@ -410,6 +410,7 @@ fn division_base_speed_is_required_for_a_route_and_never_compared() {
                 movement_priority: Some(1).into(),
                 own_base_speed: Some(base_speed),
                 fuel: Recorded::NotRecorded,
+                queued_actions: Recorded::Value(Some(0)),
                 ..Default::default()
             }]),
         );

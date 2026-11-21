@@ -544,7 +544,7 @@ fn format_136_columns_are_this_builds_but_the_appended() {
     use replay_data::rows::compatibility::AIR_HISTORY_SLOTS_FORMAT;
     let schema = schema().unwrap();
     let columns = columns_at(AIR_HISTORY_SLOTS_FORMAT).unwrap();
-    let mut changed = [TableId::DivisionMovement, TableId::DivisionPanelStats, TableId::DivisionStatus, TableId::LandCombatDivisions, TableId::LandCombatDivisionModifiers].map(TableId::index).to_vec();
+    let mut changed = [TableId::DivisionMovement, TableId::DivisionPanelStats, TableId::DivisionStatus, TableId::LandCombatDivisions, TableId::LandCombatDivisionModifiers, TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs].map(TableId::index).to_vec();
     changed.sort_unstable();
     let named = |format: u16| {
         withheld_at(format)

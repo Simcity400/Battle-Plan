@@ -630,7 +630,7 @@ fn memoized_building_tokens_equal_a_fresh_build_hour_by_hour() {
     assert_eq!(kept[3].0.get("facility"), Some(&5));
     for hour in [5, 6] {
         let refusal = answer(&icons.tokens(&hours[hour - 1])).unwrap_err();
-        assert!(refusal.contains(&format!("hour {hour} ")), "{refusal}");
+        assert_eq!(refusal, "lexical tokens are not in order", "hour {hour}");
     }
 }
 

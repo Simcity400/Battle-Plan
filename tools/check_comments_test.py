@@ -57,6 +57,11 @@ class Comments(unittest.TestCase):
         self.assertEqual(list(lint.added_comments("ui/src/a.test.ts", b"", b"// quarantine: #3 why\ntest('name', () => {});\n")), [1])
         looped = b"// quarantine: #3 why\r\nfor (const x of [1]) test.skip(`n ${x}`, () => {});\r\n"
         self.assertEqual(list(lint.added_comments("ui/src/a.test.ts", b"", looped)), [])
+        pinned = b"    steps:\n      - uses: owner/action@" + b"0123456789abcdef" * 2 + b"01234567 # v2.9.3\n"
+        self.assertEqual(list(lint.added_comments(".github/workflows/ci.yml", b"", pinned)), [])
+        self.assertEqual(list(lint.added_comments(".github/workflows/ci.yml", b"", pinned.replace(b"# v2.9.3", b"# why"))), [2])
+        self.assertEqual(list(lint.added_comments(".github/workflows/ci.yml", b"", b"      - uses: owner/action@v2 # v2.9.3\n")), [1])
+        self.assertEqual(list(lint.added_comments("tools/a.py", b"", b"x = 1 # v2.9.3\n")), [1])
 
     def test_safety_contracts_are_exempt_only_at_unsafe_code(self):
         rust = b"""fn f(p: *const u8) -> u8 {

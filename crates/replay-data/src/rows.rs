@@ -2959,7 +2959,8 @@ mod tests {
                 + usize::from(mask & 1024 != 0)
                 + 2 * usize::from(mask & 2048 != 0)
                 + 2 * usize::from(mask & 4096 != 0)
-                + 17 * usize::from(mask & 8192 != 0);
+                + 17 * usize::from(mask & 8192 != 0)
+                + 17 * usize::from(mask & 16384 != 0);
             let names = 6 * usize::from(mask & 8 != 0) + 5 * usize::from(mask & 16 != 0);
             if names == 0 {
                 assert_eq!(bytes.len(), scalars);
@@ -2984,7 +2985,7 @@ mod tests {
             let mut bytes = Vec::new();
             encode_row(&row, 0, &mut bytes).unwrap();
             let key_len = if id == 0 { 1 } else { 10 };
-            assert_eq!(bytes.len(), key_len + 49);
+            assert_eq!(bytes.len(), key_len + 58);
             assert_eq!(
                 &bytes[key_len + 16..key_len + 24],
                 &division().template.to_le_bytes()
@@ -3011,7 +3012,7 @@ mod tests {
             bytes.clear();
             encode_delta(TableId::Divisions, &delta, 0, &mut bytes).unwrap();
             assert_eq!(bytes.len(), key_len + 2 + delta.values.len());
-            assert_eq!(&bytes[key_len..key_len + 2], &[0xff, 1]);
+            assert_eq!(&bytes[key_len..key_len + 2], &[0xff, 3]);
             assert_eq!(delta.apply::<DivisionRow>(None).unwrap(), row);
         }
     }
@@ -3048,6 +3049,9 @@ mod tests {
             }
             if mask & 256 != 0 {
                 updated.reveal_skip = 255;
+            }
+            if mask & 512 != 0 {
+                updated.theatre = Recorded::Value(None);
             }
             let new = updated;
             let delta = new.delta(Some(&old)).unwrap().unwrap();

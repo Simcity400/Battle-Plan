@@ -655,7 +655,7 @@ fn combat_names_use_the_retained_getter_and_never_mask_cache_failures() {
         shown(Some(&status))
             .unwrap_err()
             .to_string()
-            .contains("DivisionStatus.name unavailable")
+            .contains("name of division status unavailable")
     );
     assert!(
         shown(None)

@@ -118,8 +118,11 @@ fn a_missing_operand_withholds_the_whole_text_naming_each() {
     entries.retain(|(key, _)| *key != "FACTION_THEATER_TOOLTIP_COUNTRY");
     let missing = localisation(entries);
     let tip = lines(&missing, &sample());
-    assert_eq!(tip.title, "");
-    assert!(refusals(&tip).iter().all(|line| line.starts_with("faction theatre countries: ")), "{:?}", tip.refused);
+    assert_eq!(
+        tip.title,
+        "Western Front|GER Germany|Field Marshal Rommel|2:FACTION_THEATER_TOOLTIP_COUNTRY\nFACTION_THEATER_TOOLTIP_COUNTRY|2:Rhine\nAlps",
+        "a missing localisation key is shown as the key, as the game shows it"
+    );
 }
 
 fn regions() -> BTreeMap<u32, StrategicRegion> {

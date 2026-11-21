@@ -208,7 +208,7 @@ mod tests {
             NavalInputs::new(&frame)
                 .tokens()
                 .unwrap_err()
-                .contains("not in token order")
+                .contains("are not in order")
         );
     }
 }

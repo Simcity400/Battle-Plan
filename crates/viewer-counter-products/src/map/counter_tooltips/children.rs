@@ -906,7 +906,7 @@ mod tests {
             rows::Recorded, rows::TableRows, rows::UnitLeaderRow,
         };
         use viewer_foundation::map::test_support::{test_frame, test_put as put};
-        let loc: Localisation = [
+        let mut loc: Localisation = [
             (
                 "LEADER_WITHDRAWING_HEADER_SINGULAR".into(),
                 "$NAME$ one $DAYS$".into(),
@@ -927,6 +927,7 @@ mod tests {
         ]
         .into_iter()
         .collect();
+        loc.language = "english".into();
         let vision = Vision::sharing(1, []);
         let names = content_reader_division_names::division_names::Database::default();
         let units = Err("unused".into());

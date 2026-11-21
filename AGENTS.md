@@ -75,18 +75,18 @@ All Rust is in `crates/`; names group by prefix.
 - Desktop app: `npm.cmd ci`, then `npm.cmd run dev` (add `-- -- -- "<replay>"` to open one). Release build: `npm.cmd run build:desktop`.
 - Command-line recorder: `python tools/boat.py build --out <dir> --release -p recorder -p collector`.
 - Only Rust compiles go to Boat, never this machine; release builds run in GitHub Actions (ADR 0001). Run `tools/boat.py` from inside your worktree; don't drive `boat` by hand or pass `-j`. Exit 75 means Boat itself failed: run it again.
-  - Check: `python tools/boat.py check --all-targets -p <crate>...` for the crates you changed only. Never the whole workspace, never their dependents. `tools/check_changed.py` works out those crates for you.
+  - Check: `python tools/ci.py check` runs Clippy on Boat for changed crates and their direct dependents.
   - Build: `python tools/boat.py build --out <dir> --release -p <crate> --bin <name>`, only when you need to run that binary.
 - Everything else runs here: `npm.cmd run check:ui` for the UI, and Python checks and scripts directly.
 
 ## Verifying
 
-- Run `python tools/check_changed.py` once, when the work is done (for a PR, once pushed): it checks what your changes touch and posts the result as HEAD's `local/check_changed` status. Work that passed needs no second check. If you are going to build anyway, skip it.
+- Run `python tools/ci.py check` once before pushing. It runs the `tools/ci.toml` jobs your changes touch and reuses inputs that passed before; its `ci/check` status is a convenience. GitHub CI (`.github/workflows/ci.yml`, the same jobs) is the gate: merge only when its `check` passes. New checks are jobs in `tools/ci.toml`.
 - Test behaviour that can break: format readers and writers, recovery, parsing of game and mod files, and the logic a bug fix changed. Leave out what the types already guarantee and tests that mirror the implementation.
 - Extend before you add: put the case in an existing test where one fits. Test at the lowest layer that fails on `main`, not again in a wrapper.
 - A logic, data or format bug gets a failing test first, then the fix. A recording bug gets a `recorder-oracle-*` case that fails before the fix. A purely visual bug gets before/after captures and no test.
 - Tests never wait on sleeps or wall-clock time. Flaky tests are fixed, not retried. A skipped test needs a tracking issue on the line above: `// quarantine: #1234 why`.
-- Never run a suite. Run only the test you added or changed, and only where it runs without a local Rust compile (Python and UI tests). Rust tests are written but not run here.
+- Never run a suite. Run only the test you added or changed, where it needs no local Rust compile. GitHub CI runs the affected crates' tests; `ci check` runs them here only while `[local] heavy` is `run`.
 - Tests run once a day on this machine: the Windows task `BattlePlan daily tests` runs `tools/daily_tests.py` on `main` at 03:00. That run is the judge.
 - A user-visible UI change gets one pass in the running app (`npm.cmd run dev`), done once by the primary agent after integrating. Subagents don't launch their own.
 

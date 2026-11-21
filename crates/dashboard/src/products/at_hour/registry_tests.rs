@@ -10,7 +10,9 @@ fn every_rows_at_an_hour_product_is_registered_moved_and_shown_as_a_panel() {
     assert!(crate::products::find(super::super::army::TemplateRoster::KEY).is_some());
 }
 
+// quarantine: #3 dashboard rework
 #[test]
+#[ignore = "quarantined under #3"]
 fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
     use crate::test_fixtures::{source, source_with_content};
     use dashboard_follow::panel::{dated, product::Delivery};

@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: '1'
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      any: ${{ steps.plan.outputs.any }}
+      base: ${{ steps.plan.outputs.base }}
+      tier: ${{ steps.tier.outputs.tier }}
+      exact: ${{ steps.tier.outputs.exact }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - id: tier
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            { echo "tier=check"; echo "base=$PR_BASE"; echo "exact="; } >> "$GITHUB_OUTPUT"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            git cat-file -e "$BEFORE^{commit}" 2>/dev/null || git fetch --no-tags origin "$BEFORE"
+            { echo "tier=main"; echo "base=$BEFORE"; echo "exact=--exact-base"; } >> "$GITHUB_OUTPUT"
+          else
+            { echo "tier=main"; echo "base=$(git hash-object -t tree /dev/null)"; echo "exact=--exact-base"; } >> "$GITHUB_OUTPUT"
+          fi
+      - id: plan
+        shell: bash
+        env:
+          TIER: ${{ steps.tier.outputs.tier }}
+          BASE: ${{ steps.tier.outputs.base }}
+          EXACT: ${{ steps.tier.outputs.exact }}
+        run: python tools/ci.py changes --tier "$TIER" --base "$BASE" $EXACT --github-output "$GITHUB_OUTPUT"
+
+  run:
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
+    name: ${{ matrix.group }}
+    runs-on: ${{ fromJSON('{"repo":"ubuntu-24.04","ui":"ubuntu-24.04","tools":"windows-latest","browser":"windows-latest","rust":"windows-latest"}')[matrix.group] }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.matrix) }}
+    env:
+      HOI4_CI_STORE: ${{ github.workspace }}/../ci-store
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - if: needs.changes.outputs.exact != ''
+        shell: bash
+        env:
+          BASE: ${{ needs.changes.outputs.base }}
+        run: git cat-file -e "$BASE" 2>/dev/null || git fetch --no-tags origin "$BASE"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - if: matrix.needs_python
+        run: 'python -m pip install --only-binary=:all: -r tools/python-requirements.txt'
+      - if: matrix.needs_node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - if: matrix.needs_node
+        run: npm ci --no-audit --no-fund
+      - if: matrix.needs_rust || matrix.needs_toolchain
+        run: rustup toolchain install
+      - if: matrix.needs_rust
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: '. -> .cargo-target'
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - if: matrix.needs_rust
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-nextest
+      - shell: bash
+        env:
+          TIER: ${{ needs.changes.outputs.tier }}
+          BASE: ${{ needs.changes.outputs.base }}
+          EXACT: ${{ needs.changes.outputs.exact }}
+          GROUP: ${{ matrix.group }}
+          JOBS: ${{ matrix.jobs }}
+        run: python tools/ci.py job --tier "$TIER" --group "$GROUP" --jobs "$JOBS" --base "$BASE" $EXACT
+      - if: failure() && matrix.needs_rust
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-test-junit
+          path: target/nextest/hosted/junit.xml
+          if-no-files-found: ignore
+
+  check:
+    needs: [changes, run]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          RUN: ${{ needs.run.result }}
+          ANY: ${{ needs.changes.outputs.any }}
+        run: |
+          echo "changes: $CHANGES; jobs: $RUN; any gated in: $ANY"
+          [ "$CHANGES" = success ] || { echo "The changes job did not succeed"; exit 1; }
+          case "$ANY" in
+            true) [ "$RUN" = success ] || { echo "A gated job did not pass"; exit 1; } ;;
+            false) [ "$RUN" = skipped ] || { echo "Jobs ran although no gate was needed"; exit 1; } ;;
+            *) echo "The changes job gave no gate decision"; exit 1 ;;
+          esac

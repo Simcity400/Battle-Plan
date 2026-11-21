@@ -500,7 +500,9 @@ fn has_formations(history: &History) -> bool {
     })
 }
 
+// quarantine: #143 runs past an hour while holding 12 GB
 #[test]
+#[ignore = "quarantined under #143"]
 fn merge_join_matches_point_lookups_across_installs_views_and_frames() {
     let ids: Vec<u32> = [0, 1, 2]
         .into_iter()
@@ -560,7 +562,9 @@ fn merge_join_matches_point_lookups_across_installs_views_and_frames() {
     assert_eq!(saw, [true; 6]);
 }
 
+// quarantine: #143 runs past an hour while holding 12 GB
 #[test]
+#[ignore = "quarantined under #143"]
 fn sparse_install_matches_the_full_walk_across_seeks_branches_views_and_frames() {
     let branches: [Vec<u32>; 2] = [
         [0, 1, 2]

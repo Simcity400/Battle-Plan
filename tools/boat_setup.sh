@@ -9,7 +9,7 @@ export CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup
 export PATH=/usr/local/cargo/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH
 TOOLCHAIN=$(python3 -c 'import tomllib; print(tomllib.load(open("/home/user/hoi4/src/rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
 rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-pc-windows-msvc
-rustup component add --toolchain "$TOOLCHAIN" llvm-tools
+rustup component add --toolchain "$TOOLCHAIN" llvm-tools clippy
 python3 -m venv "$ROOT/tools"
 "$ROOT/tools/bin/pip" install cargo-xwin==0.23.1
 [[ ! -L "$ROOT/tools/bin/clang-cl" ]] || unlink "$ROOT/tools/bin/clang-cl"

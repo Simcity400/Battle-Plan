@@ -18,7 +18,8 @@ returns at once. A woken VM nobody takes stops when its 15-minute lifetime ends.
 
 Run it inside the worktree. Its tracked and unignored files, uncommitted changes included, are
 synchronized to a VM cloned from the SNAPSHOT image and compiled with cargo-xwin for
-x86_64-pc-windows-msvc. Cargo's exit code passes through (101 for compile errors);
+x86_64-pc-windows-msvc; `clippy` is `check` with Clippy's lints. Cargo's exit code passes through
+(101 for compile errors);
 exit 75 means Boat failed: run it again, never locally.
 
 `snapshot`, from a clean worktree at the head of the branch the image serves, re-saves SNAPSHOT
@@ -110,6 +111,7 @@ UPLOAD_WORKERS = 8
 DOWNLOAD_BYTES = 4 * 1024 * 1024
 DOWNLOAD_WORKERS = 8
 SYNC_FAILED = 79
+CLIPPY_MISSING = 80
 STILL_RUNNING = 74
 NOT_STARTED = 78
 OUTCOME_SECONDS = 15
@@ -1535,6 +1537,8 @@ def run(argv):
         claimed = False
         if status == SYNC_FAILED:
             raise Failure("Remote source synchronization failed; see the remote output above")
+        if status == CLIPPY_MISSING and mode == "clippy":
+            raise Failure("Clippy could not be installed on the VM; see the remote output above")
         cargo_exit = status
         if plan:
             changed[plan.key] = plan.compiled_tree(state.entry(vmid), cargo_exit == 0)

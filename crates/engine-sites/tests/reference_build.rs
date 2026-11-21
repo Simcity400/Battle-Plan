@@ -3,10 +3,9 @@ use std::path::PathBuf;
 
 #[test]
 fn reference_build_verifies_every_key() {
-    let Some(dir) = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")) else {
-        eprintln!("BATTLE_PLAN_GAME_DIR unset; skipped");
-        return;
-    };
+    let dir = std::env::var_os("BATTLE_PLAN_GAME_DIR")
+        .or_else(|| std::env::var_os("HOI4_GAME_DIR"))
+        .expect("reference build tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let bytes = std::fs::read(PathBuf::from(dir).join("hoi4.exe")).unwrap();
     let sha: [u8; 32] = sha256(&bytes);
     if !layout_checked(&sha) {

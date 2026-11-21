@@ -1,0 +1,216 @@
+[tier.check]
+budget = 60
+
+[tier.main]
+budget = 900
+
+[tier.nightly]
+budget = 18000
+
+[tier.release]
+budget = 3600
+
+[toolchain.python]
+version = ["{python}", "--version"]
+files = []
+
+[toolchain.node]
+version = ["{node}", "--version"]
+files = ["package.json", "package-lock.json", ".npmrc", "ui/tsconfig.json"]
+requires = ["node_modules/.package-lock.json"]
+installed = ["package.json", "package-lock.json", "node_modules/.package-lock.json"]
+consistent = ["{npm}", "ci", "--dry-run", "--offline", "--ignore-scripts", "--no-audit", "--no-fund"]
+
+[toolchain.comments]
+version = ["{python}", "-c", "import importlib.metadata as m; print(m.version('tree-sitter'), m.version('tree-sitter-language-pack'))"]
+files = ["tools/comment-lint-requirements.txt"]
+
+[toolchain.workflows]
+version = ["{python}", "-c", "import yaml; print(yaml.__version__)"]
+probes = ["actionlint"]
+
+[toolchain.tools]
+version = ["{python}", "-c", "import importlib.metadata as m, sys\nprint(sys.version)\nfor p in ('pyyaml', 'tree-sitter', 'tree-sitter-language-pack', 'cryptography', 'capstone', 'numpy'):\n    try:\n        print(p, m.version(p))\n    except m.PackageNotFoundError:\n        print(p, 'absent')"]
+files = ["tools/python-requirements.txt", "tools/comment-lint-requirements.txt"]
+
+[toolchain.rust]
+tools = ["cargo"]
+files = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", "clippy.toml", ".clippy.toml", "vendor/**", "crates/test-unify/**"]
+
+[pipeline]
+implementation = ["tools/ci.py", "tools/ci.toml", ".github/workflows/ci.yml"]
+
+[group.repo]
+setup = ["python"]
+
+[group.tools]
+setup = ["python", "toolchain"]
+
+[group.ui]
+setup = ["node"]
+
+[group.browser]
+setup = ["node"]
+
+[group.rust]
+setup = ["python", "rust"]
+
+[local]
+heavy = "paused"
+
+[[job]]
+name = "machine-paths"
+group = "repo"
+tier = "check"
+toolchain = "python"
+inputs = ["**"]
+command = ["{python}", "tools/check-machine-paths.py"]
+
+[[job]]
+name = "agent-context"
+group = "repo"
+tier = "check"
+toolchain = "python"
+base = true
+inputs = ["AGENTS.md", "tools/agent-context-budget.json", "tools/check-agent-context.py"]
+command = ["{python}", "tools/check-agent-context.py", "--against", "{base}"]
+
+[[job]]
+name = "comments"
+group = "repo"
+tier = "check"
+toolchain = "comments"
+base = true
+inputs = ["**"]
+command = ["{python}", "tools/check-comments.py", "--against", "{base}"]
+
+[[job]]
+name = "patterns"
+group = "repo"
+tier = "check"
+toolchain = "python"
+base = true
+inputs = ["**"]
+command = ["{python}", "tools/check-patterns.py", "--against", "{base}"]
+
+[[job]]
+name = "workflows"
+group = "repo"
+tier = "check"
+toolchain = "workflows"
+inputs = [".github/**", "tools/check-workflows.py"]
+command = ["{python}", "tools/check-workflows.py"]
+
+[[job]]
+name = "suppressions"
+group = "repo"
+tier = "check"
+toolchain = "python"
+base = true
+inputs = ["crates/**/*.rs", "fuzz/**/*.rs", "vendor/**/*.rs", "tools/check-suppressions.py"]
+command = ["{python}", "tools/check-suppressions.py", "--against", "{base}"]
+
+[[job]]
+name = "citations"
+group = "repo"
+tier = "check"
+kind = "files"
+toolchain = "python"
+inputs = ["crates/**", "tools/**", "docs/**", "ui/src/**", "fuzz/**", "*.md"]
+shared = ["tools/check-citations.py"]
+command = ["{python}", "tools/check-citations.py", "{files}"]
+whole = ["{python}", "tools/check-citations.py"]
+
+[[job]]
+name = "build-dependencies"
+group = "repo"
+tier = "check"
+toolchain = "python"
+inputs = ["Cargo.toml", "Cargo.lock", "crates/*/Cargo.toml", "tools/check-build-dependencies.py"]
+command = ["{python}", "tools/check-build-dependencies.py"]
+
+[[job]]
+name = "content-dependencies"
+group = "repo"
+tier = "check"
+toolchain = "python"
+inputs = ["Cargo.toml", "Cargo.lock", "crates/*/Cargo.toml", "tools/check-content-dependencies.py"]
+command = ["{python}", "tools/check-content-dependencies.py"]
+
+[[job]]
+name = "feature-unification"
+group = "tools"
+tier = "check"
+toolchain = "rust"
+inputs = ["Cargo.toml", "Cargo.lock", "crates/*/Cargo.toml", "vendor/*/Cargo.toml", "tools/check-feature-unification.py"]
+command = ["{python}", "tools/check-feature-unification.py"]
+
+[[job]]
+name = "nextest-config"
+group = "repo"
+tier = "check"
+toolchain = "python"
+inputs = [".config/nextest.toml", "Cargo.toml", "crates/*/Cargo.toml", "tools/check-nextest-config.py"]
+command = ["{python}", "tools/check-nextest-config.py"]
+
+[[job]]
+name = "tool-tests"
+group = "tools"
+tier = "check"
+toolchain = "tools"
+inputs = ["tools/**"]
+unset = ["WARM_TARGET_END_TO_END"]
+command = ["{python}", "tools/test-python.py"]
+
+[[job]]
+name = "ui-typecheck"
+group = "ui"
+tier = "check"
+toolchain = "node"
+inputs = ["ui/**", "tools/**/*.ts", "tools/**/*.mjs", "tools/**/*.js"]
+command = ["{npm}", "run", "check:ui"]
+
+[[job]]
+name = "ui-tests"
+group = "ui"
+tier = "check"
+toolchain = "node"
+inputs = ["ui/**", "tools/**/*.ts", "tools/**/*.mjs", "tools/**/*.js", "crates/**/*.json", "crates/**/*.golden"]
+command = ["{node}", "tools/test-ui.mjs", "--group", "node"]
+
+[[job]]
+name = "ui-browser-tests"
+group = "browser"
+tier = "main"
+toolchain = "node"
+environment = ["HOI4_RECORDED_REPLIES"]
+inputs = ["ui/**", "tools/**/*.ts", "tools/**/*.mjs", "tools/**/*.js", "crates/**/*.json", "crates/**/*.golden"]
+command = ["{node}", "tools/test-ui.mjs", "--group", "browser"]
+
+[[job]]
+name = "rust-clippy"
+group = "rust"
+tier = "check"
+kind = "crates"
+toolchain = "rust"
+workspace = true
+base = true
+shared = ["tools/check-clippy.py"]
+keyed = ["tools/boat.py", "tools/boat_remote.py"]
+command = ["{python}", "tools/check-clippy.py", "--against", "{base}", "--", "{python}", "tools/boat.py", "clippy", "--all-targets", "--keep-going", "--no-deps", "{packages}"]
+hosted = ["{python}", "tools/check-clippy.py", "--against", "{base}", "--", "cargo", "clippy", "--all-targets", "--keep-going", "--no-deps", "{packages}"]
+
+[[job]]
+name = "rust-test"
+group = "rust"
+tier = "check"
+kind = "crates"
+toolchain = "rust"
+limit = 40
+heavy = true
+keyed = ["tools/boat.py", "tools/boat_remote.py"]
+command = ["{python}", "tools/boat.py", "test", "--no-fail-fast", "{packages}"]
+hosted = ["cargo", "nextest", "run", "--profile", "hosted", "--no-fail-fast", "--no-tests=pass", "{packages}"]
+report = "target/nextest/hosted/junit.xml"
+not-run = { "needs the game install" = '^(?:.*: Custom \{ kind: NotFound, error: "BATTLE_PLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation" \}|[\w -]+ requires? BATTLE_PLAN_GAME_DIR with the supported installation|BATTLE_PLAN_GAME_DIR(?: must name the installed game| must name the supported installation for executable metadata)?)$' }
+widen = [".config/nextest.toml"]

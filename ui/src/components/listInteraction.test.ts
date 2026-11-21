@@ -49,25 +49,24 @@ test('windowed controls retain focus, sequential row access and nested expansion
     assert.ok(optionIndices.includes(4999)); assert.ok(optionIndices.length < 40);
     select.props.ref.current = scroller;
     const focusedOption = () => select.props.children.props.children.find((node: any) => node.props.tabIndex === 0)?.props['data-option-index'];
-    let tabPrevented = 0;
+    let keyPrevented = 0;
     const selectKey = (key: string, shiftKey = false) => {
-      select.props.onKeyDown({ key, shiftKey, preventDefault() { tabPrevented++; } });
+      select.props.onKeyDown({ key, shiftKey, preventDefault() { keyPrevented++; } });
       select = draw(() => menu.type(menu.props));
     };
     options[1] = { ...options[1], disabled: true };
-    selectKey('Tab');
-    assert.equal(tabPrevented, 1, 'Tab visits the next enabled logical option instead of leaving the virtual menu');
+    selectKey('ArrowDown');
+    assert.equal(keyPrevented, 1, 'ArrowDown moves to the next enabled option');
     assert.equal(focusedOption(), 2, 'disabled choices are skipped');
-    selectKey('Tab', true);
-    assert.equal(focusedOption(), 0, 'Shift+Tab visits the previous enabled logical option');
-    tabPrevented = 0;
-    selectKey('Tab', true);
-    assert.equal(tabPrevented, 0, 'Shift+Tab leaves the first enabled option without wrapping');
+    selectKey('ArrowUp');
+    assert.equal(focusedOption(), 0, 'ArrowUp moves to the previous enabled option');
     selectKey('End');
-    assert.equal(focusedOption(), 4999);
-    tabPrevented = 0;
+    assert.equal(focusedOption(), 4999, 'End reaches beyond the mounted window');
+    keyPrevented = 0;
     selectKey('Tab');
-    assert.equal(tabPrevented, 0, 'Tab leaves the final enabled option without wrapping');
+    selectKey('Tab', true);
+    assert.equal(keyPrevented, 0, 'Tab and Shift+Tab leave the menu instead of moving between options');
+    assert.equal(focusedOption(), 4999);
 
     reset();
     const { default: WindowedRows } = await vite.ssrLoadModule('/ui/src/charts/WindowedRows.tsx');

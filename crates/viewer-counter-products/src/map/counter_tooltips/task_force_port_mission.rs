@@ -691,7 +691,7 @@ mod tests {
     use viewer_foundation::map::test_support::{test_frame, test_put};
 
     fn with_context(frame: &DecodedFrame, run: impl FnOnce(&Context<'_>)) {
-        let loc: Localisation = [
+        let mut loc: Localisation = [
             ("NAVAL_SPOTTING_LEVEL_NONE_DESC".into(), "none".into()),
             ("NAVAL_SPOTTING_LEVEL_LOW_DESC".into(), "low".into()),
             ("NAVAL_SPOTTING_LEVEL_MEDIUM_DESC".into(), "medium".into()),
@@ -712,6 +712,7 @@ mod tests {
         ]
         .into_iter()
         .collect();
+        loc.language = "english".into();
         super::super::task_force::tests::with_test_context(
             frame,
             &loc,

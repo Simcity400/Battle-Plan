@@ -96,7 +96,7 @@ fn an_origin_takes_its_own_tag_and_a_creator_its_original_tag() {
     assert_eq!(tags.naming_tag(&variant(0, 0)), Ok("---".into()));
     let reason = tags.naming_tag(&variant(0, 40)).unwrap_err();
     assert!(
-        reason.contains("country 40 has no CountryLinks row"),
+        reason.contains("country 40 has no country links row"),
         "{reason}"
     );
 }

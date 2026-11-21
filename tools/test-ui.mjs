@@ -240,6 +240,9 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   await checkNodeImports(files, repositoryRoot, graph);
   await checkBrowserManifest(files, browserTests, repositoryRoot, graph);
   if (!process.argv.includes('--check-imports')) {
-    process.exitCode = await runGroups(testGroups(files, browserTests, { tabFull: process.argv.includes('--tab-full') }));
+    const only = process.argv.includes('--group') ? process.argv[process.argv.indexOf('--group') + 1] : null;
+    if (only !== null && only !== 'node' && only !== 'browser') throw new Error(`--group takes node or browser, not ${only}`);
+    const groups = testGroups(files, browserTests, { tabFull: process.argv.includes('--tab-full') });
+    process.exitCode = await runGroups(groups.filter(group => only === null || group.concurrency === (only === 'node' ? true : 1)));
   }
 }

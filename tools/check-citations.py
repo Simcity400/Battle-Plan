@@ -108,7 +108,7 @@ PREFILTER = (r'14[0-9A-Fa-f]{7}|_[0-9A-Fa-f]{3}|C[A-Z][A-Za-z0-9]+::|\bvf[0-9]'
 
 def candidate_files(revision, paths):
     """Every file under `paths` with a line the cheap prefilter matches."""
-    command = ['git', 'grep', '-l', '-I', '-E', PREFILTER]
+    command = ['git', 'grep', '-l', '-z', '-I', *([] if revision else ['--untracked']), '-E', PREFILTER]
     if revision:
         command.append(revision)
     top_level = [':(glob)*.md'] if paths == DEFAULT_PATHS else []
@@ -118,7 +118,7 @@ def candidate_files(revision, paths):
         raise SystemExit(f'git grep failed ({result.returncode}): '
                          + result.stderr.decode('utf-8', 'replace').strip())
     out = result.stdout.decode('utf-8', 'replace')
-    for name in out.splitlines():
+    for name in filter(None, out.split('\0')):
         if revision:
             name = name[len(revision) + 1:]
         if os.path.splitext(name)[1] in EXTENSIONS:

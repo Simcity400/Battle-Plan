@@ -286,7 +286,7 @@ fn format_101_clocks_decode_as_held_recorded_values() {
     let historical =
         crate::format::FormatVersion::read(crate::rows::compatibility::POLITICAL_FORMAT).unwrap();
     assert_eq!(historical.fields(table), 9);
-    assert_eq!(crate::format::FormatVersion::CURRENT.fields(table), 16);
+    assert_eq!(crate::format::FormatVersion::CURRENT.fields(table), 17);
     let row = WeatherProvinceRow {
         id: 9,
         clock: DayNightClock::held(crate::day_night::Clock {
@@ -307,7 +307,7 @@ fn format_101_clocks_decode_as_held_recorded_values() {
     input.recorded_fields = 9;
     let decoded = WeatherProvinceRow::decode_fields(row.key(), &mut input).unwrap();
     input.finish().unwrap();
-    assert_eq!(decoded.not_recorded_fields(), 0b1111111 << 9);
+    assert_eq!(decoded.not_recorded_fields(), 0b11111111 << 9);
     assert_eq!(
         decoded.temperature.record(),
         Ok(TemperatureRecord::AtHour(0))
@@ -489,6 +489,9 @@ fn the_temperature_pass_rides_slot_zero_with_its_witness_last_before_the_modifie
         .encode(&mut tail)
         .unwrap();
     crate::rows::NativeValue::field(&row.daylight)
+        .encode(&mut tail)
+        .unwrap();
+    crate::rows::NativeValue::field(&row.static_modifiers)
         .encode(&mut tail)
         .unwrap();
     let pass_end = fields.len() - tail.len();

@@ -112,7 +112,7 @@ fn supply_origin_names_use_exact_static_and_reserved_original_tags_and_keep_refu
     assert!(
         with_frame_context(&frame, &loc, |context| province_name(context, 5))
             .unwrap_err()
-            .contains("CountryAppearance.original_tag not recorded")
+            .contains("original tag of country appearance not recorded")
     );
     if let TableView::Complete(TableRows::States(rows)) =
         &mut *frame.tables[TableId::States.index()]
@@ -140,7 +140,7 @@ fn supply_origin_names_use_exact_static_and_reserved_original_tags_and_keep_refu
     assert!(
         with_frame_context(&frame, &loc, |context| province_name(context, 5))
             .unwrap_err()
-            .contains("ReservedCountryNaming.original_tag capture refused")
+            .contains("original tag of reserved country naming capture refused")
     );
 }
 
