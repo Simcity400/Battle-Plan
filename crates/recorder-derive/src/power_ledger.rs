@@ -664,22 +664,12 @@ impl PowerLedger {
                 continue;
             }
             let matched = daily.as_ref().is_some_and(|daily| daily.epoch == epoch && daily.day_hour == day_hour && daily.pp_sequence == Some(sequence));
-            if publication.deleted_only {
+            if !publication.deleted_only {
+                let seen = pending.costs.entry(holder).or_default();
                 for cost in costs.iter().filter(|cost| cost.cost_raw != 0) {
-                    let ordinal = if matched {
-                        let first = First { site: cost.site, hour: day_hour, read: at, country: raw, epoch, sequence: u64::from(cost.ordinal) };
-                        self.item(own, pending, holder, ItemId::cost(cost), first)?
-                    } else {
-                        Total::GAINS
-                    };
-                    produced.insert(part_key(holder, POLITICAL, ordinal));
+                    seen.unmatched |= !matched;
+                    seen.negative |= matched && cost.cost_raw < 0;
                 }
-                continue;
-            }
-            let seen = pending.costs.entry(holder).or_default();
-            for cost in costs.iter().filter(|cost| cost.cost_raw != 0) {
-                seen.unmatched |= !matched;
-                seen.negative |= matched && cost.cost_raw < 0;
             }
             if matched {
                 let sum: i128 = costs.iter().map(|cost| i128::from(cost.cost_raw)).sum();
@@ -720,7 +710,10 @@ impl PowerLedger {
                     day,
                     spent: i64::try_from(sum).map_or(Recorded::NotRecorded, Recorded::Value),
                     payments,
-                    covered: covered && held.as_ref().is_none_or(|held| held.covered),
+                    covered: match &held {
+                        Some(held) if publication.deleted_only => held.covered,
+                        held => covered && held.as_ref().is_none_or(|held| held.covered),
+                    },
                     sequence: Some(sequence),
                     cost_ordinal: Some(first),
                     read: held.as_ref().map_or(at, |held| held.read),

@@ -85,6 +85,8 @@ const REMOVED: i32 = 54;
 const ZEROED: i32 = 55;
 const LATER_DAY: i32 = 73;
 const CLOSED_DELETED: i32 = 97;
+const SAME_ITEM: i32 = 98;
+const SAME_ITEM_DROPPED: i32 = 99;
 const NO_CHANGES: i32 = 26;
 
 fn edit(store: &mut Store, hour: i32) {
@@ -172,6 +174,15 @@ fn edit(store: &mut Store, hour: i32) {
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(72, 1, PowerDailyCostKind::MioResearch, Q / 10, 90), TEXTS).unwrap();
         }
         CLOSED_DELETED => testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap(),
+        SAME_ITEM => {
+            testing::put(store, TableId::CountryPowerDaily, &daily(96, 3 * Q, Q / 2 + Q / 4, 99), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(96, 0, PowerDailyCostKind::Relation, Q / 2, 99), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(96, 1, PowerDailyCostKind::Relation, Q / 4, 99), TEXTS).unwrap();
+        }
+        SAME_ITEM_DROPPED => {
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+            testing::put(store, TableId::CountryPowerDaily, &daily(96, 3 * Q, Q / 2, 99), TEXTS).unwrap();
+        }
         _ => {}
     }
 }
@@ -378,6 +389,11 @@ fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_
         assert_eq!(spend(&deleted, 10, POLITICAL, costs[0], name), spend(&settled, 10, POLITICAL, costs[0], name), "a deletion from a closed day settles none of its costs again ({name})");
     }
     assert_eq!(spend(&settled, 10, POLITICAL, costs[0], "days"), Some(2), "day 72's relation settled at its midnight");
+    let (paired, _) = through(0..=SAME_ITEM);
+    assert_eq!((cell::<Part>(&paired, TableId::PowerDayParts, relation, "spent"), cell::<Part>(&paired, TableId::PowerDayParts, relation, "payments")), (Some(Q / 2 + Q / 4), Some(2)));
+    let (dropped, _) = through(0..=SAME_ITEM_DROPPED);
+    assert_eq!((cell::<Part>(&dropped, TableId::PowerDayParts, relation, "spent"), cell::<Part>(&dropped, TableId::PowerDayParts, relation, "payments")), (Some(Q / 2), Some(1)), "a deleted row of a shared item leaves the item what its remaining rows pay");
+    assert_eq!(covered(&dropped), covered(&paired), "and keeps the coverage it proved");
 }
 
 #[test]
