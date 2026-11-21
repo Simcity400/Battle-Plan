@@ -24,3 +24,6 @@ engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 replay-tables-d = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+
+[lints]
+workspace = true

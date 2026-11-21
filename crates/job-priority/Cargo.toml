@@ -17,3 +17,6 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 test-unify = { workspace = true }
+
+[lints]
+workspace = true

@@ -52,3 +52,6 @@ test-unify = { workspace = true }
 unify-bitflags-1 = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 viewer-playback = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

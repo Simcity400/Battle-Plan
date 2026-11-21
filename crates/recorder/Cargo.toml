@@ -76,3 +76,6 @@ unify-num-traits = { workspace = true }
 unify-smallvec = { workspace = true }
 unify-uuid = { workspace = true }
 unify-winapi-util = { workspace = true }
+
+[lints]
+workspace = true

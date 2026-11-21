@@ -377,7 +377,7 @@ test('Node imports collect sorted unique violations behind unresolved imports an
   ));
 });
 
-test('Node imports check every discovered root, including browser and tools tests', async t => {
+test('Node imports check every discovered root, including browser tests and any tools test by its name', async t => {
   const root = await importFixtures(t, {
     'ui/src/components/VirtualList.dom.test.ts': "import './missing';",
     'tools/canvas-page.test.ts': "import './missing.ts';",
@@ -386,9 +386,13 @@ test('Node imports check every discovered root, including browser and tools test
     'tools/e2e/playbackVerdicts.test.mjs': '',
     'tools/e2e/allWidgets.test.mjs': '',
     'tools/cargo-target.test.mjs': '',
+    'tools/e2e/newVerdicts.test.mjs': "import './missing.mjs';",
+    'tools/e2e/helper.mjs': "import './missing.mjs';",
+    'tools/node_modules/package/a.test.mjs': "import './missing.mjs';",
   });
   await assert.rejects(checkNodeImports(await discoverTests(root), root), nodeImportError(
     "tools/canvas-page.test.ts:1: './missing.ts' (no such file)",
+    "tools/e2e/newVerdicts.test.mjs:1: './missing.mjs' (no such file)",
     "tools/test-ui.test.mjs:1: './missing' (no extension)",
     "ui/src/components/VirtualList.dom.test.ts:1: './missing' (no extension)",
   ));

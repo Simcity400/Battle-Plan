@@ -27,3 +27,6 @@ sha2.workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 test-unify = { workspace = true }
+
+[lints]
+workspace = true

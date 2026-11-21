@@ -50,3 +50,6 @@ replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
+
+[lints]
+workspace = true

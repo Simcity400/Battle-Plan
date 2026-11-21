@@ -12,3 +12,6 @@ doctest = false
 [[bin]]
 name = "core-cursor-bench"
 path = "src/bin/core-cursor-bench.rs"
+
+[lints]
+workspace = true

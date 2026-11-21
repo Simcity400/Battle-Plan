@@ -273,3 +273,6 @@ unify-num-traits = { workspace = true }
 unify-proc-macro2 = { workspace = true }
 unify-smallvec = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
+
+[lints]
+workspace = true
