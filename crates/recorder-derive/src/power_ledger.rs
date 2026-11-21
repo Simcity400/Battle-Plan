@@ -391,6 +391,15 @@ impl PowerLedger {
         Ok(inputs::keyed::<Part>(&own.table(TableId::PowerDayParts), key)?.filter(|part| part.day == day))
     }
 
+    fn opened(&self, own: &Rows<'_>, pending: &Pending, holder: u32, today: i32, sequence: u64) -> io::Result<bool> {
+        for &key in self.parts.get(&holder).map_or(&[][..], |(_, keys)| keys.as_slice()) {
+            if Self::held_part(own, pending, key, today)?.is_some_and(|part| part.cost_ordinal.is_some() && part.sequence == Some(sequence)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     fn open_part(&mut self, pending: &mut Pending, part: Part) {
         let key = part.key();
         let open = self.parts.entry(part.holder).or_insert((part.day, Vec::new()));
@@ -660,7 +669,7 @@ impl PowerLedger {
             applications.entry((cost.epoch, cost.day_hour, cost.pp_sequence)).or_default().push(cost);
         }
         for ((epoch, day_hour, sequence), costs) in applications {
-            if publication.deleted_only && midnight(day_hour) != today {
+            if publication.deleted_only && !(sole && midnight(day_hour) == today && self.opened(own, pending, holder, today, sequence)?) {
                 continue;
             }
             let matched = daily.as_ref().is_some_and(|daily| daily.epoch == epoch && daily.day_hour == day_hour && daily.pp_sequence == Some(sequence));
@@ -703,9 +712,6 @@ impl PowerLedger {
             for (ordinal, (sum, payments, first)) in items {
                 let key = part_key(holder, POLITICAL, ordinal);
                 let held = if opens { Self::held_part(own, pending, key, day)? } else { None };
-                if publication.deleted_only && !sole && held.as_ref().is_some_and(|held| held.sequence != Some(sequence)) {
-                    continue;
-                }
                 let part = Part {
                     holder,
                     currency: POLITICAL,

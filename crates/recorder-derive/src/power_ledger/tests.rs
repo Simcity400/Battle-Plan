@@ -89,6 +89,8 @@ const SAME_ITEM: i32 = 98;
 const SAME_ITEM_DROPPED: i32 = 99;
 const SAME_ITEM_RESTORED: i32 = 100;
 const SAME_ITEM_UNRECONCILED: i32 = 101;
+const UNLINKED: i32 = 102;
+const LINKED_DELETED: i32 = 103;
 const NO_CHANGES: i32 = 26;
 
 fn edit(store: &mut Store, hour: i32) {
@@ -190,6 +192,16 @@ fn edit(store: &mut Store, hour: i32) {
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(96, 1, PowerDailyCostKind::Relation, Q / 4, 99), TEXTS).unwrap();
         }
         SAME_ITEM_UNRECONCILED => testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap(),
+        UNLINKED => {
+            testing::put(store, TableId::CountryPowerDaily, &CountryPowerDailyRow { country: 3, ..daily(96, 3 * Q, Q / 2 + Q / 10, 7) }, TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 3, ..cost(96, 0, PowerDailyCostKind::Relation, Q / 2, 7) }, TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 3, ..cost(96, 1, PowerDailyCostKind::MioResearch, Q / 10, 7) }, TEXTS).unwrap();
+        }
+        LINKED_DELETED => {
+            testing::put(store, TableId::Countries, &CountryRow { id: 3, canonical_slot: 30, ..Default::default() }, TEXTS).unwrap();
+            testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 3, canonical_slot: 30 }, TEXTS).unwrap();
+            testing::remove(store, TableId::CountryPowerDailyCosts, 3 << 32 | 1).unwrap();
+        }
         _ => {}
     }
 }
@@ -406,6 +418,11 @@ fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_
     let (unreconciled, _) = through(0..=SAME_ITEM_UNRECONCILED);
     assert_eq!(cell::<Part>(&unreconciled, TableId::PowerDayParts, relation, "spent"), Some(Q / 2));
     assert_eq!(covered(&unreconciled), Some(false), "a survivor whose batch no longer matches the day's total is not covered");
+    let holders = |store: &Store| keys(store, TableId::PowerDayParts).into_iter().map(|key| (key >> 40) as u32).filter(|&holder| holder == NONE || holder == 30).collect::<std::collections::BTreeSet<_>>();
+    let (unlinked, _) = through(0..=UNLINKED);
+    assert_eq!(holders(&unlinked), [NONE].into());
+    let (linked, _) = through(0..=LINKED_DELETED);
+    assert_eq!(holders(&linked), [NONE].into(), "a deletion opens no part under a holder its costs were never published under");
 }
 
 #[test]
