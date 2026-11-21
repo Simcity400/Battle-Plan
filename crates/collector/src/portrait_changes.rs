@@ -120,7 +120,7 @@ impl Drop for Mutation {
 }
 
 static PRE_IMAGES: PreImages = PreImages::new(Duration::from_millis(5));
-static WITHHELD: AtomicU64 = AtomicU64::new(0);
+static WITHHELD: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 
 const OPEN: u32 = 0;
 const CLOSING: u32 = 1;
@@ -208,16 +208,6 @@ impl PreImages {
     }
 
     fn begin(&self) -> bool {
-        // SAFETY: open with no writer logging since the last end, and the capture gate admits
-        // one capture at a time.
-        let storage = unsafe { &*self.storage.get() };
-        let used = self.reserved[RECORDS].load(Ordering::SeqCst);
-        for record in &storage.records[..used.min(storage.records.len())] {
-            record.ready.store(false, Ordering::SeqCst);
-        }
-        for reserved in &self.reserved {
-            reserved.store(0, Ordering::SeqCst);
-        }
         self.state.store(CLOSING, Ordering::SeqCst);
         let deadline = Instant::now() + self.bound;
         let settled = WRITING.get() == 0
@@ -237,6 +227,18 @@ impl PreImages {
         } else {
             ADMITTED
         };
+        if withheld == ADMITTED {
+            // SAFETY: closing, with no writer logging since the last end and no reader holding a
+            // pre-image, and the capture gate admits one capture at a time.
+            let storage = unsafe { &*self.storage.get() };
+            let used = self.reserved[RECORDS].load(Ordering::SeqCst);
+            for record in &storage.records[..used.min(storage.records.len())] {
+                record.ready.store(false, Ordering::SeqCst);
+            }
+            for reserved in &self.reserved {
+                reserved.store(0, Ordering::SeqCst);
+            }
+        }
         self.withheld.store(withheld, Ordering::SeqCst);
         self.state.store(READING, Ordering::SeqCst);
         self.wake();
@@ -523,7 +525,8 @@ pub(crate) struct PreImagesCapture;
 impl PreImagesCapture {
     pub(crate) fn begin() -> Self {
         if !PRE_IMAGES.begin() {
-            WITHHELD.fetch_add(1, Ordering::Relaxed);
+            let reader = PRE_IMAGES.withheld.load(Ordering::SeqCst) == READER_HOLDING;
+            WITHHELD[usize::from(reader)].fetch_add(1, Ordering::Relaxed);
         }
         Self
     }
@@ -534,8 +537,10 @@ impl Drop for PreImagesCapture {
     }
 }
 
-pub(crate) fn withheld_captures() -> u64 {
-    WITHHELD.load(Ordering::Relaxed)
+pub(crate) fn withheld_captures() -> [u64; 2] {
+    WITHHELD
+        .each_ref()
+        .map(|count| count.load(Ordering::Relaxed))
 }
 
 #[cfg(test)]
@@ -842,6 +847,7 @@ mod revision_tests {
         store.end(true);
         assert_eq!(text(&store), held);
         assert!(!store.begin());
+        assert!(store.find(FIRST).is_some());
         assert_eq!(store.log(SECOND, &second), Log::Inactive);
         assert!(store.image(SECOND).unwrap().is_err());
         assert!(store.image(FIRST).unwrap().is_err());
