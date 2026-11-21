@@ -3,5 +3,90 @@
   "cargo": ["recorder-app", "collector"],
   "built": ["battle-plan-recorder.exe", "collector.dll"],
   "compiler": ["dxcompiler.dll", "dxil.dll"],
-  "repository": ["LICENSE", "LICENSES"]
+  "repository": ["LICENSE"],
+  "notices": {
+    "file": "THIRD-PARTY-NOTICES.txt",
+    "components": [
+      {
+        "name": "Microsoft DirectX Shader Compiler",
+        "use": "Compiles the map's shaders. dxcompiler.dll and dxil.dll, shipped unmodified.",
+        "files": ["DirectXShaderCompiler-LICENSE-MS.txt", "DirectXShaderCompiler-LICENSE-MIT.txt", "DirectXShaderCompiler-LICENSE-LLVM.txt"]
+      },
+      {
+        "name": "Independent JPEG Group's libjpeg 9a",
+        "use": "The JPEG texture reader is a modified Rust adaptation. This software is based in part on the work of the Independent JPEG Group.",
+        "files": ["IJG-libjpeg-README.txt"]
+      },
+      {
+        "name": "PhysicsFS",
+        "use": "The archive reader is a modified Rust adaptation.",
+        "files": ["PhysFS-LICENSE.txt"]
+      },
+      {
+        "name": "SDL 2.0.20",
+        "use": "The map audio's sample conversion is altered from SDL's and rewritten in Rust.",
+        "files": ["SDL-LICENSE.txt"]
+      },
+      {
+        "name": "image (Rust library)",
+        "use": "Decodes BMP, ICO, PNG and fallback Targa textures.",
+        "files": ["image-LICENSE-MIT.txt"]
+      },
+      {
+        "name": "byteorder-lite",
+        "use": "Byte-order reading, used by the image library.",
+        "files": ["byteorder-lite-LICENSE-MIT.txt"]
+      },
+      {
+        "name": "moxcms",
+        "use": "Colour management, used by the image library.",
+        "files": ["moxcms-LICENSE-BSD.txt"]
+      },
+      {
+        "name": "pxfm",
+        "use": "Mathematical functions, used by moxcms.",
+        "files": ["pxfm-LICENSE-BSD.txt"]
+      },
+      {
+        "name": "eframe 0.36.2",
+        "use": "The map window's framework, included in modified form.",
+        "files": ["eframe-LICENSE-MIT.txt", "eframe-LICENSE-APACHE.txt"]
+      },
+      {
+        "name": "tao 0.35.3",
+        "use": "The desktop app's windows and event loop, included in modified form.",
+        "files": ["tao-LICENSE-APACHE.txt", "tao-LICENSE.spdx"]
+      },
+      {
+        "name": "Inter font",
+        "use": "Interface typeface, bundled through Fontsource.",
+        "files": ["Fontsource-inter-LICENSE.txt"]
+      },
+      {
+        "name": "Roboto font",
+        "use": "Interface typeface, bundled through Fontsource.",
+        "files": ["Fontsource-roboto-LICENSE.txt"]
+      },
+      {
+        "name": "Roboto Condensed font",
+        "use": "Interface typeface, bundled through Fontsource.",
+        "files": ["Fontsource-roboto-condensed-LICENSE.txt"]
+      },
+      {
+        "name": "Source Serif 4 font",
+        "use": "Interface typeface, bundled through Fontsource.",
+        "files": ["Fontsource-source-serif-4-LICENSE.txt"]
+      },
+      {
+        "name": "Cascadia Code font",
+        "use": "Interface typeface, bundled through Fontsource.",
+        "files": ["Fontsource-cascadia-code-LICENSE.txt"]
+      },
+      {
+        "name": "Lucide",
+        "use": "The refresh icon.",
+        "files": ["Lucide-LICENSE.txt"]
+      }
+    ]
+  }
 }

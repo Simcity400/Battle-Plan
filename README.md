@@ -151,6 +151,6 @@ cargo build --release -p recorder -p collector   # command-line recorder and col
 
 Battle Plan is free software under the [MIT License](LICENSE).
 
-This software is based in part on the work of the Independent JPEG Group. It uses the Rust `image` library for several texture formats and includes a modified Rust adaptation of PhysicsFS in the archive reader. The refresh icon is from Lucide. Third-party notices are in [LICENSES](LICENSES/).
+This software is based in part on the work of the Independent JPEG Group. It uses the Rust `image` library for several texture formats and includes a modified Rust adaptation of PhysicsFS in the archive reader. The refresh icon is from Lucide. Third-party notices are in [LICENSES](LICENSES/); the installed app carries them combined in `THIRD-PARTY-NOTICES.txt`.
 
 Battle Plan is an unofficial project and is not affiliated with or endorsed by Paradox Interactive. Hearts of Iron IV is a trademark of Paradox Interactive AB. The repository contains no data, assets or code from the game; at run time, the app reads what it needs from your own installation.
